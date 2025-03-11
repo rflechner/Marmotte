@@ -1,3 +1,3 @@
-GET https://localhost:7063/pet
+GET https://localhost:7063/pet/98
 
 ###

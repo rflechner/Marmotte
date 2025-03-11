@@ -11,6 +11,8 @@ open Microsoft.AspNetCore.Builder
 open Microsoft.AspNetCore.Hosting
 open Microsoft.AspNetCore.Http
 open Microsoft.AspNetCore.HttpsPolicy
+open Microsoft.AspNetCore.Routing.Patterns
+open Microsoft.AspNetCore.Routing.Template
 open Microsoft.Extensions.Configuration
 open Microsoft.Extensions.DependencyInjection
 open Microsoft.Extensions.Hosting
@@ -77,7 +79,15 @@ module Program =
                         return Results.BadRequest("Invalid ID").ExecuteAsync(ctx)
                 })) |> ignore
         
-        let ep1 = endpoint HttpMethods.Get "/pet"
+        let routeTemplate = "/pet/{id:int}"
+        let pattern = RoutePatternFactory.Parse routeTemplate
+        let template = TemplateParser.Parse(routeTemplate)
+        let matcher = TemplateMatcher(template, Routing.RouteValueDictionary())
+        let routeValues = Routing.RouteValueDictionary()
+        matcher.TryMatch("/pet/1234", routeValues)
+
+        
+        let ep1 = endpoint HttpMethods.Get "/pet/{id:int}"
                     (fun ctx ->
                         task {
                             return Results.Ok("popo")
