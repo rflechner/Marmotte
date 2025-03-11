@@ -1,0 +1,9 @@
+﻿<Solution>
+  <Folder Name="/samples/">
+    <Project Path="samples\WebAppSample1\WebAppSample1.fsproj" Type="Classic F#" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src\Marmotte\Marmotte.fsproj" Type="Classic F#" />
+  </Folder>
+  <Folder Name="/tests/" />
+</Solution>
