@@ -1,22 +1,20 @@
 namespace WebAppSample1
 #nowarn "20"
 open System
-open System.Collections.Generic
-open System.IO
-open System.Linq
 open System.Threading.Tasks
 open Marmotte.Pipeline
 open Microsoft.AspNetCore
 open Microsoft.AspNetCore.Builder
-open Microsoft.AspNetCore.Hosting
 open Microsoft.AspNetCore.Http
-open Microsoft.AspNetCore.HttpsPolicy
 open Microsoft.AspNetCore.Routing.Patterns
 open Microsoft.AspNetCore.Routing.Template
-open Microsoft.Extensions.Configuration
 open Microsoft.Extensions.DependencyInjection
 open Microsoft.Extensions.Hosting
-open Microsoft.Extensions.Logging
+open Microsoft.AspNetCore.OpenApi
+open Scalar.AspNetCore
+
+// https://learn.microsoft.com/fr-fr/aspnet/core/fundamentals/openapi/aspnetcore-openapi?view=aspnetcore-9.0&tabs=visual-studio
+// https://learn.microsoft.com/en-us/aspnet/core/fundamentals/openapi/using-openapi-documents?view=aspnetcore-9.0#use-scalar-for-interactive-api-documentation
 
 module Program =
     let exitCode = 0
@@ -54,9 +52,18 @@ module Program =
         let builder = WebApplication.CreateBuilder(args)
 
         builder.Services.AddControllers()
+        
+        builder.Services.AddEndpointsApiExplorer()
+        builder.Services.AddOpenApi()
 
         let app = builder.Build()
 
+        if app.Environment.IsDevelopment()
+        then
+            app.MapOpenApi() |> ignore
+            app.MapScalarApiReference() |> ignore
+            //app.UseOpenApiExplorer() |> ignore
+        
         app.UseHttpsRedirection()
 
         app.UseAuthorization()
@@ -79,6 +86,22 @@ module Program =
                         return Results.BadRequest("Invalid ID").ExecuteAsync(ctx)
                 })) |> ignore
         
+        let h =
+            app.MapMethods("/toto/{id:int}", [HttpMethods.Get], Func<HttpContext, Task>(
+                fun ctx ->
+                    task {
+                        match ctx.Request.RouteValues.TryGetValue("id") with
+                        | true, (:? string as idStr) when System.Int32.TryParse(idStr) |> fst ->
+                            let id = int idStr
+                            let! user = getUserById id
+                            match user with
+                            | Some u -> return Results.Json(u).ExecuteAsync(ctx)
+                            | None -> return Results.NotFound("Toto not found").ExecuteAsync(ctx)
+                        | _ ->
+                            return Results.BadRequest("Invalid ID").ExecuteAsync(ctx)
+                    })).WithName("Toto").WithTags("toto").Produces<UserDto>(StatusCodes.Status200OK)
+        
+        
         let routeTemplate = "/pet/{id:int}"
         let pattern = RoutePatternFactory.Parse routeTemplate
         let template = TemplateParser.Parse(routeTemplate)
@@ -94,6 +117,7 @@ module Program =
                         })
         app.Use ep1
 
+        
         app.Run()
 
         exitCode

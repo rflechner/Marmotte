@@ -30,4 +30,20 @@ module Pipeline =
                 else
                     do! next.Invoke()
             } :> Task
+    
+    let inline binding<'t> method (template:string) (handler:HttpRouteHandler) =
+        let pattern = RoutePatternFactory.Parse(template)
+        let template = TemplateParser.Parse(template)
+        let matcher = TemplateMatcher(template, RouteValueDictionary())
+
+        fun (ctx: HttpContext) (next:System.Func<Task>) ->
+            task {
+                let routeValues = RouteValueDictionary()
+                if ctx.Request.Method = method && matcher.TryMatch(ctx.Request.Path, routeValues) then
+                    let body = ctx.Request.Body
+                    let! result = handler ctx
+                    do! result.ExecuteAsync ctx
+                else
+                    do! next.Invoke()
+            } :> Task
 

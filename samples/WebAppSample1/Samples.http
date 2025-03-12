@@ -1,3 +1,8 @@
 GET https://localhost:7063/pet/98
 
 ###
+
+GET https://localhost:7063/toto/42
+
+###
+
