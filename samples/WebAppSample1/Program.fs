@@ -2,16 +2,13 @@ namespace WebAppSample1
 #nowarn "20"
 open System
 open System.Threading.Tasks
-open Marmotte.RestfulDsl
 open Microsoft.AspNetCore.Builder
 open Microsoft.AspNetCore.Http
 open Microsoft.Extensions.DependencyInjection
 open Microsoft.Extensions.Hosting
 open Scalar.AspNetCore
 open Marmotte
-
-// https://learn.microsoft.com/fr-fr/aspnet/core/fundamentals/openapi/aspnetcore-openapi?view=aspnetcore-9.0&tabs=visual-studio
-// https://learn.microsoft.com/en-us/aspnet/core/fundamentals/openapi/using-openapi-documents?view=aspnetcore-9.0#use-scalar-for-interactive-api-documentation
+open Marmotte.RestfulDsl
 
 module Program =
     let exitCode = 0
