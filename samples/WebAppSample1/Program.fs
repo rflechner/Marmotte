@@ -12,6 +12,7 @@ open Microsoft.Extensions.DependencyInjection
 open Microsoft.Extensions.Hosting
 open Microsoft.AspNetCore.OpenApi
 open Scalar.AspNetCore
+open Marmotte
 
 // https://learn.microsoft.com/fr-fr/aspnet/core/fundamentals/openapi/aspnetcore-openapi?view=aspnetcore-9.0&tabs=visual-studio
 // https://learn.microsoft.com/en-us/aspnet/core/fundamentals/openapi/using-openapi-documents?view=aspnetcore-9.0#use-scalar-for-interactive-api-documentation
@@ -30,7 +31,7 @@ module Program =
     let getUserHandler (ctx: HttpContext) (next: RequestDelegate) =
         task {
             match ctx.Request.RouteValues.TryGetValue("id") with
-            | true, (:? string as idStr) when System.Int32.TryParse(idStr) |> fst ->
+            | true, (:? string as idStr) when idStr |> Int32.TryParse |> fst ->
                 let id = int idStr
                 let! user = getUserById id
                 match user with
@@ -46,6 +47,12 @@ module Program =
                 do! ctx.Response.WriteAsync("Invalid ID provided.")
         }
     
+    [<CLIMutable>]
+    type CustomerRequestModel = { Id: int }
+    
+    type Customer = { Id: int; Name: string; Birthday: DateOnly }
+    
+
     [<EntryPoint>]
     let main args =
 
@@ -71,38 +78,59 @@ module Program =
         app.UseRouting()
 
         // app.Use(fun ctx next -> getUserHandler ctx next)
-
-        app.MapGet("/users/{id:int}", Func<HttpContext, Task>(
+        
+        let getUser (ctx: HttpContext) =
+            task {
+                match ctx.Request.RouteValues.TryGetValue "id" with
+                | true, (:? string as idStr) when idStr |> Int32.TryParse |> fst ->
+                    let id = int idStr
+                    let! user = getUserById id
+                    match user with
+                    | Some u -> return! Results.Json(u).ExecuteAsync(ctx)
+                    | None -> return! Results.NotFound("User not found").ExecuteAsync(ctx)
+                | _ -> return! Results.BadRequest("Invalid ID").ExecuteAsync(ctx)
+            }
+        // app.MapGet("/users/{id:int}", getUser) |> ignore
+        
+        app |> Http.get "/users/{id:int}" getUser
+        
+        let getCustomer (ctx: HttpContext) (request:CustomerRequestModel) = // : Task<Result<Customer, string>> =
+            task {
+                match ctx.Request.RouteValues.TryGetValue "id" with
+                | true, (:? string as idStr) when idStr |> Int32.TryParse |> fst ->
+                    let id = int idStr
+                    match id with
+                    | 42 ->
+                        let birthDay = DateTime.Today.AddYears(-30) |> DateOnly.FromDateTime
+                        let name = $"Customer {id}"
+                        let customer : Customer = { Id=id; Name=name; Birthday=birthDay }
+                        return Result.Ok customer
+                    | _ -> return Result.Error "User not found"
+                | _ -> return Result.Error "Invalid ID"
+            }
+        // app |> Restful.map HttpMethods.Get "/customer/{id:int}" getCustomer
+        
+        app |> Restful.addResource "Customer" (
+                fun ctx ->
+                    ctx |> Restful.get "/customer/{id:int}" getCustomer
+                )
+        
+        app.MapMethods("/toto/{id:int}", [HttpMethods.Get], Func<HttpContext, Task>(
             fun ctx ->
                 task {
+                    
+                    // TODO: parser le RoutePattern pour faire match les membres du DTO puis wrapper la handler
+                    
                     match ctx.Request.RouteValues.TryGetValue("id") with
-                    | true, (:? string as idStr) when System.Int32.TryParse(idStr) |> fst ->
+                    | true, (:? string as idStr) when idStr |> Int32.TryParse |> fst ->
                         let id = int idStr
                         let! user = getUserById id
                         match user with
                         | Some u -> return Results.Json(u).ExecuteAsync(ctx)
-                        | None -> return Results.NotFound("User not found").ExecuteAsync(ctx)
+                        | None -> return Results.NotFound("Toto not found").ExecuteAsync(ctx)
                     | _ ->
                         return Results.BadRequest("Invalid ID").ExecuteAsync(ctx)
-                })) |> ignore
-        
-        let h =
-            app.MapMethods("/toto/{id:int}", [HttpMethods.Get], Func<HttpContext, Task>(
-                fun ctx ->
-                    task {
-                        
-                        // TODO: parser le RoutePattern pour faire match les membres du DTO puis wrapper la handler
-                        
-                        match ctx.Request.RouteValues.TryGetValue("id") with
-                        | true, (:? string as idStr) when System.Int32.TryParse(idStr) |> fst ->
-                            let id = int idStr
-                            let! user = getUserById id
-                            match user with
-                            | Some u -> return Results.Json(u).ExecuteAsync(ctx)
-                            | None -> return Results.NotFound("Toto not found").ExecuteAsync(ctx)
-                        | _ ->
-                            return Results.BadRequest("Invalid ID").ExecuteAsync(ctx)
-                    })).WithName("Toto").WithTags("toto").Produces<UserDto>(StatusCodes.Status200OK)
+                })).WithName("Toto").WithTags("toto").Produces<UserDto>(StatusCodes.Status200OK)
         
         
         let routeTemplate = "/pet/{id:int}"
