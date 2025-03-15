@@ -50,6 +50,9 @@ module Program =
     [<CLIMutable>]
     type CustomerRequestModel = { Id: int }
     
+    [<CLIMutable>]
+    type SearchCustomerRequestModel = { NamePattern: string }
+    
     type Customer = { Id: int; Name: string; Birthday: DateOnly }
     
 
@@ -94,33 +97,38 @@ module Program =
         
         app |> Http.get "/users/{id:int}" getUser
         
-        let getCustomer (ctx: HttpContext) (request:CustomerRequestModel) = // : Task<Result<Customer, string>> =
+        let getCustomer (_: HttpContext) (request: CustomerRequestModel) =
             task {
-                match ctx.Request.RouteValues.TryGetValue "id" with
-                | true, (:? string as idStr) when idStr |> Int32.TryParse |> fst ->
-                    let id = int idStr
-                    match id with
-                    | 42 ->
-                        let birthDay = DateTime.Today.AddYears(-30) |> DateOnly.FromDateTime
-                        let name = $"Customer {id}"
-                        let customer : Customer = { Id=id; Name=name; Birthday=birthDay }
-                        return Result.Ok customer
-                    | _ -> return Result.Error "User not found"
-                | _ -> return Result.Error "Invalid ID"
+                printfn "request: %A" request
+                match request.Id with
+                | 42 ->
+                    let birthDay = DateTime.Today.AddYears(-30) |> DateOnly.FromDateTime
+                    let name = $"Customer {request.Id}"
+                    let customer : Customer = { Id=request.Id; Name=name; Birthday=birthDay }
+                    return Result.Ok customer
+                | _ -> return Result.Error "User not found"
             }
-        // app |> Restful.map HttpMethods.Get "/customer/{id:int}" getCustomer
+        
+        let searchCustomer (_: HttpContext) (request: SearchCustomerRequestModel) =
+            task {
+                printfn "request: %A" request
+                match request.NamePattern with
+                | "joe*" ->
+                    let birthDay = DateTime.Today.AddYears(-50) |> DateOnly.FromDateTime
+                    let customer : Customer = { Id=48; Name="Joe Resta"; Birthday=birthDay }
+                    return Result.Ok customer
+                | _ -> return Result.Error "User not found"
+            }
         
         app |> Restful.addResource "Customer" (
                 fun ctx ->
-                    ctx |> Restful.get "/customer/{id:int}" getCustomer
+                    ctx |> Restful.get "/{id:int}" getCustomer id
+                    ctx |> Restful.post "/search" searchCustomer (fun c -> { c with OperationName=Some "SearchCustomer" })
                 )
         
         app.MapMethods("/toto/{id:int}", [HttpMethods.Get], Func<HttpContext, Task>(
             fun ctx ->
                 task {
-                    
-                    // TODO: parser le RoutePattern pour faire match les membres du DTO puis wrapper la handler
-                    
                     match ctx.Request.RouteValues.TryGetValue("id") with
                     | true, (:? string as idStr) when idStr |> Int32.TryParse |> fst ->
                         let id = int idStr
@@ -147,7 +155,6 @@ module Program =
                             return Results.Ok("popo")
                         })
         app.Use ep1
-
         
         app.Run()
 

@@ -1,12 +1,19 @@
 ﻿namespace Marmotte
 
 open System
+open System.IO
 open System.Net.Http
+open System.Net.Mime
+open System.Text
+open System.Text.Json
 open System.Threading.Tasks
 open Microsoft.AspNetCore.Builder
 open Microsoft.AspNetCore.Http
+open Microsoft.AspNetCore.Http.Json
 open Microsoft.AspNetCore.Routing
 open Microsoft.AspNetCore.Routing.Template
+open Microsoft.Extensions.DependencyInjection
+open Microsoft.Extensions.Options
 open Microsoft.FSharp.Core
 
 [<RequireQualifiedAccess>]
@@ -18,18 +25,45 @@ module Restful =
         { Name: string
           Tags: string
           App: WebApplication }
+        
+    type RouteConfig =
+        { OperationName: string option }
+    
+    [<RequireQualifiedAccess>]
+    module RouteConfig =
+        let create() = { OperationName = None }
 
-    let map<'tin, 'tout, 'terr> (verb: string) (routeTemplate: string) (handler: ApiRequestHandler<'tin, 'tout, 'terr>) (ctx: ResourceContext) =
+    let [<Literal>] ApplicationJson = "application/json"
+    
+    let getInputDto<'tin> (ctx: HttpContext) =
+        task {
+            let isBodyJson = ctx.Request.Headers.ContentType |> Seq.exists (fun v -> v.Equals ApplicationJson)
+            if not isBodyJson
+            then return Activator.CreateInstance<'tin>()
+            else            
+                let jsonOptions = ctx.RequestServices.GetRequiredService<IOptions<JsonOptions>>().Value.SerializerOptions
+                return! JsonSerializer.DeserializeAsync<'tin>(ctx.Request.Body, jsonOptions)
+        }
+    
+    let map<'tin, 'tout, 'terr> (verb: string) (routeTemplate: string) (handler: ApiRequestHandler<'tin, 'tout, 'terr>) (configure: RouteConfig -> RouteConfig) (ctx: ResourceContext) =
         let template = TemplateParser.Parse(routeTemplate)
+        let modelType = typeof<'tin>
+        let properties = modelType.GetProperties() |> Seq.map(fun p -> p.Name.ToLowerInvariant(), p) |> dict
         let func =
             Func<HttpContext, Task>(
                 fun ctx ->
                     task {
-                        let dto = Activator.CreateInstance<'tin>()
-                        
+                        let! dto = getInputDto<'tin> ctx
                         for p in template.Parameters do
-                            printfn $"Parameter {p.Name}"
-                        
+                            match properties.TryGetValue p.Name with
+                            | false, _ -> ()
+                            | true, propertyInfo ->
+                                match ctx.Request.RouteValues.TryGetValue p.Name with
+                                | false, _ -> ()
+                                | true, param ->
+                                    let converted = Convert.ChangeType(param, propertyInfo.PropertyType)
+                                    propertyInfo.SetValue(dto, converted)
+
                         let! result = handler ctx dto
                         match result with
                         | Error err ->
@@ -38,14 +72,24 @@ module Restful =
                             return! Results.Ok(result).ExecuteAsync(ctx)
                     }
             )
-        let routeBuilder = ctx.App.MapMethods(routeTemplate, [verb], func)
-        routeBuilder.Produces<'tout>().Produces<'terr>(statusCode=500).WithName(ctx.Name).WithTags(ctx.Name)
+        let sb = StringBuilder()
+        '/' |> sb.Append |> ignore
+        ctx.Name.ToLowerInvariant().TrimEnd '/' |> sb.Append |> ignore
+        '/' |> sb.Append |> ignore
+        routeTemplate.TrimStart '/' |> sb.Append |> ignore
+        
+        let config = RouteConfig.create() |> configure
+        let operationName = config.OperationName |> Option.defaultWith (fun () -> $"{Helpers.ucFirst verb}{ctx.Name}")
+        
+        let routeBuilder = ctx.App.MapMethods(sb.ToString(), [verb], func)
+        routeBuilder.Produces<'tout>().Produces<'terr>(statusCode=500).WithName(operationName).WithTags(operationName)
 
     let get<'tin, 'tout, 'terr> (routeTemplate: string) (handler: ApiRequestHandler<'tin, 'tout, 'terr>) =
         map HttpMethods.Get routeTemplate handler
     
-    let post<'tin, 'tout, 'terr> (routeTemplate: string) (handler: ApiRequestHandler<'tin, 'tout, 'terr>) =
-        map HttpMethods.Post routeTemplate handler
+    let post<'tin, 'tout, 'terr> (routeTemplate: string) (handler: ApiRequestHandler<'tin, 'tout, 'terr>) (configure: RouteConfig -> RouteConfig) (ctx: ResourceContext) =
+        let route = map HttpMethods.Post routeTemplate handler configure ctx
+        route.Accepts<'tin> ApplicationJson
 
     let delete<'tin, 'tout, 'terr> (routeTemplate: string) (handler: ApiRequestHandler<'tin, 'tout, 'terr>) =
         map HttpMethods.Delete routeTemplate handler
