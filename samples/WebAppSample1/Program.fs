@@ -90,6 +90,9 @@ module Program =
             app.MapMethods("/toto/{id:int}", [HttpMethods.Get], Func<HttpContext, Task>(
                 fun ctx ->
                     task {
+                        
+                        // TODO: parser le RoutePattern pour faire match les membres du DTO puis wrapper la handler
+                        
                         match ctx.Request.RouteValues.TryGetValue("id") with
                         | true, (:? string as idStr) when System.Int32.TryParse(idStr) |> fst ->
                             let id = int idStr
