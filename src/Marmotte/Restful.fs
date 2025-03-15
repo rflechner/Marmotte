@@ -82,7 +82,7 @@ module Restful =
         let operationName = config.OperationName |> Option.defaultWith (fun () -> $"{Helpers.ucFirst verb}{ctx.Name}")
         
         let routeBuilder = ctx.App.MapMethods(sb.ToString(), [verb], func)
-        routeBuilder.Produces<'tout>().Produces<'terr>(statusCode=500).WithName(operationName).WithTags(operationName)
+        routeBuilder.Produces<'tout>().Produces<'terr>(statusCode=500).WithName(operationName).WithTags(ctx.Tags)
 
     let get<'tin, 'tout, 'terr> (routeTemplate: string) (handler: ApiRequestHandler<'tin, 'tout, 'terr>) =
         map HttpMethods.Get routeTemplate handler
