@@ -3,6 +3,7 @@ namespace WebAppSample1
 open System
 open System.Threading.Tasks
 open Marmotte.Pipeline
+open Marmotte.RestfulDsl
 open Microsoft.AspNetCore
 open Microsoft.AspNetCore.Builder
 open Microsoft.AspNetCore.Http
@@ -120,12 +121,18 @@ module Program =
                 | _ -> return Result.Error "User not found"
             }
         
-        app |> Restful.addResource "Customer" (
-                fun ctx ->
-                    ctx |> Restful.get "/{id:int}" getCustomer id
-                    ctx |> Restful.post "/search" searchCustomer (fun c -> { c with OperationName=Some "SearchCustomer" })
-                )
-        
+        // app |> Restful.addResource "Customer" (
+        //         fun ctx ->
+        //             ctx |> Restful.get "/{id:int}" getCustomer id
+        //             ctx |> Restful.post "/search" searchCustomer (fun c -> { c with OperationName=Some "SearchCustomer" })
+        //         )
+                
+        restful app {
+            resource "Customer"
+            get "/{id:int}" getCustomer
+            post "/search" searchCustomer
+        }
+
         app.MapMethods("/toto/{id:int}", [HttpMethods.Get], Func<HttpContext, Task>(
             fun ctx ->
                 task {

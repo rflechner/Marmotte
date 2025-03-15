@@ -74,8 +74,12 @@ module Restful =
             )
         let sb = StringBuilder()
         '/' |> sb.Append |> ignore
-        ctx.Name.ToLowerInvariant().TrimEnd '/' |> sb.Append |> ignore
-        '/' |> sb.Append |> ignore
+        
+        if ctx.Name |> String.IsNullOrWhiteSpace |> not && ctx.Name <> "/"
+        then
+            ctx.Name.ToLowerInvariant().TrimEnd '/' |> sb.Append |> ignore
+            '/' |> sb.Append |> ignore
+        
         routeTemplate.TrimStart '/' |> sb.Append |> ignore
         
         let config = RouteConfig.create() |> configure
@@ -109,5 +113,4 @@ module Restful =
     let addResource (name:string) (f: ResourceContext -> RouteHandlerBuilder) (app: WebApplication) =
         let ctx = { Name=name; Tags=name; App=app }
         f ctx
-
 

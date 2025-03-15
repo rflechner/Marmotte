@@ -11,6 +11,7 @@
         <Compile Include="Helpers.fs" />
         <Compile Include="Http.fs" />
         <Compile Include="Restful.fs" />
+        <Compile Include="RestfulDsl.fs" />
     </ItemGroup>
 
 </Project>
