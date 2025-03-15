@@ -5,6 +5,8 @@
     </PropertyGroup>
 
     <ItemGroup>
+        <Compile Include="Dto.fs" />
+        <Compile Include="RestApp.fs" />
         <Compile Include="Program.fs"/>
     </ItemGroup>
 
