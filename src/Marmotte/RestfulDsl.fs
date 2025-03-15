@@ -29,6 +29,11 @@ module RestfulDsl =
             app
         
         [<CustomOperation("get")>]
+        member x.Map<'tin, 'tout, 'terr> (_:WebApplication, verb, routeTemplate: string, handler: Restful.ApiRequestHandler<'tin, 'tout, 'terr>) =
+            Restful.map verb routeTemplate handler id { App=app; Name=x.ResourceName; Tags=x.ResourceName } |> ignore
+            app
+        
+        [<CustomOperation("get")>]
         member x.Get<'tin, 'tout, 'terr> (_:WebApplication, routeTemplate: string, handler: Restful.ApiRequestHandler<'tin, 'tout, 'terr>) =
             Restful.get routeTemplate handler id { App=app; Name=x.ResourceName; Tags=x.ResourceName } |> ignore
             app

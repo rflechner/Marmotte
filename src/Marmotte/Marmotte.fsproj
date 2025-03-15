@@ -7,7 +7,6 @@
     </PropertyGroup>
 
     <ItemGroup>
-        <Compile Include="Pipeline.fs" />
         <Compile Include="Helpers.fs" />
         <Compile Include="Http.fs" />
         <Compile Include="Restful.fs" />

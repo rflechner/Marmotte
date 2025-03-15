@@ -1,12 +1,9 @@
 ﻿namespace Marmotte
 
 open System
-open System.Net.Http
 open System.Threading.Tasks
 open Microsoft.AspNetCore.Builder
 open Microsoft.AspNetCore.Http
-open Microsoft.AspNetCore.Routing
-open Microsoft.AspNetCore.Routing.Template
 open Microsoft.FSharp.Core
 
 [<RequireQualifiedAccess>]
@@ -15,7 +12,6 @@ module Http =
     type RequestHandler = HttpContext -> unit Task
         
     let map (verb: string) (routeTemplate: string) (handler: RequestHandler) (app: WebApplication) =
-        let template = TemplateParser.Parse(routeTemplate)
         let func =
             Func<HttpContext, Task>(
                 fun ctx -> ctx |> handler :> Task

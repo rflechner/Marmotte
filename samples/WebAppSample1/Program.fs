@@ -2,16 +2,11 @@ namespace WebAppSample1
 #nowarn "20"
 open System
 open System.Threading.Tasks
-open Marmotte.Pipeline
 open Marmotte.RestfulDsl
-open Microsoft.AspNetCore
 open Microsoft.AspNetCore.Builder
 open Microsoft.AspNetCore.Http
-open Microsoft.AspNetCore.Routing.Patterns
-open Microsoft.AspNetCore.Routing.Template
 open Microsoft.Extensions.DependencyInjection
 open Microsoft.Extensions.Hosting
-open Microsoft.AspNetCore.OpenApi
 open Scalar.AspNetCore
 open Marmotte
 
@@ -29,7 +24,7 @@ module Program =
             if id = 42 then Some { Id = 42; Name = "Douglas Adams" } else None
         )
 
-    let getUserHandler (ctx: HttpContext) (next: RequestDelegate) =
+    let getUserHandler (ctx: HttpContext) (_: RequestDelegate) =
         task {
             match ctx.Request.RouteValues.TryGetValue("id") with
             | true, (:? string as idStr) when idStr |> Int32.TryParse |> fst ->
@@ -56,13 +51,15 @@ module Program =
     
     type Customer = { Id: int; Name: string; Birthday: DateOnly }
     
+    [<CLIMutable>]
+    type UserRequestModel = { Id: int }
 
     [<EntryPoint>]
     let main args =
 
         let builder = WebApplication.CreateBuilder(args)
 
-        builder.Services.AddControllers()
+        builder.Services.AddAuthorization()
         
         builder.Services.AddEndpointsApiExplorer()
         builder.Services.AddOpenApi()
@@ -78,10 +75,8 @@ module Program =
         app.UseHttpsRedirection()
 
         app.UseAuthorization()
-        app.MapControllers()
         app.UseRouting()
 
-        // app.Use(fun ctx next -> getUserHandler ctx next)
         
         let getUser (ctx: HttpContext) =
             task {
@@ -94,7 +89,6 @@ module Program =
                     | None -> return! Results.NotFound("User not found").ExecuteAsync(ctx)
                 | _ -> return! Results.BadRequest("Invalid ID").ExecuteAsync(ctx)
             }
-        // app.MapGet("/users/{id:int}", getUser) |> ignore
         
         app |> Http.get "/users/{id:int}" getUser
         
@@ -107,7 +101,7 @@ module Program =
                     let name = $"Customer {request.Id}"
                     let customer : Customer = { Id=request.Id; Name=name; Birthday=birthDay }
                     return Result.Ok customer
-                | _ -> return Result.Error "User not found"
+                | _ -> return Result.Error "Customer not found"
             }
         
         let searchCustomer (_: HttpContext) (request: SearchCustomerRequestModel) =
@@ -118,50 +112,34 @@ module Program =
                     let birthDay = DateTime.Today.AddYears(-50) |> DateOnly.FromDateTime
                     let customer : Customer = { Id=48; Name="Joe Resta"; Birthday=birthDay }
                     return Result.Ok customer
-                | _ -> return Result.Error "User not found"
+                | _ -> return Result.Error "Customer not found"
             }
-        
+
         // app |> Restful.addResource "Customer" (
         //         fun ctx ->
         //             ctx |> Restful.get "/{id:int}" getCustomer id
         //             ctx |> Restful.post "/search" searchCustomer (fun c -> { c with OperationName=Some "SearchCustomer" })
         //         )
-                
+
         restful app {
             resource "Customer"
             get "/{id:int}" getCustomer
             post "/search" searchCustomer
-        }
-
-        app.MapMethods("/toto/{id:int}", [HttpMethods.Get], Func<HttpContext, Task>(
-            fun ctx ->
-                task {
-                    match ctx.Request.RouteValues.TryGetValue("id") with
-                    | true, (:? string as idStr) when idStr |> Int32.TryParse |> fst ->
-                        let id = int idStr
-                        let! user = getUserById id
-                        match user with
-                        | Some u -> return Results.Json(u).ExecuteAsync(ctx)
-                        | None -> return Results.NotFound("Toto not found").ExecuteAsync(ctx)
-                    | _ ->
-                        return Results.BadRequest("Invalid ID").ExecuteAsync(ctx)
-                })).WithName("Toto").WithTags("toto").Produces<UserDto>(StatusCodes.Status200OK)
-        
-        
-        let routeTemplate = "/pet/{id:int}"
-        let pattern = RoutePatternFactory.Parse routeTemplate
-        let template = TemplateParser.Parse(routeTemplate)
-        let matcher = TemplateMatcher(template, Routing.RouteValueDictionary())
-        let routeValues = Routing.RouteValueDictionary()
-        matcher.TryMatch("/pet/1234", routeValues)
-
-        
-        let ep1 = endpoint HttpMethods.Get "/pet/{id:int}"
-                    (fun ctx ->
+            
+            resource "User"
+            
+            get "/{id:int}" (
+                    fun (_: HttpContext) (request:UserRequestModel) ->
                         task {
-                            return Results.Ok("popo")
-                        })
-        app.Use ep1
+                            match request.Id with
+                            | 42 ->
+                                let name = $"User {request.Id}"
+                                let user : UserDto = { Id=request.Id; Name=name }
+                                return Result.Ok user
+                            | _ -> return Result.Error "User not found"
+                        }
+                    )
+        }
         
         app.Run()
 

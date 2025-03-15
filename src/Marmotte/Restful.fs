@@ -1,16 +1,12 @@
 ﻿namespace Marmotte
 
 open System
-open System.IO
-open System.Net.Http
-open System.Net.Mime
 open System.Text
 open System.Text.Json
 open System.Threading.Tasks
 open Microsoft.AspNetCore.Builder
 open Microsoft.AspNetCore.Http
 open Microsoft.AspNetCore.Http.Json
-open Microsoft.AspNetCore.Routing
 open Microsoft.AspNetCore.Routing.Template
 open Microsoft.Extensions.DependencyInjection
 open Microsoft.Extensions.Options
