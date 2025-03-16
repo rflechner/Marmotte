@@ -5,8 +5,8 @@
     </PropertyGroup>
 
     <ItemGroup>
-        <Compile Include="WeatherForecast.fs"/>
-        <Compile Include="Controllers/WeatherForecastController.fs"/>
+        <Compile Include="Dto.fs" />
+        <Compile Include="RestApp.fs" />
         <Compile Include="Program.fs"/>
     </ItemGroup>
 
@@ -16,6 +16,11 @@
 
     <ItemGroup>
       <ProjectReference Include="..\..\src\Marmotte\Marmotte.fsproj" />
+    </ItemGroup>
+
+    <ItemGroup>
+      <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="9.0.3" />
+      <PackageReference Include="Scalar.AspNetCore" Version="2.0.29" />
     </ItemGroup>
 
 </Project>
