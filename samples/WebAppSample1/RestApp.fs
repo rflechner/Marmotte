@@ -69,8 +69,12 @@ let run (app: WebApplication) =
     // computation expression creates routes
     // this example demonstrates how to use Restful utilities
     restful app {
-        resource "Customer"
+        resource "Customer"        
+
         get "/{id:int}" getCustomer
+        replies (RouteResultDefinition.create<Customer> 200 "")
+        replies (RouteResultDefinition.create<Customer> 205 "test")
+
         post "/search" searchCustomer
         
         resource "User"
