@@ -30,7 +30,7 @@ let getUser (ctx: HttpContext) =
 // this example demonstrates how to use Restful utilities
 let getCustomer (request: CustomerRequestModel) =
     task {
-        printfn "request: %A" request
+        printfn $"request: %A{request}"
         match request.Id with
         | 42 ->
             let birthDay = DateTime.Today.AddYears(-30) |> DateOnly.FromDateTime
@@ -51,7 +51,7 @@ let searchCustomer (request: SearchCustomerRequestModel) =
             return Restful.SemanticResult.Ok customer
         | _ -> return Restful.SemanticResult.NotFound(Some "Customer not found")
     }
-    
+
 let run (app: WebApplication) =
     
     // this example demonstrates how to use classic IResult and manually read requests
@@ -85,6 +85,4 @@ let run (app: WebApplication) =
                         | _ -> return Restful.SemanticResult.NotFound(Some "User not found")
                     }
                 )
-    } |> _.Run()
-    
-    
+    }

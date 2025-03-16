@@ -87,3 +87,8 @@ module OpenApiExtensions =
                 task {
                     removeQueryFromOperation operation context
                 }
+    
+    let configureOpenApi (options: OpenApiOptions) =
+        options.AddSchemaTransformer<SchemaTransformer>() |> ignore
+        options.AddOperationTransformer<OperationTransformer>() |> ignore
+    

@@ -1,6 +1,5 @@
 namespace WebAppSample1
 #nowarn "20"
-open Marmotte.OpenApiExtensions
 open Microsoft.AspNetCore.Builder
 open Microsoft.Extensions.DependencyInjection
 open Microsoft.Extensions.Hosting
@@ -18,10 +17,7 @@ module Program =
         
         builder.Services.AddEndpointsApiExplorer()
         
-        builder.Services.AddOpenApi(fun options ->
-            options.AddSchemaTransformer<SchemaTransformer>() |> ignore
-            options.AddOperationTransformer<OperationTransformer>() |> ignore
-        )
+        builder.Services.AddOpenApi Marmotte.OpenApiExtensions.configureOpenApi
 
         let app = builder.Build()
 

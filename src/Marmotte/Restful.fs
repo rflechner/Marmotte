@@ -164,11 +164,13 @@ module Restful =
     let delete<'tin, 'tout, 'terr> (routeTemplate: string) (handler: ApiRequestHandler<'tin, 'tout, 'terr>) =
         map HttpMethods.Delete routeTemplate handler
 
-    let patch<'tin, 'tout, 'terr> (routeTemplate: string) (handler: ApiRequestHandler<'tin, 'tout, 'terr>) =
-        map HttpMethods.Patch routeTemplate handler
+    let patch<'tin, 'tout, 'terr> (routeTemplate: string) (handler: ApiRequestHandler<'tin, 'tout, 'terr>) configure ctx =
+        let route = map HttpMethods.Patch routeTemplate handler configure ctx
+        route.Accepts<'tin> ApplicationJson
 
-    let put<'tin, 'tout, 'terr> (routeTemplate: string) (handler: ApiRequestHandler<'tin, 'tout, 'terr>) =
-        map HttpMethods.Put routeTemplate handler
+    let put<'tin, 'tout, 'terr> (routeTemplate: string) (handler: ApiRequestHandler<'tin, 'tout, 'terr>) configure ctx =
+        let route = map HttpMethods.Put routeTemplate handler configure ctx
+        route.Accepts<'tin> ApplicationJson
 
     let trace<'tin, 'tout, 'terr> (routeTemplate: string) (handler: ApiRequestHandler<'tin, 'tout, 'terr>) =
         map HttpMethods.Trace routeTemplate handler
