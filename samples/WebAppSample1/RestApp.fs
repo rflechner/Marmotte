@@ -36,8 +36,8 @@ let getCustomer (request: CustomerRequestModel) =
             let birthDay = DateTime.Today.AddYears(-30) |> DateOnly.FromDateTime
             let name = $"Customer {request.Id}"
             let customer : Customer = { Id=request.Id; Name=name; Birthday=birthDay }
-            return Result.Ok customer
-        | _ -> return Result.Error "Customer not found"
+            return Restful.SemanticResult.Ok customer
+        | _ -> return Restful.SemanticResult.NotFound(Some "Customer not found")
     }
 
 let searchCustomer (request: SearchCustomerRequestModel) =
@@ -48,8 +48,8 @@ let searchCustomer (request: SearchCustomerRequestModel) =
         | "joe*" ->
             let birthDay = DateTime.Today.AddYears(-50) |> DateOnly.FromDateTime
             let customer : Customer = { Id=48; Name="Joe Resta"; Birthday=birthDay }
-            return Result.Ok customer
-        | _ -> return Result.Error "Customer not found"
+            return Restful.SemanticResult.Ok customer
+        | _ -> return Restful.SemanticResult.NotFound(Some "Customer not found")
     }
     
 let run (app: WebApplication) =
@@ -81,8 +81,8 @@ let run (app: WebApplication) =
                         | 42 ->
                             let name = $"User {request.Id}"
                             let user : UserDto = { Id=request.Id; Name=name }
-                            return Result.Ok user
-                        | _ -> return Result.Error "User not found"
+                            return Restful.SemanticResult.Ok user
+                        | _ -> return Restful.SemanticResult.NotFound(Some "User not found")
                     }
                 )
     } |> _.Run()

@@ -32,3 +32,9 @@ module Http =
     let trace = map HttpMethods.Trace
 
     let options = map HttpMethods.Options
+
+    type FunResult (f: HttpContext -> Task) =
+        interface IResult with
+            member this.ExecuteAsync(httpContext) =
+                f httpContext
+        

@@ -19,7 +19,21 @@ open Microsoft.FSharp.Core
 [<RequireQualifiedAccess>]
 module Restful =
 
-    type ApiRequestHandler<'tin, 'tout, 'terr> = 'tin -> Task<Result<'tout, 'terr>>
+    type SemanticResult<'tok, 'terr> =
+        | Ok of 'tok
+        | Accepted
+        | NoContent
+        | Created
+        | CreatedAt of Location:Uri * 'tok option
+        | NotFound of 'terr option
+        | Conflict of 'terr option
+        | BadRequest
+        | Unauthorized
+        | Forbidden
+        | Failure of 'terr
+        | StatusCode of Code:int * Data:obj option
+  
+    type ApiRequestHandler<'tin, 'tout, 'terr> = 'tin -> Task<SemanticResult<'tout, 'terr>>
     
     type ResourceContext =
         { Name: string
@@ -82,6 +96,32 @@ module Restful =
             
             return request
         }
+        
+    let mapResult result =
+        match result with
+        | Ok result -> Results.Ok result
+        | Accepted -> Results.Accepted(value=result)
+        | NoContent -> Results.NoContent()
+        | Created -> Results.Created()
+        | CreatedAt(location, None) -> Results.Created(location, null)
+        | CreatedAt(location, Some data) -> Results.Created(location, value=data)
+        | NotFound None -> Results.NotFound()
+        | NotFound (Some data) -> Results.NotFound(data)
+        | Conflict None -> Results.Conflict()
+        | Conflict (Some data) -> Results.Conflict(data)
+        | BadRequest -> Results.BadRequest()
+        | Unauthorized -> Results.Unauthorized()
+        | Forbidden -> Results.Forbid()
+        | Failure err -> Results.InternalServerError err
+        | StatusCode(code, None) -> Results.StatusCode code
+        | StatusCode(code, Some data) ->
+            Http.FunResult(
+                fun ctx ->
+                    task {
+                        ctx.Response.StatusCode <- code
+                        do! HttpResponseJsonExtensions.WriteAsJsonAsync(ctx.Response, data)
+                    }
+                )
     
     let map<'tin, 'tout, 'terr> (verb: string) (routeTemplate: string) (handler: ApiRequestHandler<'tin, 'tout, 'terr>) (configure: RouteConfig -> RouteConfig) (ctx: ResourceContext) =
         let template = TemplateParser.Parse(routeTemplate)
@@ -93,12 +133,9 @@ module Restful =
                 fun ctx ->
                     task {
                         let! request = bindRequest ctx properties routeParameters
-                        let! result = handler request
-                        match result with
-                        | Error err ->
-                            return! Results.InternalServerError(err).ExecuteAsync(ctx)
-                        | Ok result ->
-                            return! Results.Ok(result).ExecuteAsync(ctx)
+                        let! restfulResult = handler request
+                        let result = mapResult restfulResult
+                        return! result.ExecuteAsync ctx
                     }
             )
         let sb = StringBuilder()
