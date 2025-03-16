@@ -1,6 +1,7 @@
 ﻿namespace Marmotte
 
 open System
+open System.Reflection
 open System.Text
 open System.Text.Json
 open System.Threading.Tasks
@@ -15,7 +16,7 @@ open Microsoft.FSharp.Core
 [<RequireQualifiedAccess>]
 module Restful =
 
-    type ApiRequestHandler<'tin, 'tout, 'terr> = HttpContext -> 'tin -> Task<Result<'tout, 'terr>>
+    type ApiRequestHandler<'tin, 'tout, 'terr> = 'tin -> Task<Result<'tout, 'terr>>
     
     type ResourceContext =
         { Name: string
@@ -43,6 +44,7 @@ module Restful =
     
     let map<'tin, 'tout, 'terr> (verb: string) (routeTemplate: string) (handler: ApiRequestHandler<'tin, 'tout, 'terr>) (configure: RouteConfig -> RouteConfig) (ctx: ResourceContext) =
         let template = TemplateParser.Parse(routeTemplate)
+        let routeParameters = template.Parameters |> Seq.map (fun p -> p.Name.ToLowerInvariant(), p) |> dict
         let modelType = typeof<'tin>
         let properties = modelType.GetProperties() |> Seq.map(fun p -> p.Name.ToLowerInvariant(), p) |> dict
         let func =
@@ -50,17 +52,27 @@ module Restful =
                 fun ctx ->
                     task {
                         let! dto = getInputDto<'tin> ctx
-                        for p in template.Parameters do
-                            match properties.TryGetValue p.Name with
+                        for prop in properties do
+                            // Bind matching route parameter to property
+                            match prop.Key.ToLowerInvariant() |> routeParameters.TryGetValue with
                             | false, _ -> ()
-                            | true, propertyInfo ->
-                                match ctx.Request.RouteValues.TryGetValue p.Name with
+                            | true, param ->
+                                match ctx.Request.RouteValues.TryGetValue param.Name with
                                 | false, _ -> ()
                                 | true, param ->
-                                    let converted = Convert.ChangeType(param, propertyInfo.PropertyType)
-                                    propertyInfo.SetValue(dto, converted)
+                                    let converted = Convert.ChangeType(param, prop.Value.PropertyType)
+                                    prop.Value.SetValue(dto, converted)
+                            
+                            // Inject HttpContext in request DTO if wanted
+                            if prop.Value.PropertyType = typeof<HttpContext>
+                            then prop.Value.SetValue(dto, ctx)
+                            // Inject from services
+                            elif prop.Value.GetCustomAttribute<Microsoft.AspNetCore.Mvc.FromServicesAttribute>() <> null
+                            then
+                                let service = ctx.RequestServices.GetRequiredService(prop.Value.PropertyType)
+                                prop.Value.SetValue(dto, service)
 
-                        let! result = handler ctx dto
+                        let! result = handler dto
                         match result with
                         | Error err ->
                             return! Results.InternalServerError(err).ExecuteAsync(ctx)

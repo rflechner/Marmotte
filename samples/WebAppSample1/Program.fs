@@ -1,5 +1,6 @@
 namespace WebAppSample1
 #nowarn "20"
+open Marmotte.OpenApiExtensions
 open Microsoft.AspNetCore.Builder
 open Microsoft.Extensions.DependencyInjection
 open Microsoft.Extensions.Hosting
@@ -16,7 +17,10 @@ module Program =
         builder.Services.AddAuthorization()
         
         builder.Services.AddEndpointsApiExplorer()
-        builder.Services.AddOpenApi()
+        
+        builder.Services.AddOpenApi(fun options ->
+            options.AddSchemaTransformer<IgnoreFromServicesSchemaTransformer>() |> ignore
+        )
 
         let app = builder.Build()
 
@@ -24,7 +28,6 @@ module Program =
         then
             app.MapOpenApi() |> ignore
             app.MapScalarApiReference() |> ignore
-            //app.UseOpenApiExplorer() |> ignore
         
         app.UseHttpsRedirection()
 

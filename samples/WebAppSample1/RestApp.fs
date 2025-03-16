@@ -6,31 +6,13 @@ open Microsoft.AspNetCore.Builder
 open Microsoft.AspNetCore.Http
 open Marmotte
 open Marmotte.RestfulDsl
+open Microsoft.AspNetCore.Http.Extensions
 open WebAppSample1.Dto
 
 let getUserById (id: int) : Task<UserDto option> =
     Task.FromResult(
         if id = 42 then Some { Id = 42; Name = "Douglas Adams" } else None
     )
-
-let getUserHandler (ctx: HttpContext) (_: RequestDelegate) =
-    task {
-        match ctx.Request.RouteValues.TryGetValue("id") with
-        | true, (:? string as idStr) when idStr |> Int32.TryParse |> fst ->
-            let id = int idStr
-            let! user = getUserById id
-            match user with
-            | Some u ->
-                ctx.Response.StatusCode <- 200
-                ctx.Response.ContentType <- "application/json"
-                do! ctx.Response.WriteAsJsonAsync(u)
-            | None ->
-                ctx.Response.StatusCode <- 404
-                do! ctx.Response.WriteAsync("User not found.")
-        | _ ->
-            ctx.Response.StatusCode <- 400
-            do! ctx.Response.WriteAsync("Invalid ID provided.")
-    }
 
 // this example demonstrates how to use classic IResult and manually read requests
 let getUser (ctx: HttpContext) =
@@ -46,7 +28,7 @@ let getUser (ctx: HttpContext) =
     }
 
 // this example demonstrates how to use Restful utilities
-let getCustomer (_: HttpContext) (request: CustomerRequestModel) =
+let getCustomer (request: CustomerRequestModel) =
     task {
         printfn "request: %A" request
         match request.Id with
@@ -58,9 +40,10 @@ let getCustomer (_: HttpContext) (request: CustomerRequestModel) =
         | _ -> return Result.Error "Customer not found"
     }
 
-let searchCustomer (_: HttpContext) (request: SearchCustomerRequestModel) =
+let searchCustomer (request: SearchCustomerRequestModel) =
     task {
-        printfn "request: %A" request
+        printfn $"Http context request url: %s{request.HttpContext.Request.GetDisplayUrl()}"
+        printfn $"request: %A{request}"
         match request.NamePattern with
         | "joe*" ->
             let birthDay = DateTime.Today.AddYears(-50) |> DateOnly.FromDateTime
@@ -92,7 +75,7 @@ let run (app: WebApplication) =
         
         resource "User"
         get "/{id:int}" (
-                fun (_: HttpContext) (request:UserRequestModel) ->
+                fun (request:UserRequestModel) ->
                     task {
                         match request.Id with
                         | 42 ->
