@@ -19,7 +19,8 @@ module Program =
         builder.Services.AddEndpointsApiExplorer()
         
         builder.Services.AddOpenApi(fun options ->
-            options.AddSchemaTransformer<IgnoreFromServicesSchemaTransformer>() |> ignore
+            options.AddSchemaTransformer<SchemaTransformer>() |> ignore
+            options.AddOperationTransformer<OperationTransformer>() |> ignore
         )
 
         let app = builder.Build()

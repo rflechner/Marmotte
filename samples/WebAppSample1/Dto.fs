@@ -12,8 +12,8 @@ type CustomerRequestModel = { Id: int }
 [<CLIMutable>]
 type SearchCustomerRequestModel =
     { NamePattern: string
-      
-      [<FromServices>] HttpContext: HttpContext }
+      [<FromServices>] HttpContext: HttpContext
+      [<FromQuery>] Take: int }
 
 type Customer = { Id: int; Name: string; Birthday: DateOnly }
 
