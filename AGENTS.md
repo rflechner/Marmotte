@@ -18,9 +18,11 @@ to F#, .NET, and local model inference.
 - Manage explicit NuGet package versions centrally in the root `Directory.Packages.props`. Add `PackageReference` entries without `Version` attributes to the projects that need them.
 - Include an explicit `FSharp.Core` package reference in each F# project: Central Package Management disables the SDK's implicit reference. Keep its version in `Directory.Packages.props` too.
 - `src/Marmotte.Gguf` owns the GGUF format types, binary reader, metadata, and tensor descriptors. Reading an index does not load, decode, or execute the model's weights.
-- `src/Marmotte.Core` is intended for model and inference domain code. `src/Marmotte.Cli` is intended for command-line orchestration and presentation. Both are currently scaffolds; do not assume an inference pipeline already exists.
+- `src/Marmotte.Core` contains shared helpers and is intended for model and inference domain code. `src/Marmotte.Cli` owns Spectre.Console command-line orchestration and presentation, including `info` for GGUF inspection. There is no inference pipeline yet.
 - Keep console output and application-specific decisions in the CLI or exploration scripts. Libraries should expose usable data and explicit contracts.
+- Reuse `src/Marmotte.Cli/ConsoleDsl.fs` for table construction, text previews, byte formatting, and section rendering. Keep GGUF-specific interpretation in `GgufReport.fs`.
 - `tests/Marmotte.Gguf.Tests` contains xUnit tests using small binary fixtures. Keep automated tests independent of local model installations.
+- `tests/Marmotte.Cli.Tests` runs the CLI against temporary GGUF fixtures to check output, argument handling, and exit codes. Treat model text as literal console content, and keep metadata and tensor previews bounded.
 - Keep dependencies directed toward reusable libraries. Do not make libraries depend on the CLI or scripts, or introduce architectural layers without a concrete need.
 
 ## Document contracts and intent
@@ -78,6 +80,7 @@ to F#, .NET, and local model inference.
 - Use `.fsx` files for exploration and inspection, reusing library code through `#load` or assembly references instead of duplicating the parser.
 - Use `LM_STUDIO_MODELS_FOLDER` for the local LM Studio models root directory. Build model file paths from that root and relative path segments using `Path.Combine` or the `/>` helper. Keep display limits easy to adjust, and do not put machine-specific paths in tracked scripts, library defaults, or automated tests.
 - Keep the variable's value in the local shell or IDE environment. F# Interactive must inherit it when starting, or it must be set explicitly in the session before loading the script.
+- Launch profiles also inherit `LM_STUDIO_MODELS_FOLDER`; reference it as `%LM_STUDIO_MODELS_FOLDER%` in quoted `commandLineArgs` instead of committing a personal root directory.
 - Summarize large metadata arrays, strings, and tensor lists in console output. Keep the complete parsed data available for further inspection.
 - Do not commit downloaded weights or require a large model download for normal development checks.
 

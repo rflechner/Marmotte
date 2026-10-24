@@ -6,13 +6,21 @@
     </PropertyGroup>
 
     <ItemGroup>
+        <Compile Include="ConsoleDsl.fs" />
+        <Compile Include="GgufReport.fs" />
+        <Compile Include="InfoCommand.fs" />
         <Compile Include="Program.fs"/>
+        <None Include="Properties/launchSettings.json" />
     </ItemGroup>
 
     <ItemGroup>
         <PackageReference Include="FSharp.Core" ExcludeAssets="contentFiles" />
         <PackageReference Include="Spectre.Console" />
         <PackageReference Include="Spectre.Console.Cli" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="../Marmotte.Gguf/Marmotte.Gguf.fsproj" />
     </ItemGroup>
 
 </Project>

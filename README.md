@@ -74,6 +74,60 @@ and [GGML encodings](https://github.com/ggml-org/llama.cpp/blob/master/gguf-py/g
 
 ## Inspect a local GGUF file
 
+### Command line
+
+Run `info` with an absolute file path or a path relative to the current working
+directory:
+
+```sh
+dotnet run --project src/Marmotte.Cli -- info "/path/to/model.gguf"
+dotnet run --project src/Marmotte.Cli -- info "/path/to/model.gguf" --metadata --tensor-limit 20
+dotnet run --project src/Marmotte.Cli -- info --help
+```
+
+The command displays the model name, architecture, file-level quantization
+profile, GGUF version and byte order, file size, metadata and tensor counts,
+total tensor elements, alignment, tensor data offset, and index parsing time.
+It also groups tensors by encoding and previews up to 12 tensor descriptors.
+Dimensions remain in GGML order, with the contiguous dimension first; tensor
+offsets in the report are absolute file positions. Unknown encodings retain their
+numeric identifier and display an unknown byte size.
+
+Use `--metadata` to show all metadata entries. String previews are limited to
+120 characters, array previews to three elements, and nested array previews to
+two levels. `--tensor-limit COUNT` changes the number of tensor descriptors
+displayed; `0` hides the preview. The parser reads only metadata and tensor
+descriptors, without loading or dequantizing weights.
+
+Successful inspection exits with code `0`. Invalid arguments, inaccessible files,
+and malformed GGUF files produce a diagnostic on stderr and exit with code `1`.
+
+### Launch profile for Ministral
+
+[launchSettings.json](src/Marmotte.Cli/Properties/launchSettings.json) includes a
+`Ministral-3B` profile that runs `info --metadata` on the Ministral 3 3B Instruct
+2512 Q4_K_M model also selected by the exploration script. Set
+`LM_STUDIO_MODELS_FOLDER` to your local models directory before launching:
+
+```sh
+dotnet run --project src/Marmotte.Cli --launch-profile Ministral-3B
+```
+
+The profile inherits the variable from the launching process and expands
+`%LM_STUDIO_MODELS_FOLDER%` in its quoted file argument, so paths containing
+spaces work. The personal root directory stays outside the repository.
+This is the default launch profile; explicit application arguments after `--`
+take precedence over its arguments.
+
+In Rider, select the `Ministral-3B` launch profile to run or debug it. If it is
+missing from existing run configurations, right-click `launchSettings.json` and
+choose **Generate Configurations**, as described in the
+[Rider launch profile documentation](https://www.jetbrains.com/help/rider/Running_LaunchSettings.html).
+The IDE must have `LM_STUDIO_MODELS_FOLDER` in its environment when it launches
+the application.
+
+### F# exploration script
+
 Set `LM_STUDIO_MODELS_FOLDER` to your local LM Studio models directory, then run
 the F# script from the repository root. For example:
 
@@ -124,5 +178,6 @@ dotnet build Marmotte.slnx
 dotnet test Marmotte.slnx
 ```
 
-Tests construct small binary files in memory; no model or weight download is
-required.
+Parser tests construct small binary files in memory. CLI tests run the application
+against temporary fixtures and check reports, argument handling, and errors.
+No model or weight download is required.

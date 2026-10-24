@@ -305,6 +305,9 @@ Implemented:
 - Known encoding sizes, payload bounds, and overlap checks
 - File-level quantization profiles, separate from tensor encodings
 - Tests for valid files, malformed input, partial reads, and stream ownership
+- A Spectre.Console [`info` command](../README.md#command-line) that accepts a
+  local GGUF path and displays a summary, encoding counts, and bounded tensor and
+  metadata previews without reading weights
 - A local inspection script: [GgufScript.fsx](../src/Marmotte.Gguf/GgufScript.fsx),
   using `LM_STUDIO_MODELS_FOLDER` as the models root directory and appending the
   model's relative path; see the [configuration instructions](../README.md#inspect-a-local-gguf-file)

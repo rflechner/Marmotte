@@ -12,9 +12,11 @@ work. Illustrations are conceptual aids, not executable format specifications.
 | [Safetensors](safetensors.md) | JSON header, packed data, and next implementation steps | Planned; no reader yet |
 | Storage and strides below | Concepts for future tensor access and execution | No tensor storage or view API yet |
 
-`Marmotte.Core` and `Marmotte.Cli` remain scaffolds. The GGUF library returns an
-index; it does not expose mapped tensors or run inference. Future storage types
-should follow actual consumers rather than being inferred from these pictures.
+`Marmotte.Core` currently contains shared helpers. `Marmotte.Cli` exposes the
+[`info` command](../README.md#command-line) for inspecting a local GGUF file.
+The GGUF library returns an index; it does not expose mapped tensors or run
+inference. Future storage types should follow actual consumers rather than being
+inferred from these pictures.
 
 ## Keep the Format Conventions Separate
 

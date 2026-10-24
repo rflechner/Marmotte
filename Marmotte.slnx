@@ -21,6 +21,7 @@
     <Project Path="src/Marmotte.Gguf/Marmotte.Gguf.fsproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/Marmotte.Cli.Tests/Marmotte.Cli.Tests.fsproj" />
     <Project Path="tests/Marmotte.Gguf.Tests/Marmotte.Gguf.Tests.fsproj" />
   </Folder>
 </Solution>
