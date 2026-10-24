@@ -27,9 +27,13 @@ local check.
 
 ### Weight access
 
-- [ ] Memory-map the GGUF file and expose read-only tensor views over validated
-  payload ranges, reusing the parsed descriptors.
-- [ ] Keep weights in their stored encoding: decoding the whole target model to
+- [x] Expose a format-neutral tensor source in `Marmotte.Core`, implemented by
+  the GGUF and Safetensors libraries from their parsed descriptors, with row
+  access to weight matrices. It copies validated payload ranges into managed
+  arrays.
+- [ ] Memory-map the GGUF file behind the same tensor source, after measuring
+  load time and resident memory against the copying source.
+- [x] Keep weights in their stored encoding: decoding the whole target model to
   F32 would need about 12.8 GiB.
 
 ### Tensor decoding

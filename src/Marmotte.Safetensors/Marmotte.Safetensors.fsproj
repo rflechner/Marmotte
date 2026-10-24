@@ -8,10 +8,15 @@
     <ItemGroup>
         <Compile Include="Types.fs" />
         <Compile Include="Safetensors.fs" />
+        <Compile Include="SafetensorsTensorSource.fs" />
     </ItemGroup>
 
     <ItemGroup>
         <PackageReference Include="FSharp.Core" ExcludeAssets="contentFiles" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="../Marmotte.Core/Marmotte.Core.fsproj" />
     </ItemGroup>
 
 </Project>

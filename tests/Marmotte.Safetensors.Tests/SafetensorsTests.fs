@@ -309,3 +309,55 @@ let ``enforces configurable tensor and rank limits`` () =
 
     Assert.Equal(2, (parseWith (withLimits 2 2) bytes).Tensors.Length)
     Assert.Throws<ArgumentException>(fun () -> parseWith (withLimits 2 -1) bytes |> ignore) |> ignore
+
+module TensorSource =
+    open Marmotte.Core
+
+    let private withFile (bytes: byte array) action =
+        let path = Path.GetTempFileName()
+        try
+            File.WriteAllBytes(path, bytes)
+            action path
+        finally
+            File.Delete(path)
+
+    [<Fact>]
+    let ``keeps row-major shapes and reads payloads from the data buffer`` () =
+        withFile (workedExample ()) (fun path ->
+            use source = SafetensorsTensorSource.openFile path
+            Assert.Equal<string>([| "a"; "b" |], source.Tensors |> Seq.map (fun tensor -> tensor.Name))
+
+            let descriptor = source.Tensors[0]
+            Assert.Equal<uint64>([| 2UL; 3UL |], descriptor.Shape)
+            Assert.Equal(Some TensorEncoding.F32, descriptor.Encoding)
+            Assert.Equal("F32", descriptor.SourceEncoding)
+            Assert.Equal(Some 24UL, descriptor.ByteSize)
+
+            // The data buffer of the worked example holds the bytes 0 to 35.
+            let matrix = WeightMatrix.Read(source, "a")
+            Assert.Equal(2, matrix.Rows)
+            Assert.Equal(3, matrix.Columns)
+            Assert.Equal<byte>(Array.init 12 (fun index -> byte (12 + index)), matrix.Row(1).ToArray())
+
+            Assert.Equal("I32", source.Tensors[1].SourceEncoding)
+            Assert.Equal(None, source.Tensors[1].Encoding)
+            let error = Assert.Throws<InvalidDataException>(fun () -> source.ReadPayload("b") |> ignore)
+            Assert.Contains("I32", error.Message))
+
+    [<Fact>]
+    let ``maps only floating-point dtypes to runtime encodings`` () =
+        Assert.Equal(Some TensorEncoding.F32, SafetensorsTensorSource.tryEncoding SafetensorsDtype.F32)
+        Assert.Equal(Some TensorEncoding.F16, SafetensorsTensorSource.tryEncoding SafetensorsDtype.F16)
+        Assert.Equal(Some TensorEncoding.BF16, SafetensorsTensorSource.tryEncoding SafetensorsDtype.BF16)
+
+        for dtype in [ SafetensorsDtype.F8_E4M3; SafetensorsDtype.F64; SafetensorsDtype.I8; SafetensorsDtype.U8 ] do
+            Assert.Equal(None, SafetensorsTensorSource.tryEncoding dtype)
+
+    [<Fact>]
+    let ``closes the file when its index is invalid`` () =
+        let bytes = workedExample ()
+
+        withFile bytes[..bytes.Length - 2] (fun path ->
+            Assert.Throws<InvalidDataException>(fun () -> SafetensorsTensorSource.openFile path |> ignore) |> ignore
+            use exclusive = File.Open(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None)
+            Assert.True(exclusive.CanWrite))

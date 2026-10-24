@@ -6,8 +6,10 @@ formats, loading a Safetensors file does not execute code.
 
 **Marmotte status: index reader implemented.** `Marmotte.Safetensors` reads and
 validates the header and tensor descriptors of one `.safetensors` file without
-reading the weights, and the CLI's `info` command displays them. Payload access,
-sharded models and decoding are not implemented; see
+reading the weights, and the CLI's `info` command displays them.
+`SafetensorsTensorSource` copies `F32`, `F16` and `BF16` payloads on request for
+[format-neutral tensor access](../README.md#format-neutral-tensor-access). Sharded
+models and decoding are not implemented; see
 [Marmotte implementation](#marmotte-implementation).
 
 The [upstream format definition](https://github.com/huggingface/safetensors#format)
@@ -257,12 +259,19 @@ bounded tensor preview. Tests encode headers and data buffers directly and cover
 the worked example, scalars, empty tensors, reordered JSON entries, padding,
 every dtype width, duplicate keys, truncation, invalid sizes and coverage errors.
 
+`SafetensorsTensorSource.openFile` keeps the file open until disposal and exposes
+the index through `Marmotte.Core`'s `ITensorSource`. Shapes are copied unchanged,
+since both use row-major order. Only `F32`, `F16` and `BF16` map to a runtime
+encoding; other dtypes stay listed with `Encoding = None`, and reading their
+payload raises `InvalidDataException`. A shard of a sharded model exposes only
+its own tensors.
+
 Not implemented yet:
 
 - Sharded models described by `model.safetensors.index.json`, and companion files
   such as `config.json` and tokenizer files.
-- Bounded payload access, mapping lifetimes, shared tensor storage, decoding and
-  inference, which belong to later milestones.
+- Memory-mapped payloads, shared tensor storage, decoding and inference, which
+  belong to later milestones.
 - An exploration `.fsx` script; the `info` command covers inspection.
 
 ## References

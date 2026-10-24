@@ -412,3 +412,98 @@ let ``validates options and stream capabilities`` () =
     let closed = new MemoryStream(bytes)
     closed.Dispose()
     Assert.Throws<ArgumentException>(fun () -> Gguf.read closed |> ignore) |> ignore
+
+module TensorSource =
+    open Marmotte.Core
+
+    let private withFile (bytes: byte array) action =
+        let path = Path.GetTempFileName()
+        try
+            File.WriteAllBytes(path, bytes)
+            action path
+        finally
+            File.Delete(path)
+
+    [<Fact>]
+    let ``reverses GGML dimensions into row-major shapes without moving payload bytes`` () =
+        // Two rows of three F32 values: GGML dimensions [3; 2], row-major shape [2; 3].
+        let payload = Array.init 24 byte
+        let bytes = file false 3u 32 [] [ tensor false "matrix.weight" [ 3UL; 2UL ] 0u 0UL ] payload
+
+        withFile bytes (fun path ->
+            use source = GgufTensorSource.openFile path
+            let descriptor = source.Tensors[0]
+            Assert.Equal<uint64>([| 2UL; 3UL |], descriptor.Shape)
+            Assert.Equal(Some TensorEncoding.F32, descriptor.Encoding)
+            Assert.Equal("F32", descriptor.SourceEncoding)
+            Assert.Equal(6UL, descriptor.ElementCount)
+            Assert.Equal(Some 24UL, descriptor.ByteSize)
+
+            let matrix = WeightMatrix.Read(source, "matrix.weight")
+            Assert.Equal(2, matrix.Rows)
+            Assert.Equal(3, matrix.Columns)
+            Assert.Equal<byte>(payload[12..], matrix.Row(1).ToArray()))
+
+    [<Fact>]
+    let ``reads quantized payloads after alignment padding`` () =
+        // A Q8_0 matrix of two 34-byte rows, then an F32 vector at the next 32-byte boundary.
+        let payload = Array.init 104 byte
+        let descriptors =
+            [ tensor false "blk.0.attn_q.weight" [ 32UL; 2UL ] 8u 0UL
+              tensor false "blk.0.attn_norm.weight" [ 2UL ] 0u 96UL ]
+
+        withFile (file false 3u 32 [] descriptors payload) (fun path ->
+            use source = GgufTensorSource.openFile path
+
+            let matrix = WeightMatrix.Read(source, "blk.0.attn_q.weight")
+            Assert.Equal(TensorEncoding.Q8_0, matrix.Encoding)
+            Assert.Equal(34, matrix.RowBytes)
+            Assert.Equal<byte>(payload[34..67], matrix.Row(1).ToArray())
+            Assert.Equal<byte>(payload[96..], source.ReadPayload("blk.0.attn_norm.weight").ToArray()))
+
+    [<Fact>]
+    let ``lists unsupported and unknown encodings without reading them`` () =
+        let descriptors =
+            [ tensor false "iq.weight" [ 256UL ] 17u 0UL
+              tensor false "future.weight" [ 3UL ] 123456u 96UL ]
+
+        withFile (file false 3u 32 [] descriptors (Array.zeroCreate 97)) (fun path ->
+            use source = GgufTensorSource.openFile path
+            Assert.Equal<string>([| "IQ2_XS"; "123456" |], source.Tensors |> Seq.map (fun tensor -> tensor.SourceEncoding))
+            Assert.All(source.Tensors, fun tensor -> Assert.Equal(None, tensor.Encoding))
+            Assert.Equal(Some 74UL, source.Tensors[0].ByteSize)
+            Assert.Equal(None, source.Tensors[1].ByteSize)
+
+            for name, encoding in [ "iq.weight", "IQ2_XS"; "future.weight", "123456" ] do
+                let error = Assert.Throws<InvalidDataException>(fun () -> source.ReadPayload(name) |> ignore)
+                Assert.Contains(encoding, error.Message))
+
+    [<Fact>]
+    let ``maps only the runtime encodings`` () =
+        let supported =
+            [ GgmlType.F32, TensorEncoding.F32
+              GgmlType.F16, TensorEncoding.F16
+              GgmlType.BF16, TensorEncoding.BF16
+              GgmlType.Q4_0, TensorEncoding.Q4_0
+              GgmlType.Q8_0, TensorEncoding.Q8_0
+              GgmlType.Q4_K, TensorEncoding.Q4_K
+              GgmlType.Q6_K, TensorEncoding.Q6_K ]
+        for tensorType, encoding in supported do
+            Assert.Equal(Some encoding, GgufTensorSource.tryEncoding tensorType)
+
+        for tensorType in [ GgmlType.Q4_1; GgmlType.Q3_K; GgmlType.Q5_K; GgmlType.I32; GgmlType.F64 ] do
+            Assert.Equal(None, GgufTensorSource.tryEncoding tensorType)
+
+    [<Fact>]
+    let ``rejects big-endian and split files and closes them`` () =
+        let bigEndian = file true 3u 32 [] [ tensor true "weight" [ 1UL ] 0u 0UL ] (Array.zeroCreate 4)
+        let split =
+            let metadata = [ kv false "split.count" 2u (number false 2 2UL) ]
+            file false 3u 32 metadata [ tensor false "weight" [ 1UL ] 0u 0UL ] (Array.zeroCreate 4)
+
+        for bytes, expected in [ bigEndian, "Big-endian"; split, "Split" ] do
+            withFile bytes (fun path ->
+                let error = Assert.Throws<InvalidDataException>(fun () -> GgufTensorSource.openFile path |> ignore)
+                Assert.Contains(expected, error.Message)
+                use exclusive = File.Open(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None)
+                Assert.True(exclusive.CanWrite))

@@ -8,17 +8,21 @@ work. Illustrations are conceptual aids, not executable format specifications.
 
 | Document | Purpose | Marmotte status |
 | --- | --- | --- |
-| [GGUF](gguf.md) | Binary layout, parser and native quantization contracts | Index reading and F32/F16/BF16 to Q4_0/Q8_0 conversion implemented |
-| [Safetensors](safetensors.md) | JSON header, packed data, and index reader | Index reader implemented, including `info` |
+| [GGUF](gguf.md) | Binary layout, parser and native quantization contracts | Index reading, tensor source and F32/F16/BF16 to Q4_0/Q8_0 conversion implemented |
+| [Safetensors](safetensors.md) | JSON header, packed data, and index reader | Index reader and tensor source implemented, including `info` |
 | [From model files to a response](inference-pipeline.md) | Illustrated loading, embeddings, attention, KV cache and generation pipeline | Conceptual guide; inference is planned |
-| Storage and strides below | Concepts for future tensor access and execution | No tensor storage or view API yet |
+| Storage and strides below | Concepts for tensor access and execution | Copying tensor source and weight matrix rows implemented; no mapped storage or strided views |
 
-`Marmotte.Core` currently contains shared helpers. `Marmotte.Cli` exposes the
-[`info` command](../README.md#command-line) for inspecting a local GGUF file and
-[`quantize`](../README.md#quantize-a-gguf-file) for native conversion into a new file.
-The reader returns an index; the separate quantizer streams weight blocks.
-Neither exposes mapped tensors or runs inference. Future storage types should
-follow actual consumers rather than being inferred from these pictures.
+`Marmotte.Core` contains shared helpers and
+[format-neutral tensor access](../README.md#format-neutral-tensor-access): an
+`ITensorSource` that each format library implements, and `WeightMatrix` rows.
+`Marmotte.Cli` exposes the [`info` command](../README.md#command-line) for
+inspecting a local GGUF file and [`quantize`](../README.md#quantize-a-gguf-file)
+for native conversion into a new file. The readers return an index; the tensor
+sources copy validated payloads on request, and the separate quantizer streams
+weight blocks. Nothing exposes mapped tensors or runs inference yet. Future
+storage types should follow actual consumers rather than being inferred from
+these pictures.
 
 ## From Model Files to Text
 
@@ -44,9 +48,10 @@ are included for future revisions.
 | Encoding identifiers | Numeric tensor tags and separate file profiles | Dtype strings |
 
 Neither format stores arbitrary runtime strides. Preserve the original shape
-convention in each reader. Make any conversion to a future common runtime
-representation explicit and tested; do not mistake axis reordering for moving
-the underlying bytes.
+convention in each reader. `Marmotte.Core`'s `TensorDescriptor` is the common
+runtime representation: its shapes are row-major, and `GgufTensorSource.descriptor`
+reverses GGUF dimensions explicitly, with tests. Do not mistake that axis
+reordering for moving the underlying bytes.
 
 ## Storage, Ownership, and Views
 
@@ -70,6 +75,10 @@ not require manual disposal in the way a file mapping does.
 A future API must keep a view's underlying resource alive for the view's entire
 lifetime, define who disposes mappings, and prevent access after disposal. The
 current `GgufFile` owns metadata and descriptors only, not the original file.
+`ITensorSource` owns its storage: payloads stay valid until the source is
+disposed, and reads after disposal fail. `FileTensorSource` owns its open file
+and copies payloads into managed arrays, so its payloads even outlive it; a
+mapped source would rely on the stricter contract.
 
 ## Strides, Reshape, and Transpose
 

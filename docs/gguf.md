@@ -249,12 +249,17 @@ length and returns descriptors.
 slices or retains a file handle. The result's records contain arrays, so they
 should not be described as deeply immutable.
 
-A future payload-loading layer could:
+`GgufTensorSource.openFile` builds on this index for
+[format-neutral tensor access](../README.md#format-neutral-tensor-access). It
+keeps the file open, rejects big-endian and split files, and reverses dimensions
+into row-major shapes. On request, it copies a tensor's validated payload range
+into a managed array. Tensors with unknown or unsupported encodings stay listed
+but cannot be read.
 
-- Keep the file open or memory-map it.
-- Reuse the parsed metadata and tensor descriptors.
-- Require a known, validated range before exposing a tensor view.
-- Represent tensor payloads as bounded slices of the underlying storage.
+Later steps could:
+
+- Memory-map the file instead of copying payloads.
+- Represent tensor payloads as bounded slices of the mapped storage.
 - Decode or dequantize values only when an execution backend needs them.
 
 ## Native Quantization
@@ -366,6 +371,9 @@ Implemented:
 - Streaming F32/F16/BF16 to Q4_0/Q8_0 conversion, metadata/index writing and safe
   publication through `GgufQuantizer` and the `quantize` CLI command
 - Quantizer tests for exact blocks, numerical error, preservation and failed writes
+- A format-neutral tensor source through `GgufTensorSource`, copying validated
+  payload ranges of `F32`, `F16`, `BF16`, `Q4_0`, `Q8_0`, `Q4_K` and `Q6_K`
+  tensors on request
 - Tests for valid files, malformed input, partial reads, and stream ownership
 - A Spectre.Console [`info` command](../README.md#command-line) that accepts a
   local GGUF path and displays a summary, encoding counts, and bounded tensor and
@@ -376,8 +384,8 @@ Implemented:
 
 Not implemented:
 
-- Lazy tensor byte views or memory-mapped storage
-- General tensor loading, quantized-weight decoding, or model execution
+- Memory-mapped storage
+- Quantized-weight decoding or model execution
 - Requantization, K-quant/IQ encoders and architecture-specific quantization policies
 
 ## References

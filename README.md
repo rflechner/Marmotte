@@ -108,6 +108,41 @@ Sharded models described by `model.safetensors.index.json` are not handled yet;
 inspect each shard separately. See the
 [Safetensors format and implementation notes](docs/safetensors.md).
 
+## Format-neutral tensor access
+
+`Marmotte.Core` describes tensors independently of their file format.
+`Marmotte.Gguf` and `Marmotte.Safetensors` reference it and implement the
+mapping, so that code running a model reads both formats through one contract:
+
+```fsharp
+open Marmotte.Core
+open Marmotte.Gguf
+
+use source = GgufTensorSource.openFile "model.gguf"
+let query = WeightMatrix.Read(source, "blk.0.attn_q.weight")
+
+printfn "%A: %d rows of %d values, %d bytes per row"
+    query.Encoding query.Rows query.Columns query.RowBytes
+```
+
+`SafetensorsTensorSource.openFile` returns the same `ITensorSource`. Descriptors
+use row-major shapes, with the contiguous dimension last: the GGUF mapping
+reverses its dimensions, which describe the same bytes. A `WeightMatrix` has
+`Rows` and `Columns`, where `Columns` is the contiguous dimension, and exposes
+each encoded row as a `ReadOnlySpan<byte>`. Quantization blocks never cross rows.
+
+`TensorEncoding` lists the encodings Marmotte represents at runtime: `F32`,
+`F16`, `BF16`, `Q4_0`, `Q8_0`, `Q4_K` and `Q6_K`. Tensors in other encodings
+remain listed, with `Encoding = None` and their source name in `SourceEncoding`;
+reading their payload raises `InvalidDataException`. Opening a big-endian or
+split GGUF file raises it too.
+
+The source keeps its file open until it is disposed. Each payload request copies
+the tensor's validated byte range into a managed array with positional reads,
+which can run concurrently. A payload must therefore fit in one array, and
+loaded weights occupy as much memory as in the file. Memory mapping, row decoding,
+architecture-specific tensor names and model configuration are not implemented yet.
+
 ## Inspect a local GGUF file
 
 ### Command line
@@ -292,7 +327,9 @@ Parser and quantizer tests construct small binary fixtures and check index
 validation, exact quantization blocks, numerical error, metadata preservation,
 and output protection. Safetensors tests encode JSON headers and data buffers
 directly. CLI tests run the application against temporary GGUF and Safetensors
-fixtures and check both commands, argument handling, and errors.
+fixtures and check both commands, argument handling, and errors. Core tests
+check tensor sources and weight matrices with an in-memory source and temporary
+files.
 No model or weight download is required.
 
 ## Coding guidelines
