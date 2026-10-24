@@ -11,4 +11,8 @@
         <None Include="GgufScript.fsx" />
     </ItemGroup>
 
+    <ItemGroup>
+        <PackageReference Include="FSharp.Core" ExcludeAssets="contentFiles" />
+    </ItemGroup>
+
 </Project>

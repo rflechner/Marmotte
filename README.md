@@ -111,6 +111,14 @@ before loading the script. Keep this personal setting outside tracked files.
 
 ## Build and tests
 
+NuGet package versions are managed centrally in
+[Directory.Packages.props](Directory.Packages.props). Project files declare
+`PackageReference` entries without versions, including an explicit `FSharp.Core`
+reference in each F# project because CPM disables the SDK's implicit reference.
+`Marmotte.Cli` references
+`Spectre.Console` for console rendering and `Spectre.Console.Cli` for command-line
+parsing.
+
 ```sh
 dotnet build Marmotte.slnx
 dotnet test Marmotte.slnx

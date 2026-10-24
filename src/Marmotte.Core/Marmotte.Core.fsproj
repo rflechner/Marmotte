@@ -9,4 +9,8 @@
         <Compile Include="Helpers.fs" />
     </ItemGroup>
 
+    <ItemGroup>
+        <PackageReference Include="FSharp.Core" ExcludeAssets="contentFiles" />
+    </ItemGroup>
+
 </Project>

@@ -15,6 +15,8 @@ to F#, .NET, and local model inference.
 ## Understand the project boundaries
 
 - Marmotte is an F# solution targeting .NET 10. Check the project files before changing framework or dependency assumptions.
+- Manage explicit NuGet package versions centrally in the root `Directory.Packages.props`. Add `PackageReference` entries without `Version` attributes to the projects that need them.
+- Include an explicit `FSharp.Core` package reference in each F# project: Central Package Management disables the SDK's implicit reference. Keep its version in `Directory.Packages.props` too.
 - `src/Marmotte.Gguf` owns the GGUF format types, binary reader, metadata, and tensor descriptors. Reading an index does not load, decode, or execute the model's weights.
 - `src/Marmotte.Core` is intended for model and inference domain code. `src/Marmotte.Cli` is intended for command-line orchestration and presentation. Both are currently scaffolds; do not assume an inference pipeline already exists.
 - Keep console output and application-specific decisions in the CLI or exploration scripts. Libraries should expose usable data and explicit contracts.
