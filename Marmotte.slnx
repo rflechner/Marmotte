@@ -10,6 +10,9 @@
     <File Path="docs\README.md" />
     <File Path="docs\gguf-format.png" />
     <File Path="docs\gguf.md" />
+    <File Path="docs\inference-pipeline.md" />
+    <File Path="docs\inference-pipeline.png" />
+    <File Path="docs\inference-pipeline.prompt.txt" />
     <File Path="docs\safetensors-format.png" />
     <File Path="docs\safetensors.md" />
     <File Path="docs\tensor-storage-modes.png" />

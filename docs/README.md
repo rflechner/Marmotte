@@ -10,6 +10,7 @@ work. Illustrations are conceptual aids, not executable format specifications.
 | --- | --- | --- |
 | [GGUF](gguf.md) | Binary layout, parser and native quantization contracts | Index reading and F32/F16/BF16 to Q4_0/Q8_0 conversion implemented |
 | [Safetensors](safetensors.md) | JSON header, packed data, and next implementation steps | Planned; no reader yet |
+| [From model files to a response](inference-pipeline.md) | Illustrated loading, embeddings, attention, KV cache and generation pipeline | Conceptual guide; inference is planned |
 | Storage and strides below | Concepts for future tensor access and execution | No tensor storage or view API yet |
 
 `Marmotte.Core` currently contains shared helpers. `Marmotte.Cli` exposes the
@@ -18,6 +19,16 @@ work. Illustrations are conceptual aids, not executable format specifications.
 The reader returns an index; the separate quantizer streams weight blocks.
 Neither exposes mapped tensors or runs inference. Future storage types should
 follow actual consumers rather than being inferred from these pictures.
+
+## From Model Files to Text
+
+![Model files, prompt preparation, embeddings, decoder layers, KV cache and response generation](inference-pipeline.png)
+
+The [step-by-step guide](inference-pipeline.md) explains prefill, token-by-token
+decoding, attention and cache memory, with primary references. The illustration
+uses a Llama-style text decoder as an example and identifies Marmotte's current
+implementation boundary. Its [generation prompts](inference-pipeline.prompt.txt)
+are included for future revisions.
 
 ## Keep the Format Conventions Separate
 

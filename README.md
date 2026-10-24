@@ -219,6 +219,7 @@ block layouts, numerical limits and tensor selection policy.
 ## Documentation
 
 - [Format comparison, tensor storage, strides, and illustration notes](docs/README.md)
+- [Illustrated inference pipeline: model files, embeddings, KV cache and generation](docs/inference-pipeline.md)
 - [GGUF format and current implementation](docs/gguf.md)
 - [Safetensors format and proposed next steps](docs/safetensors.md) — not implemented yet
 - [Roadmap](ROADMAP.md): CPU inference first, then CUDA and Metal backends
