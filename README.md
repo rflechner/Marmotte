@@ -72,6 +72,43 @@ to 65,535 bytes and tensor names to 64 bytes.
 References: [GGUF specification](https://github.com/ggml-org/ggml/blob/master/docs/gguf.md)
 and [GGML encodings](https://github.com/ggml-org/llama.cpp/blob/master/gguf-py/gguf/constants.py).
 
+## Inspect a local GGUF file
+
+Set `LM_STUDIO_MODELS_FOLDER` to your local LM Studio models directory, then run
+the F# script from the repository root. For example:
+
+```sh
+export LM_STUDIO_MODELS_FOLDER="$HOME/.lmstudio/hub/models"
+dotnet fsi src/Marmotte.Gguf/GgufScript.fsx
+```
+
+Use the actual models directory configured on your machine. This variable holds
+the root directory; the script's `filePath` binding appends these relative path
+segments using the `/>` helper (`Path.Combine`):
+
+```text
+lmstudio-community/Ministral-3-3B-Instruct-2512-GGUF/Ministral-3-3B-Instruct-2512-Q4_K_M.gguf
+```
+
+To inspect another model, change those relative segments in the script. Its
+opening message prints only the filename. The script inspects metadata and tensor
+descriptors without loading the weights.
+
+You can keep the `export` in your local `~/.zprofile`. After editing it, run
+`source ~/.zprofile` in the terminal before starting `dotnet fsi`. For an IDE,
+make sure its environment includes the variable before it starts F# Interactive;
+an already-running process does not pick up shell environment changes.
+
+Alternatively, set the variable directly in an F# Interactive session with
+`System.Environment.SetEnvironmentVariable("LM_STUDIO_MODELS_FOLDER", "/path/to/models")`
+before loading the script. Keep this personal setting outside tracked files.
+
+## Documentation
+
+- [Format comparison, tensor storage, strides, and illustration notes](docs/README.md)
+- [GGUF format and current implementation](docs/gguf.md)
+- [Safetensors format and proposed next steps](docs/safetensors.md) — not implemented yet
+
 ## Build and tests
 
 ```sh

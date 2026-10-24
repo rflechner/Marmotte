@@ -1,13 +1,22 @@
+#load "../Marmotte.Core/Helpers.fs"
 #load "Types.fs"
 #load "Gguf.fs"
 
+open System
 open System.Diagnostics
 open System.Globalization
 open System.IO
 open Marmotte.Gguf
+open Marmotte.Core.Helpers
 
-// Run from the repository root: dotnet fsi src/Marmotte.Gguf/GgufScript.fsx
-let filePath = "/Users/codeanythingpossible/.lmstudio/models/lmstudio-community/Ministral-3-3B-Instruct-2512-GGUF/Ministral-3-3B-Instruct-2512-Q4_K_M.gguf"
+let filePath =
+    Environment.GetEnvironmentVariable "LM_STUDIO_MODELS_FOLDER" />
+        "lmstudio-community" />
+        "Ministral-3-3B-Instruct-2512-GGUF" />
+        "Ministral-3-3B-Instruct-2512-Q4_K_M.gguf"
+
+if not (File.Exists filePath) then failwithf "File not found: %s" filePath
+
 
 let maxDisplayedTensors = 12
 let maxArrayPreview = 3
@@ -39,7 +48,7 @@ let rec formatValue depth = function
             sprintf "%s [%s%s]" summary preview suffix
     | value -> sprintf "%A" value
 
-printfn "Reading %s" filePath
+printfn "Reading %s" (Path.GetFileName filePath)
 let timer = Stopwatch.StartNew()
 let model = Gguf.readFile filePath
 timer.Stop()

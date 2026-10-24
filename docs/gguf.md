@@ -1,11 +1,16 @@
 # GGUF Format
 
 GGUF is a binary container format used to store model metadata, tensor
-descriptors, and tensor data in a single file. DotDiffusion uses it as one of
-its model-loading formats, especially for quantized weights.
+descriptors, and tensor data in a single file. Marmotte's `Marmotte.Gguf`
+library reads the metadata and tensor index without loading the weights.
 
-This document focuses on the information required to implement a safe,
-incremental GGUF parser.
+This document describes the format and the current F# implementation. Tensor
+payload access, dequantization, and inference are separate, future work.
+
+> The imported diagram is a conceptual overview. Its little-endian note omits
+> GGUF v3 big-endian support, its bitwise alignment formula only applies to
+> powers of two, and its lazy-slice step is not implemented in Marmotte. The
+> details and implementation status below take precedence.
 
 ![GGUF file format parser map](gguf-format.png)
 
@@ -19,8 +24,9 @@ A GGUF file contains five consecutive regions:
 4. Alignment padding
 5. Tensor data
 
-Except for the padding before tensor data, fields are serialized consecutively
-without implicit alignment.
+Header, metadata, and descriptor fields are serialized consecutively without
+implicit alignment. Padding aligns the data section and individual tensor
+payloads within it.
 
 ```text
 +---------+------------------+--------------+---------+-------------+
@@ -28,12 +34,13 @@ without implicit alignment.
 +---------+------------------+--------------+---------+-------------+
 ```
 
-Integers use the byte order detected from the version field. GGUF files are
+Numeric fields use the byte order detected from the version field. GGUF files are
 normally little-endian, while GGUF v3 can also represent big-endian data.
 
 ## Header
 
-The header occupies exactly 24 bytes.
+For GGUF v2/v3, the fixed header occupies exactly 24 bytes. The offsets below
+are relative to the beginning of the GGUF content in the source stream.
 
 | Offset | Size | Type | Field |
 | ---: | ---: | --- | --- |
@@ -42,24 +49,25 @@ The header occupies exactly 24 bytes.
 | `8` | 8 | `uint64` | Number of tensors |
 | `16` | 8 | `uint64` | Number of metadata entries |
 
-DotDiffusion currently supports GGUF versions 2 and 3.
+Marmotte supports GGUF v2 in little-endian and v3 in either byte order.
 
-The version is read in both byte orders. A supported value identifies the byte
-order to use for the remaining numeric fields. Invalid magic bytes, unsupported
-versions, and truncated headers are rejected.
+The reader initially interprets the version as little-endian. Values 2 and 3
+select little-endian; `0x03000000` identifies a big-endian v3 file. Other values,
+invalid magic, and truncated headers are rejected. The magic remains the four
+literal ASCII bytes `GGUF` in both byte orders.
 
-The parsed representation is:
+The public result is a `GgufFile`, rather than a separate header object:
 
-```csharp
-public readonly record struct GgufHeader(
-    uint Version,
-    ulong TensorCount,
-    ulong MetadataKeyValueCount,
-    GgufByteOrder ByteOrder);
+```fsharp
+open Marmotte.Gguf
+
+let model = Gguf.readFile "model.gguf"
+printfn "GGUF v%d, %A" model.Version model.Endianness
+printfn "%d tensors, %d metadata entries" model.Tensors.Length model.Metadata.Count
 ```
 
-The current implementation lives in
-[`GgufHeaderReader`](../src/DotDiffusion.Gguf/Readers/GgufHeaderReader.cs).
+See [Gguf.fs](../src/Marmotte.Gguf/Gguf.fs) for the reader and
+[Types.fs](../src/Marmotte.Gguf/Types.fs) for its public types.
 
 ## Strings
 
@@ -72,9 +80,10 @@ data:   byte[length]
 
 There is no null terminator.
 
-A parser must validate the length before allocating memory, ensure the complete
-byte sequence is available, and reject invalid UTF-8 if strict decoding is
-used.
+Marmotte validates lengths before allocating memory, checks that all bytes are
+available, and rejects invalid UTF-8. Lengths count bytes, not .NET UTF-16 characters.
+Metadata keys have a 65,535-byte limit and tensor names a 64-byte limit, in
+addition to configurable string limits.
 
 ## Metadata
 
@@ -99,7 +108,7 @@ value:      encoded according to value_type
 | `4` | `UINT32` | `uint32` |
 | `5` | `INT32` | `int32` |
 | `6` | `FLOAT32` | IEEE 754 binary32 |
-| `7` | `BOOL` | `int8`, zero or one |
+| `7` | `BOOL` | One byte, zero or one |
 | `8` | `STRING` | GGUF string |
 | `9` | `ARRAY` | Element type, count, then elements |
 | `10` | `UINT64` | `uint64` |
@@ -114,31 +123,39 @@ count:        uint64
 elements:     value[count]
 ```
 
-Arrays cannot contain arrays. The element type determines the encoding of every
-element.
+The element type determines the encoding of every element. The GGUF
+specification permits nested arrays. Marmotte supports them with limits on
+nesting depth, array length, and the total number of decoded metadata values.
+Even an empty array retains its element type.
 
 Common metadata keys include model architecture, model name, tokenizer data,
 quantization information, and `general.alignment`.
 
-DotDiffusion represents decoded metadata values with an abstract record
-hierarchy rather than a public `object` payload plus type tag. This keeps
-callers on the type-safe path:
+Marmotte represents metadata with the `GgufValue` discriminated union. Pattern
+matching preserves the exact wire type without an `obj` payload:
 
-```csharp
-GgufMetadataValue value = entry.Value;
-
-string? architecture = value switch
-{
-    GgufStringMetadataValue stringValue => stringValue.Value,
-    _ => null,
-};
+```fsharp
+let architecture =
+    match Map.tryFind "general.architecture" model.Metadata with
+    | Some(GgufValue.String value) -> Some value
+    | _ -> None
 ```
 
-Each GGUF scalar type has a dedicated sealed record, such as
-`GgufUInt32MetadataValue`, `GgufStringMetadataValue`, and
-`GgufFloat64MetadataValue`. Arrays are represented by
-`GgufArrayMetadataValue`, whose `Values` collection contains already decoded
-`GgufMetadataValue` instances. GGUF does not allow arrays of arrays.
+Examples include `GgufValue.UInt32`, `GgufValue.Float64`, and
+`GgufValue.Array(elementType, values)`. Duplicate metadata keys and unknown
+metadata tags are rejected because an unknown tag does not provide enough
+information to decode or skip its payload.
+
+### File Profiles and Tensor Encodings
+
+`general.file_type` describes a file-level profile, exposed as `model.FileType`
+through `GgufFileType`. Profiles such as `Q3_K_S`, `Q3_K_M`, and `Q4_K_M` can
+mix several tensor encodings. `GgmlType` describes each tensor's actual encoding.
+
+The numeric identifiers are not interchangeable: value 12 means
+`GgufFileType.Q3_K_M` for a file profile and `GgmlType.Q4_K` for a tensor.
+An absent or incorrectly typed profile produces `None`; it is not guessed
+from the filename or from tensor encodings.
 
 ## Tensor Descriptors
 
@@ -162,60 +179,80 @@ beginning of the file:
 absolute_position = tensor_data_start + tensor.offset
 ```
 
-The tensor's byte size cannot be computed from its dimensions alone. It also
-depends on the `ggml_type`, including its block size and encoded bytes per
-block for quantized types.
+Dimensions use GGML order: the contiguous dimension comes first. For example,
+a contiguous 2-row, 3-column matrix has GGML dimensions `[3; 2]`; the same
+matrix has shape `[2; 3]` in Safetensors. Do not silently swap their conventions.
 
-DotDiffusion currently parses tensor descriptors into `GgufTensorInfo` values:
+The tensor's byte size also depends on its encoding. For known block layouts:
 
-```csharp
-public sealed record GgufTensorInfo(
-    string Name,
-    IReadOnlyList<ulong> Dimensions,
-    GgmlType Type,
-    ulong Offset);
+```text
+element_count = product(dimensions)
+byte_size = (element_count / elements_per_block) * bytes_per_block
 ```
 
-The offset remains relative to the tensor data region. Resolving it to an
-absolute file position happens later, after alignment is known.
+The first dimension must contain complete quantization blocks. Marmotte checks
+these calculations for overflow. It accepts up to four dimensions, rank-zero
+scalars (one element), and tensors with a zero dimension (no elements).
+
+Each `GgufTensorInfo` exposes:
+
+| Member | Meaning |
+| --- | --- |
+| `Name` | Tensor name |
+| `Dimensions` | GGML dimensions as `uint64 array` |
+| `TensorType` | Tensor encoding (`GgmlType`) |
+| `ElementCount` | Number of logical elements |
+| `Offset` | Byte offset relative to the tensor data section |
+| `AbsoluteOffset` | Byte position in the original stream |
+| `ByteSize` | Validated encoded size, or `None` for an unknown encoding |
+
+Unknown encodings retain their numeric identifier. The parser checks their
+starting offset, but cannot validate their full size or overlap with a following
+tensor. Consumers must not treat `ByteSize = None` as proof of a valid payload.
 
 ## Alignment
 
-The tensor data region starts at an aligned file position.
+The tensor data region starts at an aligned position relative to the start of
+the GGUF content. `Gguf.read` can start at a nonzero stream position.
 
-The infographic labels this region as "Alignment padding". This is a
-DotDiffusion documentation label, not an official GGUF field name. In the GGUF
-specification this is represented as `_padding[]`: zero bytes inserted after the
-tensor infos so that `tensor_data` begins at the required alignment.
+The specification calls the bytes after the tensor descriptors `_padding[]`.
+They bring the tensor data section to the required alignment.
 
 The default alignment is 32 bytes. A `general.alignment` metadata entry can
-override it.
+override it. Marmotte requires a `uint32`, greater than zero and divisible by 8,
+following the written specification. Some upstream readers impose the stricter
+requirement of a power of two; acceptance by Marmotte is not a guarantee of
+compatibility with every GGUF consumer.
 
 ```text
-tensor_data_start = align(position_after_tensor_infos, alignment)
+relative_position = position_after_tensor_infos - gguf_start
+padding = (alignment - relative_position % alignment) % alignment
+tensor_data_start = position_after_tensor_infos + padding
 ```
 
-For a power-of-two alignment:
+This works for every alignment accepted by Marmotte, including 24. The bitwise
+shortcut in the diagram only works for powers of two and must not replace it.
 
-```text
-align(x, a) = (x + a - 1) & ~(a - 1)
-```
-
-The parser must validate that the alignment is non-zero and suitable before
-using this formula. All arithmetic must be checked for overflow.
-
-Tensor offsets must respect the selected alignment.
+Each tensor's relative offset must be a multiple of the selected alignment.
+Marmotte requires the header padding to exist even when there are no tensors.
+It seeks over that padding; it does not inspect whether each padding byte is zero.
 
 ## Tensor Data
 
-The final region contains raw or quantized tensor bytes. A parser should expose
-this data lazily rather than copying the complete model into managed memory.
+The final region contains raw or quantized tensor bytes. The current parser
+does not read these bytes; it validates known payload ranges using the stream
+length and returns descriptors.
 
-The intended loading strategy is:
+`Gguf.read` leaves its caller-owned stream open at `DataOffset` after success.
+`Gguf.readFile` opens and closes its own stream. Neither returns live tensor
+slices or retains a file handle. The result's records contain arrays, so they
+should not be described as deeply immutable.
+
+A future payload-loading layer could:
 
 - Keep the file open or memory-map it.
-- Parse metadata and tensor descriptors eagerly.
-- Validate every tensor range before exposing it.
+- Reuse the parsed metadata and tensor descriptors.
+- Require a known, validated range before exposing a tensor view.
 - Represent tensor payloads as bounded slices of the underlying storage.
 - Decode or dequantize values only when an execution backend needs them.
 
@@ -231,7 +268,7 @@ The intended loading strategy is:
 8. Parse each tensor descriptor.
 9. Compute the aligned tensor data start.
 10. Validate tensor offsets and encoded sizes against the file length.
-11. Expose immutable metadata and lazy tensor slices.
+11. Return metadata and resolved descriptors, leaving weights unread.
 
 ## Security Requirements
 
@@ -241,13 +278,14 @@ GGUF files must be treated as untrusted input.
 - Set explicit limits for strings, arrays, dimensions, metadata, and tensors.
 - Validate a length before allocating or slicing.
 - Reject unknown metadata value types.
-- Reject invalid dimensions and unsupported tensor types.
-- Verify that every tensor range remains inside the file.
-- Detect overlapping tensor ranges unless the format explicitly permits them.
-- Never convert an untrusted `ulong` directly to `int` or `nint`.
+- Reject invalid dimensions, duplicate names, and incomplete quantization blocks.
+- Verify known tensor ranges remain inside the file and do not overlap.
+- Treat empty tensors as zero-length ranges, which may share an offset.
+- Preserve unknown tensor types with explicit validation limitations.
+- Never convert an untrusted `uint64` directly to `int` or `nativeint`.
 - Do not trust offsets merely because the file has a valid header.
 
-## DotDiffusion Implementation Status
+## Marmotte Implementation Status
 
 Implemented:
 
@@ -260,18 +298,27 @@ Implemented:
 - Endian-aware primitive reading
 - Bounded UTF-8 string reading
 - Metadata scalar values
-- Type-safe metadata value records
-- Metadata arrays
+- Type-safe metadata discriminated union
+- Empty and nested metadata arrays with allocation and nesting limits
 - Tensor descriptors
-- Unit tests for valid and invalid headers
+- Alignment and relative/absolute tensor positions
+- Known encoding sizes, payload bounds, and overlap checks
+- File-level quantization profiles, separate from tensor encodings
+- Tests for valid files, malformed input, partial reads, and stream ownership
+- A local inspection script: [GgufScript.fsx](../src/Marmotte.Gguf/GgufScript.fsx),
+  using `LM_STUDIO_MODELS_FOLDER` as the models root directory and appending the
+  model's relative path; see the [configuration instructions](../README.md#inspect-a-local-gguf-file)
 
-Planned next:
+Not implemented:
 
-1. Resolve alignment and tensor data positions.
-2. Add lazy, validated tensor data access.
+- Lazy tensor byte views or memory-mapped storage
+- Weight decoding, dequantization, or model execution
+- Safetensors parsing; see the [next-format plan](safetensors.md)
 
 ## References
 
 - [GGUF format documentation](https://github.com/ggml-org/ggml/blob/master/docs/gguf.md)
 - [GGUF public definitions](https://github.com/ggml-org/ggml/blob/master/include/gguf.h)
+- [Upstream reader and alignment validation](https://github.com/ggml-org/llama.cpp/blob/master/gguf-py/gguf/gguf_reader.py)
+- [Tensor encodings and file profiles](https://github.com/ggml-org/llama.cpp/blob/master/gguf-py/gguf/constants.py)
 - [Hugging Face Hub GGUF documentation](https://huggingface.co/docs/hub/gguf)

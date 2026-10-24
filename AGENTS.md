@@ -74,7 +74,8 @@ to F#, .NET, and local model inference.
 ## Keep scripts useful and reproducible
 
 - Use `.fsx` files for exploration and inspection, reusing library code through `#load` or assembly references instead of duplicating the parser.
-- Keep model paths and display limits easy to adjust. A machine-specific model path may be useful in a local script but must not become a library default or automated test dependency.
+- Use `LM_STUDIO_MODELS_FOLDER` for the local LM Studio models root directory. Build model file paths from that root and relative path segments using `Path.Combine` or the `/>` helper. Keep display limits easy to adjust, and do not put machine-specific paths in tracked scripts, library defaults, or automated tests.
+- Keep the variable's value in the local shell or IDE environment. F# Interactive must inherit it when starting, or it must be set explicitly in the session before loading the script.
 - Summarize large metadata arrays, strings, and tensor lists in console output. Keep the complete parsed data available for further inspection.
 - Do not commit downloaded weights or require a large model download for normal development checks.
 
@@ -93,6 +94,6 @@ to F#, .NET, and local model inference.
   git diff --check
   ```
 
-- The script command requires its referenced local model. Run it when changing model inspection or when a real-file check is useful, not as a mandatory test for every edit.
+- The script command requires `LM_STUDIO_MODELS_FOLDER` and the local model selected by the script's relative path segments. See the [configuration instructions](README.md#inspect-a-local-gguf-file). Run it when changing model inspection or when a real-file check is useful, not as a mandatory test for every edit.
 - Use `--no-restore` only after dependencies have been restored. When build servers cause problems, use `--disable-build-servers -m:1` instead of changing project behavior.
 - Documentation-only changes need review and formatting checks, not a full test run. For code changes, run the relevant tests and build, then report what was actually verified and any remaining limitations.

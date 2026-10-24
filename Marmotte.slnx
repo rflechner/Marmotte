@@ -5,6 +5,7 @@
     <File Path="README.md" />
   </Folder>
   <Folder Name="/docs/">
+    <File Path="docs\README.md" />
     <File Path="docs\gguf-format.png" />
     <File Path="docs\gguf.md" />
     <File Path="docs\safetensors-format.png" />
