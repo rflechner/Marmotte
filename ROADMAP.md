@@ -63,7 +63,7 @@ local check.
 ### CPU kernels
 
 - [x] Define contiguous F32 execution tensors and an `Add` contract in Core, with
-  explicit allocation/transfers and a scalar CPU implementation in `Marmotte.Cpu`.
+  explicit allocation/transfers and a `Vector<T>` CPU implementation in `Marmotte.Cpu`.
 - [ ] Matrix-vector and matrix-matrix products over quantized weights.
 - [ ] RMS normalization, RoPE with YaRN scaling, softmax, SwiGLU and embedding
   lookup.

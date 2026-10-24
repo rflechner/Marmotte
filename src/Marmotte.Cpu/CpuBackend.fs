@@ -2,7 +2,31 @@ namespace Marmotte.Cpu
 
 open System
 open System.Collections.Generic
+open System.Numerics
+open System.Runtime.InteropServices
 open Marmotte.Core
+
+/// Element-wise F32 kernels over host spans, safe and vectorized with Vector<T>.
+module private CpuKernels =
+    /// destination[i] = left[i] + right[i] over equal-length spans. Destination may be exactly
+    /// left or right, but must not partially overlap them. Processes Vector<single>.Count lanes at
+    /// a time (4 with ARM64 NEON, 8 with AVX2), then the remaining elements one by one. Each lane
+    /// performs the same IEEE single-precision addition as a scalar loop, so results are identical.
+    let add (left: ReadOnlySpan<single>, right: ReadOnlySpan<single>, destination: Span<single>) =
+        if left.Length <> destination.Length || right.Length <> destination.Length then
+            invalidArg (nameof destination) "Add spans must have the same length."
+
+        let mutable firstScalar = 0
+        if Vector.IsHardwareAccelerated then
+            let leftVectors = MemoryMarshal.Cast<single, Vector<single>>(left)
+            let rightVectors = MemoryMarshal.Cast<single, Vector<single>>(right)
+            let destinationVectors = MemoryMarshal.Cast<single, Vector<single>>(destination)
+            for index = 0 to destinationVectors.Length - 1 do
+                destinationVectors[index] <- leftVectors[index] + rightVectors[index]
+            firstScalar <- destinationVectors.Length * Vector<single>.Count
+
+        for index = firstScalar to destination.Length - 1 do
+            destination[index] <- left[index] + right[index]
 
 /// Storage that its backend releases when the backend itself is disposed.
 type private ICpuStorage =
@@ -68,7 +92,7 @@ type private CpuWeightTensor(owner: obj, weights: WeightMatrix, onDispose: ICpuS
                 (this :> ICpuStorage).Release()
                 onDispose this
 
-/// Safe, scalar CPU reference implementation of the tensor and Add contracts.
+/// Safe CPU reference implementation of the tensor and Add contracts, vectorized with Vector<T>.
 /// Owns no native resources. Each instance accepts only tensors that it created, and tracks
 /// the live ones so that disposing the backend releases them. Operations complete before
 /// returning, which satisfies the ordering contract; Synchronize has nothing to wait for.
@@ -139,8 +163,7 @@ type CpuBackend() =
             if left.Shape <> destination.Shape then
                 invalidArg (nameof destination) "Add destination must have the same shape as its inputs."
 
-            for index = 0 to destinationValues.Length - 1 do
-                destinationValues[index] <- leftValues[index] + rightValues[index]
+            CpuKernels.add (ReadOnlySpan<single>(leftValues), ReadOnlySpan<single>(rightValues), Span<single>(destinationValues))
 
     interface IDisposable with
         member _.Dispose() =

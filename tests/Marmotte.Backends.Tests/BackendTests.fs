@@ -207,16 +207,44 @@ let ``null shapes and tensors are rejected`` () =
         Assert.Throws<ArgumentNullException>(fun () -> backend.Add(left, right, destination)) |> ignore
 
 [<Fact>]
-let ``Add preserves ordinary floating point special values`` () =
+let ``Add matches a scalar reference for every vector tail length`` () =
     use backend = cpu ()
-    let shape = TensorShape.Create [| 3 |]
-    use left = backend.Upload(shape, ReadOnlyMemory<single>([| Single.NaN; Single.PositiveInfinity; Single.PositiveInfinity |]))
-    use right = backend.Upload(shape, ReadOnlyMemory<single>([| 1.0f; 2.0f; Single.NegativeInfinity |]))
+    let random = Random(1234)
+    let randomValues length = Array.init length (fun _ -> float32 (random.NextDouble() * 200.0 - 100.0))
+
+    // Lengths below, at and between multiples of 4, 8 and 16 lanes exercise vector blocks and tails.
+    for length in 0 .. 67 do
+        let shape = TensorShape.Create [| length |]
+        let leftValues = randomValues length
+        let rightValues = randomValues length
+        let expected = Array.map2 (+) leftValues rightValues
+        use left = backend.Upload(shape, ReadOnlyMemory<single>(leftValues))
+        use right = backend.Upload(shape, ReadOnlyMemory<single>(rightValues))
+        use destination = backend.Allocate(shape)
+
+        backend.Add(left, right, destination)
+        Assert.Equal<single>(expected, download backend destination)
+
+        backend.Add(left, right, right)
+        Assert.Equal<single>(expected, download backend right)
+
+[<Fact>]
+let ``Add preserves ordinary floating point special values in vector lanes and the tail`` () =
+    use backend = cpu ()
+    // 19 values place NaN and infinities in full vectors and in the scalar tail for 4, 8 or 16 lanes.
+    let shape = TensorShape.Create [| 19 |]
+    let leftValues = Array.init 19 (fun index -> if index % 3 = 0 then Single.NaN else Single.PositiveInfinity)
+    let rightValues = Array.init 19 (fun index -> [| 1.0f; 2.0f; Single.NegativeInfinity |][index % 3])
+    use left = backend.Upload(shape, ReadOnlyMemory<single>(leftValues))
+    use right = backend.Upload(shape, ReadOnlyMemory<single>(rightValues))
+
     backend.Add(left, right, left)
+
     let result = download backend left
-    Assert.True(Single.IsNaN(result[0]))
-    Assert.Equal(Single.PositiveInfinity, result[1])
-    Assert.True(Single.IsNaN(result[2]))
+    for index in 0 .. 18 do
+        match index % 3 with
+        | 1 -> Assert.Equal(Single.PositiveInfinity, result[index])
+        | _ -> Assert.True(Single.IsNaN(result[index]), $"Index {index} should be NaN.")
 
 let private createBackend name =
     match name with

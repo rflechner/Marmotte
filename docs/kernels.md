@@ -42,7 +42,7 @@ decodes them automatically.
 | `Upload` / `Download` | Explicit host copies | `NotImplementedException` | `NotImplementedException` |
 | `UploadWeights` | Retains the payload without copying | `NotImplementedException` | `NotImplementedException` |
 | `Synchronize` | Nothing to wait for | `NotImplementedException` | `NotImplementedException` |
-| `IAddKernel.Add` | Safe scalar loop | `NotImplementedException` | `NotImplementedException` |
+| `IAddKernel.Add` | Safe `Vector<T>` loop with a scalar tail | `NotImplementedException` | `NotImplementedException` |
 | SDK/driver required today | None | None | None |
 
 `ITensorBackend` inherits `IAddKernel` so orchestration can call `backend.Add`.
@@ -78,6 +78,14 @@ All three tensors must have exactly the same dimensions, not just the same
 number of elements. There is no broadcasting, type promotion or strided view.
 Empty tensors are valid no-ops; scalars add to scalars. NaN and infinities follow
 ordinary F32 addition rather than being rejected as malformed model data.
+
+The CPU backend processes `Vector<single>.Count` values at a time: four with
+ARM64 NEON, eight with AVX2. It reinterprets its arrays as vectors with
+`MemoryMarshal.Cast`, without unsafe code, and adds the remaining values one by
+one. Each lane performs the same single-precision addition as a scalar loop, so
+the results are identical. Kernels that reduce values, such as dot products,
+will not have that property: vectorizing them changes the summation order, and
+their tests will need tolerances.
 
 The destination is explicit so a caller can reuse its buffer. Exact aliasing is
 supported: `backend.Add(hidden, residual, hidden)` updates the hidden state in

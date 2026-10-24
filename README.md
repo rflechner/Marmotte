@@ -150,7 +150,7 @@ architecture-specific tensor names and model configuration are not implemented y
 The three backend projects share these contracts:
 
 - `Marmotte.Cpu`: owned F32 arrays, explicit upload/download, weight tensors that
-  retain the stored payload, and a scalar `Add` kernel.
+  retain the stored payload, and an `Add` kernel vectorized with `Vector<T>`.
 - `Marmotte.Cuda` and `Marmotte.Metal`: buildable placeholders whose allocation,
   transfers and `Add` raise `NotImplementedException`, without requiring a GPU SDK.
 
