@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Marmotte.Cli/Marmotte.Cli.fsproj" />
+    <Project Path="src/Marmotte.Core/Marmotte.Core.fsproj" />
+    <Project Path="src/Marmotte.Gguf/Marmotte.Gguf.fsproj" />
+  </Folder>
+  <Folder Name="/tests/" />
+</Solution>
