@@ -9,8 +9,14 @@ open System.IO
 open Marmotte.Gguf
 open Marmotte.Core.Helpers
 
+let modelsFolder =
+    match Environment.GetEnvironmentVariable "LM_STUDIO_MODELS_FOLDER" with
+    | folder when String.IsNullOrWhiteSpace folder ->
+        failwith "LM_STUDIO_MODELS_FOLDER is not set; see README.md, section F# exploration script."
+    | folder -> folder
+
 let filePath =
-    Environment.GetEnvironmentVariable "LM_STUDIO_MODELS_FOLDER" />
+    modelsFolder />
         "lmstudio-community" />
         "Ministral-3-3B-Instruct-2512-GGUF" />
         "Ministral-3-3B-Instruct-2512-Q4_K_M.gguf"

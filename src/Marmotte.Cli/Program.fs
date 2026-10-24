@@ -8,9 +8,12 @@ open Spectre.Console.Cli
 [<EntryPoint>]
 let main args =
     use cancellation = new CancellationTokenSource()
+    // The first Ctrl+C requests a clean cancellation. A second one is not intercepted and
+    // terminates the process, for example if an I/O operation does not observe the token.
     let cancelHandler = ConsoleCancelEventHandler(fun _ event ->
-        event.Cancel <- true
-        cancellation.Cancel())
+        if not cancellation.IsCancellationRequested then
+            event.Cancel <- true
+            cancellation.Cancel())
     let app = CommandApp()
     app.Configure(fun config ->
         config.Settings.Culture <- CultureInfo.InvariantCulture

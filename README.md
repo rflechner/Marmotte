@@ -173,6 +173,8 @@ conversions; Q4_0 uses fewer bytes per block and has lower precision than Q8_0.
 The command reports converted/preserved tensor counts, input/output sizes and
 elapsed time. Success exits with code `0`; errors exit with code `1`.
 Ctrl+C requests cancellation, cleans up the temporary output and exits with code `130`.
+A second Ctrl+C terminates the process immediately and can leave the temporary
+`.marmotte-*.tmp` file in the output directory.
 
 This first implementation supports:
 
@@ -219,6 +221,7 @@ block layouts, numerical limits and tensor selection policy.
 - [Format comparison, tensor storage, strides, and illustration notes](docs/README.md)
 - [GGUF format and current implementation](docs/gguf.md)
 - [Safetensors format and proposed next steps](docs/safetensors.md) — not implemented yet
+- [Roadmap](ROADMAP.md): CPU inference first, then CUDA and Metal backends
 
 ## Build and tests
 
@@ -240,3 +243,12 @@ validation, exact quantization blocks, numerical error, metadata preservation,
 and output protection. CLI tests run the application against temporary fixtures
 and check both commands, argument handling, and errors.
 No model or weight download is required.
+
+## Coding guidelines
+
+Coding conventions are described in [AGENTS.md](AGENTS.md). Marmotte uses safe
+.NET code by default: arrays, spans and `BinaryPrimitives`. Unsafe code, such as
+native pointers, `fixed` or `System.Runtime.CompilerServices.Unsafe`, is reserved
+for cases where a measurement shows a large performance gain. It then stays
+confined behind a safe API, with bounds validated beforehand, and is tested
+against a safe reference implementation.

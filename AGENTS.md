@@ -77,6 +77,15 @@ to F#, .NET, and local model inference.
 - Quantization must keep the input read-only and never overwrite an existing output. Validate a temporary sibling before publishing it, and clean it up on failure or handled cancellation. Reject unsupported encodings, endianness, split models and numerical values explicitly; do not silently enable requantization.
 - Measure before optimizing. Distinguish index parsing, weight loading, decoding, and inference in timing results, and report the workload used.
 
+## Use unsafe code only for large performance gains
+
+- Write safe code by default. Arrays, `Span<T>`, `ReadOnlySpan<T>`, `BinaryPrimitives`, `MemoryMarshal.Cast`, and span-based `System.Runtime.Intrinsics` APIs cover most binary reading and numerical needs.
+- Use unsafe code only when a measurement shows a large performance gain over the best safe version, for example in hot inference kernels or to access memory-mapped weights without copying. A small or unmeasured gain does not justify it. Unsafe code includes `NativePtr`, `fixed`, the `&&` address-of operator, `System.Runtime.CompilerServices.Unsafe`, and suppressing warning FS0009.
+- Record the measurement that justifies unsafe code, with the workload and the safe and unsafe timings, next to the code or in the change description.
+- Confine unsafe code to small private functions behind a safe API. Validate bounds, lengths, and alignment before entering it, and document the invariants it relies on, including the lifetime of pinned or mapped memory.
+- Never apply unsafe code to file contents before they are validated.
+- Keep the safe implementation as a reference, and test the unsafe version against it, including boundary cases.
+
 ## Keep scripts useful and reproducible
 
 - Use `.fsx` files for exploration and inspection, reusing library code through `#load` or assembly references instead of duplicating the parser.

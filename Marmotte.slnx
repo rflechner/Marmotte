@@ -4,6 +4,7 @@
     <File Path="Directory.Packages.props" />
     <File Path="LICENSE.md" />
     <File Path="README.md" />
+    <File Path="ROADMAP.md" />
   </Folder>
   <Folder Name="/docs/">
     <File Path="docs\README.md" />

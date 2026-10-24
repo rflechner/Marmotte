@@ -26,17 +26,17 @@ type QuantizeSettings() =
     [<DefaultValue("Q8_0")>]
     member val Format = "Q8_0" with get, set
 
+    /// The --type value parsed case-insensitively; None for unsupported encodings.
     member this.TargetFormat =
         match this.Format.ToUpperInvariant() with
-        | "Q4_0" -> GgufQuantizationFormat.Q4_0
-        | "Q8_0" -> GgufQuantizationFormat.Q8_0
-        | _ -> invalidArg "format" "--type must be Q8_0 or Q4_0."
+        | "Q4_0" -> Some GgufQuantizationFormat.Q4_0
+        | "Q8_0" -> Some GgufQuantizationFormat.Q8_0
+        | _ -> None
 
     override this.Validate() =
         if String.IsNullOrWhiteSpace this.InputPath || String.IsNullOrWhiteSpace this.OutputPath then
             ValidationResult.Error("Both input and output GGUF paths are required.")
-        elif not (String.Equals(this.Format, "Q4_0", StringComparison.OrdinalIgnoreCase)
-                  || String.Equals(this.Format, "Q8_0", StringComparison.OrdinalIgnoreCase)) then
+        elif this.TargetFormat.IsNone then
             ValidationResult.Error("--type must be Q8_0 or Q4_0; K-quants are not implemented.")
         else
             ValidationResult.Success()
@@ -46,10 +46,12 @@ type QuantizeCommand() =
     inherit Command<QuantizeSettings>()
 
     override _.Execute(_, settings, cancellationToken) =
+        // Validate has already rejected unsupported --type values.
+        let format = Option.get settings.TargetFormat
         let timer = Stopwatch.StartNew()
         let result =
             AnsiConsole.Status().Start("Quantizing GGUF weights...", fun _ ->
-                GgufQuantizer.quantizeFileWithCancellation settings.TargetFormat
+                GgufQuantizer.quantizeFileWithCancellation format
                     settings.InputPath settings.OutputPath cancellationToken)
         timer.Stop()
 
