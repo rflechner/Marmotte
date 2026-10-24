@@ -8,6 +8,9 @@
     <ItemGroup>
         <Compile Include="Types.fs"/>
         <Compile Include="Gguf.fs"/>
+        <Compile Include="QuantizationCodec.fs" />
+        <Compile Include="GgufWriter.fs" />
+        <Compile Include="GgufQuantizer.fs" />
         <None Include="GgufScript.fsx" />
     </ItemGroup>
 

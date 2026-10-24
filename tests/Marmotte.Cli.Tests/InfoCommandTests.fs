@@ -1,10 +1,9 @@
 module Marmotte.Cli.Tests
 
 open System
-open System.Diagnostics
 open System.IO
 open System.Text
-open Marmotte.Cli
+open Marmotte.Cli.TestSupport
 open Xunit
 
 // Encode a small GGUF directly so the CLI tests do not need installed models.
@@ -46,39 +45,6 @@ let private ggufBytes secondEncoding =
     while stream.Position % 32L <> 0L do writer.Write(0uy)
     writer.Write(Array.zeroCreate<byte> 36)
     stream.ToArray()
-
-type private ModelFile(bytes: byte array) =
-    let directory = Directory.CreateTempSubdirectory("marmotte-cli-tests-")
-    let path = Path.Combine(directory.FullName, "[sample] model.gguf")
-    do File.WriteAllBytes(path, bytes)
-    member _.Path = path
-    interface IDisposable with
-        member _.Dispose() = directory.Delete(true)
-
-type private CommandResult =
-    { ExitCode: int
-      Output: string
-      Error: string }
-
-let private run arguments =
-    let startInfo = ProcessStartInfo("dotnet")
-    startInfo.UseShellExecute <- false
-    startInfo.RedirectStandardOutput <- true
-    startInfo.RedirectStandardError <- true
-    startInfo.ArgumentList.Add(typeof<InfoCommand>.Assembly.Location)
-    for argument in arguments do startInfo.ArgumentList.Add(argument)
-    startInfo.Environment["NO_COLOR"] <- "1"
-    startInfo.Environment["TERM"] <- "dumb"
-    startInfo.Environment.Remove("LM_STUDIO_MODELS_FOLDER") |> ignore
-    use child = Process.Start(startInfo)
-    let output = child.StandardOutput.ReadToEndAsync()
-    let error = child.StandardError.ReadToEndAsync()
-    if not (child.WaitForExit(15_000)) then
-        child.Kill(true)
-        failwith "CLI did not exit within 15 seconds."
-    { ExitCode = child.ExitCode
-      Output = output.GetAwaiter().GetResult()
-      Error = error.GetAwaiter().GetResult() }
 
 [<Fact>]
 let ``help describes the file argument and inspection options`` () =

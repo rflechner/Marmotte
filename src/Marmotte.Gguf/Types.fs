@@ -169,3 +169,17 @@ type GgufReadOptions =
           MaxArrayDepth = 16
           MaxMetadataValues = 2_000_000
           MaxHeaderBytes = 256L * 1024L * 1024L }
+
+/// Output encodings implemented by the native quantizer, not the full set of GGUF profiles.
+[<RequireQualifiedAccess>]
+type GgufQuantizationFormat =
+    | Q4_0
+    | Q8_0
+
+/// File sizes are in bytes. Preserved tensors retain their original floating-point encoding.
+type GgufQuantizationResult =
+    { Format: GgufQuantizationFormat
+      QuantizedTensors: int
+      PreservedTensors: int
+      InputBytes: int64
+      OutputBytes: int64 }

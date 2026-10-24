@@ -9,6 +9,7 @@
         <Compile Include="ConsoleDsl.fs" />
         <Compile Include="GgufReport.fs" />
         <Compile Include="InfoCommand.fs" />
+        <Compile Include="QuantizeCommand.fs" />
         <Compile Include="Program.fs"/>
         <None Include="Properties/launchSettings.json" />
     </ItemGroup>

@@ -4,8 +4,9 @@ GGUF is a binary container format used to store model metadata, tensor
 descriptors, and tensor data in a single file. Marmotte's `Marmotte.Gguf`
 library reads the metadata and tensor index without loading the weights.
 
-This document describes the format and the current F# implementation. Tensor
-payload access, dequantization, and inference are separate, future work.
+This document describes the format and the current F# implementation, including
+native quantization from floating-point weights. General tensor views,
+dequantization, and inference remain future work.
 
 > The imported diagram is a conceptual overview. Its little-endian note omits
 > GGUF v3 big-endian support, its bitwise alignment formula only applies to
@@ -256,6 +257,64 @@ A future payload-loading layer could:
 - Represent tensor payloads as bounded slices of the underlying storage.
 - Decode or dequantize values only when an execution backend needs them.
 
+## Native Quantization
+
+`GgufQuantizer.quantizeFile format inputPath outputPath` implements streaming
+conversion, separately from the index-only reader. The CLI exposes it through
+[`quantize`](../README.md#quantize-a-gguf-file). `GgufQuantizationFormat` deliberately
+contains only `Q4_0` and `Q8_0`; the much larger `GgufFileType` enumeration describes
+profiles the reader can identify, not conversions the writer can perform.
+
+| Property | Current contract |
+| --- | --- |
+| Input | One complete little-endian v2/v3 file; every tensor must be F32, F16 or BF16 |
+| Eligible tensors | Non-empty, rank at least 2, contiguous dimension divisible by 32 |
+| Other floating-point tensors | Copied byte for byte, preserving their encoding |
+| Output | GGUF v3 little-endian, Q4_0 or Q8_0 blocks, original alignment |
+| Metadata | Preserve typed values; replace `general.file_type` and `general.quantization_version` (2) |
+| Payload memory | Less than 128 KiB of reusable buffers, independent of tensor size |
+| Index memory | Default reader limits; final validation also reads the output index |
+| Publication | Temporary sibling file, validated before moving to a previously absent output path |
+
+Selection is based on tensor shape, with no architecture-specific name exceptions
+or mixed-precision heuristics. It does not reproduce llama.cpp's model-specific
+selection policy. The summary reports how many tensors were converted or retained.
+Inference compatibility and model quality must be evaluated separately; tests
+cover the binary format and numerical conversion, not model execution.
+
+Every block represents 32 contiguous values:
+
+| Encoding | Stored bytes | Reconstruction |
+| --- | --- | --- |
+| Q4_0 | F16 scale + 16 packed bytes (18 bytes total) | `scale * (nibble - 8)`; low nibbles hold elements 0–15, high nibbles hold 16–31 |
+| Q8_0 | F16 scale + 32 signed bytes (34 bytes total) | `scale * signed_byte` |
+
+The implementation follows the reference block layouts and rounding conventions
+in [GGML's block definitions](https://github.com/ggml-org/llama.cpp/blob/master/ggml/src/ggml-common.h)
+and [reference quantizers](https://github.com/ggml-org/llama.cpp/blob/master/ggml/src/ggml-quants.c).
+Q4_0 uses a signed scale from the first value with greatest absolute magnitude;
+Q8_0 uses a positive scale and rounds halfway values away from zero. Integer codes
+are calculated with the unrounded scale, then the scale is stored as F16.
+Reconstruction therefore includes both integer rounding and F16 scale error.
+
+Converted NaN/infinite weights and scales exceeding the finite F16 range are
+rejected. Blocks whose scale underflows to F16 zero decode to zero; the encoder
+handles these without an infinite reciprocal. Copied payloads are not numerically
+validated. The output contains no new provenance inferred from its filename.
+
+The input remains read-only. Existing files/directories at the output path are
+rejected, and a concurrent creation of that path also prevents publication.
+The output directory must exist. On failure or handled cancellation, the temporary
+file is deleted; a forced process termination can leave that temporary file behind.
+`quantizeFileWithCancellation` checks its cancellation token between payload chunks.
+Unsupported data raises `InvalidDataException`; I/O and cancellation exceptions
+propagate. A call with the same input and output path raises `ArgumentException`.
+
+Requantization, integer inputs, unknown encodings, big-endian input, and files with
+`split.*` metadata are rejected. No `Q3_K_S`, `Q4_K_M`, IQ or other mixed profile
+is written. In particular, the already-quantized Ministral launch-profile model
+can be inspected but cannot be converted by this initial quantizer.
+
 ## Safe Parsing Order
 
 1. Read exactly 24 header bytes.
@@ -304,6 +363,9 @@ Implemented:
 - Alignment and relative/absolute tensor positions
 - Known encoding sizes, payload bounds, and overlap checks
 - File-level quantization profiles, separate from tensor encodings
+- Streaming F32/F16/BF16 to Q4_0/Q8_0 conversion, metadata/index writing and safe
+  publication through `GgufQuantizer` and the `quantize` CLI command
+- Quantizer tests for exact blocks, numerical error, preservation and failed writes
 - Tests for valid files, malformed input, partial reads, and stream ownership
 - A Spectre.Console [`info` command](../README.md#command-line) that accepts a
   local GGUF path and displays a summary, encoding counts, and bounded tensor and
@@ -315,7 +377,8 @@ Implemented:
 Not implemented:
 
 - Lazy tensor byte views or memory-mapped storage
-- Weight decoding, dequantization, or model execution
+- General tensor loading, quantized-weight decoding, or model execution
+- Requantization, K-quant/IQ encoders and architecture-specific quantization policies
 - Safetensors parsing; see the [next-format plan](safetensors.md)
 
 ## References

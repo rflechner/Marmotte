@@ -8,15 +8,16 @@ work. Illustrations are conceptual aids, not executable format specifications.
 
 | Document | Purpose | Marmotte status |
 | --- | --- | --- |
-| [GGUF](gguf.md) | Binary layout and current parser contracts | Metadata and tensor index implemented |
+| [GGUF](gguf.md) | Binary layout, parser and native quantization contracts | Index reading and F32/F16/BF16 to Q4_0/Q8_0 conversion implemented |
 | [Safetensors](safetensors.md) | JSON header, packed data, and next implementation steps | Planned; no reader yet |
 | Storage and strides below | Concepts for future tensor access and execution | No tensor storage or view API yet |
 
 `Marmotte.Core` currently contains shared helpers. `Marmotte.Cli` exposes the
-[`info` command](../README.md#command-line) for inspecting a local GGUF file.
-The GGUF library returns an index; it does not expose mapped tensors or run
-inference. Future storage types should follow actual consumers rather than being
-inferred from these pictures.
+[`info` command](../README.md#command-line) for inspecting a local GGUF file and
+[`quantize`](../README.md#quantize-a-gguf-file) for native conversion into a new file.
+The reader returns an index; the separate quantizer streams weight blocks.
+Neither exposes mapped tensors or runs inference. Future storage types should
+follow actual consumers rather than being inferred from these pictures.
 
 ## Keep the Format Conventions Separate
 

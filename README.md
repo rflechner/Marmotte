@@ -157,6 +157,63 @@ Alternatively, set the variable directly in an F# Interactive session with
 `System.Environment.SetEnvironmentVariable("LM_STUDIO_MODELS_FOLDER", "/path/to/models")`
 before loading the script. Keep this personal setting outside tracked files.
 
+## Quantize a GGUF file
+
+The native F# `quantize` command converts a floating-point GGUF into a **new**
+GGUF file. It does not require llama.cpp or a native executable:
+
+```sh
+dotnet run --project src/Marmotte.Cli -- quantize model-f16.gguf model-q8_0.gguf
+dotnet run --project src/Marmotte.Cli -- quantize model-f16.gguf model-q4_0.gguf --type Q4_0
+dotnet run --project src/Marmotte.Cli -- quantize --help
+```
+
+`--type` accepts `Q8_0` (default) or `Q4_0`, case-insensitively. These are lossy
+conversions; Q4_0 uses fewer bytes per block and has lower precision than Q8_0.
+The command reports converted/preserved tensor counts, input/output sizes and
+elapsed time. Success exits with code `0`; errors exit with code `1`.
+Ctrl+C requests cancellation, cleans up the temporary output and exits with code `130`.
+
+This first implementation supports:
+
+- A complete, single-file, **little-endian GGUF v2 or v3**, containing only
+  `F32`, `F16` and/or `BF16` tensors.
+- Conversion of non-empty tensors of rank 2 or greater whose first dimension
+  (the contiguous GGML dimension) is divisible by 32. Scalars, vectors, empty
+  tensors and other row widths retain their original bytes and encoding.
+- GGUF v3 little-endian output, preserving names, shapes, alignment and typed
+  metadata, while updating `general.file_type` and `general.quantization_version`.
+- Streaming weights with less than 128 KiB of reusable payload buffers, in
+  addition to the bounded metadata/index allocations.
+
+The input is opened read-only. Existing output files are never overwritten.
+A temporary file in the output directory is validated and moved to the requested
+path only after conversion succeeds; failures and handled cancellation remove
+the temporary file. The output directory must already exist. Files with no
+eligible tensors are rejected.
+
+Requantization, split files, big-endian input, and output profiles such as
+`Q3_K_S` or `Q4_K_M` are **not implemented**. The quantizer checks actual tensor
+encodings rather than trusting the filename or file-level profile. The Ministral
+`Q4_K_M` used by the inspection launch profile is therefore not a supported input;
+select a floating-point GGUF instead. Files under LM Studio can be addressed with
+`"$LM_STUDIO_MODELS_FOLDER/<relative-model-path>.gguf"`.
+
+The library API is also available independently of the CLI:
+
+```fsharp
+let result =
+    GgufQuantizer.quantizeFile GgufQuantizationFormat.Q8_0
+        "model-f16.gguf" "model-q8_0.gguf"
+```
+
+`quantizeFileWithCancellation` accepts the same arguments followed by a
+`System.Threading.CancellationToken`. Unsupported or malformed data, NaN/infinite
+converted weights, and scales outside the finite F16 range raise
+`InvalidDataException`; file access errors remain ordinary I/O exceptions.
+See [native quantization details](docs/gguf.md#native-quantization) for the
+block layouts, numerical limits and tensor selection policy.
+
 ## Documentation
 
 - [Format comparison, tensor storage, strides, and illustration notes](docs/README.md)
@@ -178,6 +235,8 @@ dotnet build Marmotte.slnx
 dotnet test Marmotte.slnx
 ```
 
-Parser tests construct small binary files in memory. CLI tests run the application
-against temporary fixtures and check reports, argument handling, and errors.
+Parser and quantizer tests construct small binary fixtures and check index
+validation, exact quantization blocks, numerical error, metadata preservation,
+and output protection. CLI tests run the application against temporary fixtures
+and check both commands, argument handling, and errors.
 No model or weight download is required.
