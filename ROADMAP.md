@@ -62,6 +62,8 @@ local check.
 
 ### CPU kernels
 
+- [x] Define contiguous F32 execution tensors and an `Add` contract in Core, with
+  explicit allocation/transfers and a scalar CPU implementation in `Marmotte.Cpu`.
 - [ ] Matrix-vector and matrix-matrix products over quantized weights.
 - [ ] RMS normalization, RoPE with YaRN scaling, softmax, SwiGLU and embedding
   lookup.
@@ -95,8 +97,13 @@ local check.
 This milestone follows the CPU milestone directly. The CPU implementation remains
 the reference for results.
 
-- [ ] Extract a backend boundary from the working CPU implementation: weight
-  storage, key-value cache, and the operations used by the forward pass.
+- [x] Create `Marmotte.Cuda` and `Marmotte.Metal` projects implementing the common
+  tensor and `Add` contracts with explicit `NotImplementedException` placeholders.
+- [x] Define backend contracts for weights kept in their stored encoding,
+  submission-ordered execution with explicit synchronization, and tensor
+  lifetimes owned by the backend.
+- [ ] Extend the boundary to the key-value cache and the operations used by the
+  forward pass as they are implemented.
 - [ ] Choose the interop approach for each backend: native kernels called through
   P/Invoke, or a .NET GPU library.
 - [ ] CUDA backend: weight upload, quantized matrix products and the remaining

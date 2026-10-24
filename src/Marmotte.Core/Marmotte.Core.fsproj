@@ -10,6 +10,7 @@
         <Compile Include="Tensors.fs" />
         <Compile Include="FileTensorSource.fs" />
         <Compile Include="WeightMatrix.fs" />
+        <Compile Include="Compute.fs" />
     </ItemGroup>
 
     <ItemGroup>

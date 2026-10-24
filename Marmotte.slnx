@@ -12,19 +12,27 @@
     <File Path="docs\gguf.md" />
     <File Path="docs\inference-pipeline.md" />
     <File Path="docs\inference-pipeline.png" />
+    <File Path="docs\kernels.md" />
     <File Path="docs\safetensors-format.png" />
     <File Path="docs\safetensors.md" />
     <File Path="docs\tensor-storage-modes.png" />
     <File Path="docs\tensor-strides.png" />
     <File Path="docs\tensor-transpose-strides.png" />
   </Folder>
+  <Folder Name="/examples/">
+    <File Path="examples/Add.fsx" />
+  </Folder>
   <Folder Name="/src/">
     <Project Path="src/Marmotte.Cli/Marmotte.Cli.fsproj" />
     <Project Path="src/Marmotte.Core/Marmotte.Core.fsproj" />
+    <Project Path="src/Marmotte.Cpu/Marmotte.Cpu.fsproj" />
+    <Project Path="src/Marmotte.Cuda/Marmotte.Cuda.fsproj" />
     <Project Path="src/Marmotte.Gguf/Marmotte.Gguf.fsproj" />
+    <Project Path="src/Marmotte.Metal/Marmotte.Metal.fsproj" />
     <Project Path="src/Marmotte.Safetensors/Marmotte.Safetensors.fsproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/Marmotte.Backends.Tests/Marmotte.Backends.Tests.fsproj" />
     <Project Path="tests/Marmotte.Cli.Tests/Marmotte.Cli.Tests.fsproj" />
     <Project Path="tests/Marmotte.Core.Tests/Marmotte.Core.Tests.fsproj" />
     <Project Path="tests/Marmotte.Gguf.Tests/Marmotte.Gguf.Tests.fsproj" />

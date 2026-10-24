@@ -143,6 +143,32 @@ which can run concurrently. A payload must therefore fit in one array, and
 loaded weights occupy as much memory as in the file. Memory mapping, row decoding,
 architecture-specific tensor names and model configuration are not implemented yet.
 
+## Execution tensors and kernels
+
+`Marmotte.Core` defines `TensorShape`, `ITensor`, `IWeightTensor`, `IAddKernel` and
+`ITensorBackend`.
+The three backend projects share these contracts:
+
+- `Marmotte.Cpu`: owned F32 arrays, explicit upload/download, weight tensors that
+  retain the stored payload, and a scalar `Add` kernel.
+- `Marmotte.Cuda` and `Marmotte.Metal`: buildable placeholders whose allocation,
+  transfers and `Add` raise `NotImplementedException`, without requiring a GPU SDK.
+
+`Add` writes into a preallocated destination and requires identical contiguous,
+row-major shapes. In-place addition is supported. Operations on one backend take
+effect in submission order and may return before they complete; `Download` and
+`Synchronize` wait for them. Tensors belong to the backend instance that created
+them, transfers are explicit, and disposing a backend releases the tensors it
+still owns. `UploadWeights` places a `WeightMatrix` on a backend in its stored
+encoding, without decoding it; no kernel consumes weight tensors yet.
+
+See [execution tensor contracts and the Add walkthrough](docs/kernels.md), or run
+the example without a local model:
+
+```sh
+dotnet fsi examples/Add.fsx
+```
+
 ## Inspect a local GGUF file
 
 ### Command line
@@ -306,6 +332,7 @@ block layouts, numerical limits and tensor selection policy.
 - [Illustrated inference pipeline: model files, embeddings, KV cache and generation](docs/inference-pipeline.md)
 - [GGUF format and current implementation](docs/gguf.md)
 - [Safetensors format and current implementation](docs/safetensors.md)
+- [Execution tensors and Add on CPU, CUDA and Metal](docs/kernels.md)
 - [Roadmap](ROADMAP.md): CPU inference first, then CUDA and Metal backends
 
 ## Build and tests
@@ -329,7 +356,8 @@ and output protection. Safetensors tests encode JSON headers and data buffers
 directly. CLI tests run the application against temporary GGUF and Safetensors
 fixtures and check both commands, argument handling, and errors. Core tests
 check tensor sources and weight matrices with an in-memory source and temporary
-files.
+files. Backend tests check F32 addition, shape validation, buffer ownership,
+transfers and disposal, plus explicit CUDA/Metal placeholder failures.
 No model or weight download is required.
 
 ## Coding guidelines

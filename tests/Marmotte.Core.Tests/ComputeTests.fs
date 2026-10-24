@@ -1,0 +1,52 @@
+module Marmotte.Core.ComputeTests
+
+open System
+open System.Collections.Generic
+open Marmotte.Core
+open Xunit
+
+[<Fact>]
+let ``execution shapes distinguish scalars empty tensors and matrices`` () =
+    let scalar = TensorShape.Create [||]
+    let empty = TensorShape.Create [| Int32.MaxValue; Int32.MaxValue; 0 |]
+    let matrix = TensorShape.Create [| 2; 3 |]
+
+    Assert.Equal(0, scalar.Rank)
+    Assert.Equal(1, scalar.ElementCount)
+    Assert.Equal(0, empty.ElementCount)
+    Assert.Equal(6, matrix.ElementCount)
+    Assert.Equal(TensorShape.Create [| 2; 3 |], matrix)
+    Assert.NotEqual(TensorShape.Create [| 3; 2 |], matrix)
+    Assert.NotEqual(TensorShape.Create [| 6 |], matrix)
+
+[<Fact>]
+let ``execution shapes compare hash and print by dimensions`` () =
+    let matrix = TensorShape.Create [| 2; 3 |]
+    let same = TensorShape.Create [| 2; 3 |]
+
+    Assert.True((matrix = same))
+    Assert.False((matrix = TensorShape.Create [| 3; 2 |]))
+    Assert.Equal(matrix.GetHashCode(), same.GetHashCode())
+    Assert.False(matrix.Equals(null: obj))
+    Assert.False(matrix.Equals(box [| 2; 3 |]))
+    Assert.Contains(same, HashSet<TensorShape>([ matrix ]))
+    Assert.Equal("[2; 3]", string matrix)
+    Assert.Equal("[]", string (TensorShape.Create [||]))
+
+[<Fact>]
+let ``execution shape owns immutable dimensions`` () =
+    let dimensions = [| 2; 3 |]
+    let shape = TensorShape.Create dimensions
+    dimensions[0] <- 5
+
+    Assert.Equal<int>([| 2; 3 |], shape.Dimensions)
+    let exposed = shape.Dimensions :?> IList<int>
+    Assert.Throws<NotSupportedException>(fun () -> exposed[0] <- 7) |> ignore
+    Assert.Equal(6, shape.ElementCount)
+
+[<Fact>]
+let ``execution shapes reject negative dimensions and overflow without allocating values`` () =
+    for dimensions in [ [| -1 |]; [| 0; -1 |]; [| Int32.MaxValue |]; [| 65536; 65536 |] ] do
+        Assert.Throws<ArgumentException>(fun () -> TensorShape.Create dimensions |> ignore) |> ignore
+
+    Assert.Throws<ArgumentNullException>(fun () -> TensorShape.Create null |> ignore) |> ignore
