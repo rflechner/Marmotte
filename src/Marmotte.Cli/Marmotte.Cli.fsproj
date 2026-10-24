@@ -8,6 +8,7 @@
     <ItemGroup>
         <Compile Include="ConsoleDsl.fs" />
         <Compile Include="GgufReport.fs" />
+        <Compile Include="SafetensorsReport.fs" />
         <Compile Include="InfoCommand.fs" />
         <Compile Include="QuantizeCommand.fs" />
         <Compile Include="Program.fs"/>
@@ -22,6 +23,7 @@
 
     <ItemGroup>
         <ProjectReference Include="../Marmotte.Gguf/Marmotte.Gguf.fsproj" />
+        <ProjectReference Include="../Marmotte.Safetensors/Marmotte.Safetensors.fsproj" />
     </ItemGroup>
 
 </Project>

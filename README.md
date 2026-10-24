@@ -72,6 +72,42 @@ to 65,535 bytes and tensor names to 64 bytes.
 References: [GGUF specification](https://github.com/ggml-org/ggml/blob/master/docs/gguf.md)
 and [GGML encodings](https://github.com/ggml-org/llama.cpp/blob/master/gguf-py/gguf/constants.py).
 
+## Safetensors reader
+
+`Marmotte.Safetensors` reads the index of a single `.safetensors` file: the JSON
+header, its string metadata and the tensor descriptors, without reading the
+weights.
+
+```fsharp
+open Marmotte.Safetensors
+
+let model = Safetensors.readFile "model.safetensors"
+
+for tensor in model.Tensors do
+    printfn "%s: %s %A, position %d"
+        tensor.Name tensor.Dtype.WireName tensor.Shape tensor.AbsoluteOffset
+```
+
+`Safetensors.read stream` accepts a readable, seekable stream, starting at its
+current position, and leaves it open at `DataOffset`. Shapes are in row-major (C)
+order, with the contiguous dimension last, unlike GGUF dimensions. `Offset` is
+relative to the tensor data buffer; `AbsoluteOffset` and `DataOffset` are
+positions in the stream. Tensors are returned in data offset order, not in JSON
+order. `Metadata` contains the optional `__metadata__` strings.
+
+The reader validates the header length, UTF-8, the JSON structure, the 22 dtypes
+of the reference implementation, shapes, sizes and offsets. The tensors must cover
+the data buffer exactly, without gaps, overlaps or trailing bytes. Duplicate keys,
+compared after JSON unescaping, unknown dtypes and unknown descriptor fields are
+rejected rather than ignored. Format errors raise `System.IO.InvalidDataException`;
+file access errors remain ordinary I/O exceptions. `SafetensorsReadOptions`
+configures the limits: by default a 100,000,000-byte header, as in the reference
+implementation, 100,000 tensors and rank 64.
+
+Sharded models described by `model.safetensors.index.json` are not handled yet;
+inspect each shard separately. See the
+[Safetensors format and implementation notes](docs/safetensors.md).
+
 ## Inspect a local GGUF file
 
 ### Command line
@@ -82,8 +118,13 @@ directory:
 ```sh
 dotnet run --project src/Marmotte.Cli -- info "/path/to/model.gguf"
 dotnet run --project src/Marmotte.Cli -- info "/path/to/model.gguf" --metadata --tensor-limit 20
+dotnet run --project src/Marmotte.Cli -- info "/path/to/model.safetensors" --metadata
 dotnet run --project src/Marmotte.Cli -- info --help
 ```
+
+`info` detects the format from the file's content, not its extension: a GGUF
+file starts with its magic, a Safetensors file with an 8-byte length followed by
+the `{` of its JSON header.
 
 The command displays the model name, architecture, file-level quantization
 profile, GGUF version and byte order, file size, metadata and tensor counts,
@@ -99,8 +140,16 @@ two levels. `--tensor-limit COUNT` changes the number of tensor descriptors
 displayed; `0` hides the preview. The parser reads only metadata and tensor
 descriptors, without loading or dequantizing weights.
 
+For a Safetensors file, the report shows the file and JSON header sizes, metadata
+and tensor counts, total tensor elements, the position and size of the tensor
+data buffer, and index parsing time. It groups tensors by dtype and previews up
+to 12 tensors in data offset order. Shapes keep the row-major order of the file,
+with the contiguous dimension last. `--metadata` shows the `__metadata__` strings
+with the same 120-character previews.
+
 Successful inspection exits with code `0`. Invalid arguments, inaccessible files,
-and malformed GGUF files produce a diagnostic on stderr and exit with code `1`.
+and malformed or unrecognized files produce a diagnostic on stderr and exit with
+code `1`.
 
 ### Launch profile for Ministral
 
@@ -221,7 +270,7 @@ block layouts, numerical limits and tensor selection policy.
 - [Format comparison, tensor storage, strides, and illustration notes](docs/README.md)
 - [Illustrated inference pipeline: model files, embeddings, KV cache and generation](docs/inference-pipeline.md)
 - [GGUF format and current implementation](docs/gguf.md)
-- [Safetensors format and proposed next steps](docs/safetensors.md) — not implemented yet
+- [Safetensors format and current implementation](docs/safetensors.md)
 - [Roadmap](ROADMAP.md): CPU inference first, then CUDA and Metal backends
 
 ## Build and tests
@@ -241,8 +290,9 @@ dotnet test Marmotte.slnx
 
 Parser and quantizer tests construct small binary fixtures and check index
 validation, exact quantization blocks, numerical error, metadata preservation,
-and output protection. CLI tests run the application against temporary fixtures
-and check both commands, argument handling, and errors.
+and output protection. Safetensors tests encode JSON headers and data buffers
+directly. CLI tests run the application against temporary GGUF and Safetensors
+fixtures and check both commands, argument handling, and errors.
 No model or weight download is required.
 
 ## Coding guidelines

@@ -139,3 +139,10 @@ These improvements continue alongside the milestones.
 - [ ] K-quant encoders, starting with Q4_K and Q6_K, then mixed profiles such as
   `Q4_K_M`.
 - [ ] Requantization from quantized inputs, using the decoders from milestone 1.
+
+## Safetensors reader
+
+- [ ] Sharded models: read `model.safetensors.index.json` and present the shards
+  as one tensor index.
+- [ ] Read companion files, such as `config.json` and tokenizer files, once
+  Safetensors models become inference targets.

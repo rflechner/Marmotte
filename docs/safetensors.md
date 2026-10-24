@@ -4,9 +4,11 @@ Safetensors is an open tensor serialization format maintained by Hugging Face.
 It is designed to be simple, fast, and safe to parse: unlike pickle-based
 formats, loading a Safetensors file does not execute code.
 
-**Marmotte status: planned, not implemented.** This is a format reference and a
-proposed implementation plan. There is no `Marmotte.Safetensors` project yet.
-The existing GGUF reader does not read Safetensors files.
+**Marmotte status: index reader implemented.** `Marmotte.Safetensors` reads and
+validates the header and tensor descriptors of one `.safetensors` file without
+reading the weights, and the CLI's `info` command displays them. Payload access,
+sharded models and decoding are not implemented; see
+[Marmotte implementation](#marmotte-implementation).
 
 The [upstream format definition](https://github.com/huggingface/safetensors#format)
 and [reference implementation](https://github.com/huggingface/safetensors/blob/main/safetensors/src/tensor.rs)
@@ -45,9 +47,10 @@ N: uint64 little-endian
 
 `N` is the number of bytes in the JSON header that immediately follows.
 
-A parser must validate `N` before allocating memory. Marmotte's future reader
-should enforce configurable header and nesting limits, independently of the
-GGUF reader's options.
+A parser must validate `N` before allocating memory. Marmotte checks it against
+the remaining stream length and a configurable limit, independent of the GGUF
+reader's options. The default limit, 100,000,000 bytes, matches
+`MAX_HEADER_SIZE` in the reference implementation.
 
 ## JSON Header
 
@@ -72,8 +75,11 @@ Example:
 }
 ```
 
-The JSON header may end with ASCII spaces, included in `N`. Tensor names are
-object keys. `__metadata__` is a string-to-string map, not a tensor descriptor.
+The JSON header may end with ASCII spaces, included in `N`; the reference writer
+pads the header to a multiple of 8 bytes. The reference reader leaves this
+padding to its JSON parser, which accepts any JSON whitespace. Marmotte does the
+same: spaces, tabs, carriage returns and line feeds may follow the object, but
+no other byte. Tensor names are object keys. `__metadata__` is a string-to-string map, not a tensor descriptor.
 There is no extra GGUF-style alignment region between the header and data.
 
 ## Tensor Descriptor
@@ -95,11 +101,11 @@ absolute_position = data_start + BEGIN
 byte_count = END - BEGIN
 ```
 
-The `uint64` representation for dimensions and offsets is a proposed F# API
-choice, not a binary integer encoding inside the JSON. Reject negative,
-fractional, out-of-range, or incorrectly shaped JSON values before conversion.
-If parsing from a nonzero stream position, add that starting position to
-`data_start` when exposing absolute stream offsets.
+Marmotte exposes dimensions and offsets as `uint64`, an F# API choice rather
+than a binary encoding inside the JSON. It rejects negative, fractional,
+exponent-form, out-of-range, or incorrectly shaped JSON values before conversion.
+When parsing from a nonzero stream position, it adds that starting position to
+`data_start` in the absolute stream offsets it exposes.
 
 ### Shapes and Element Sizes
 
@@ -120,9 +126,23 @@ require bit_count % 8 == 0
 require END - BEGIN == bit_count / 8
 ```
 
-Verify the dtype table against the targeted upstream version before coding.
-For the initial reader, explicitly list supported dtypes and reject others;
-do not silently round a packed size or reinterpret an unknown dtype.
+Marmotte supports the 22 dtypes of the reference implementation's `Dtype` enum,
+with the widths of `Dtype::bitsize`
+([tensor.rs](https://github.com/huggingface/safetensors/blob/main/safetensors/src/tensor.rs),
+checked on 2026-10-24):
+
+| Bits per element | Dtypes |
+| ---: | --- |
+| 4 | `F4` |
+| 6 | `F6_E2M3`, `F6_E3M2` |
+| 8 | `BOOL`, `U8`, `I8`, `F8_E5M2`, `F8_E4M3`, `F8_E8M0`, `F8_E4M3FNUZ`, `F8_E5M2FNUZ` |
+| 16 | `I16`, `U16`, `F16`, `BF16` |
+| 32 | `I32`, `U32`, `F32` |
+| 64 | `C64` (two 32-bit floating-point parts), `F64`, `I64`, `U64` |
+
+Names are case-sensitive. Other dtypes are rejected: a packed size is never
+rounded and an unknown dtype is never reinterpreted. Update this table and
+`SafetensorsDtype` together when upstream adds a dtype.
 
 ## Tensor Data Buffer
 
@@ -198,28 +218,52 @@ Safetensors files must be treated as untrusted input.
 - Confirm the encoded byte size agrees with the shape and dtype layout.
 - Never trust offsets merely because the JSON parses successfully.
 
-## Proposed Marmotte Implementation Plan
+## Marmotte Implementation
 
-The first milestone should mirror GGUF's existing index-inspection scope,
-without requiring a tensor runtime or GPU backend:
+`Marmotte.Safetensors` mirrors the GGUF reader's index-inspection scope, without
+a tensor runtime. Its dtypes use a dedicated `SafetensorsDtype` type, distinct
+from `GgmlType` and `GgufFileType`.
 
-1. Add `Marmotte.Safetensors` and a dedicated test project to `Marmotte.slnx`.
-2. Model file metadata and tensor descriptors with F# records, and dtypes with a
-   dedicated type. Keep wire tags distinct from `GgmlType` and `GgufFileType`.
-3. Implement bounded stream/file readers with documented position, ownership,
-   and error contracts consistent with the GGUF API where appropriate.
-4. Use `System.Text.Json`; detect duplicate decoded names before building maps
-   instead of relying on last-value-wins property lookup.
-5. Validate dtype widths, shapes, ranges, overflow, and complete data coverage.
-   Return metadata and descriptors without reading the weights.
-6. Add synthetic fixtures for ordinary tensors, scalars, empty tensors,
-   reordered JSON entries, padding, duplicate keys, truncation, and invalid sizes.
-7. Add a small `.fsx` inspection script, then optionally extend `Marmotte.Cli`.
-   Do not create separate GGUF and Safetensors CLI projects without a need.
+```fsharp
+open Marmotte.Safetensors
 
-Bounded payload access, mapping lifetimes, shared tensor storage, decoding,
-and inference belong to later milestones. Multi-file shard indexes are also a
-separate concern from parsing one `.safetensors` file.
+let model = Safetensors.readFile "model.safetensors"
+printfn "%d tensors, data buffer at byte %d" model.Tensors.Length model.DataOffset
+```
+
+| Property | Current contract |
+| --- | --- |
+| Input | A readable, seekable stream, from its current position to its end |
+| Stream ownership | `read` leaves the caller's stream open at `DataOffset`; `readFile` opens and closes its own |
+| Weights | Never read; ranges are validated against the stream length |
+| Tensor order | Data offset, then end offset and name; JSON order is not preserved |
+| Shapes | Row-major as stored, contiguous dimension last |
+| Metadata | `__metadata__` as a string map, empty when absent |
+| Duplicate keys | Rejected after JSON unescaping, for tensors, descriptor fields and metadata |
+| Descriptor fields | `dtype`, `shape` and `data_offsets` are required; other fields are rejected |
+| JSON | Strict UTF-8, leading `{`, no comments or trailing commas, nesting depth of at most 3 |
+| Limits | `SafetensorsReadOptions`: header bytes (100,000,000), tensors (100,000), rank (64) |
+| Errors | `InvalidDataException` for malformed files; I/O exceptions propagate |
+
+Some checks are stricter than the reference reader. It does not check the leading
+`{` that the format requires, and leaves duplicate keys to its JSON library;
+Marmotte checks both explicitly. Its deserialization ignores unknown descriptor
+fields and accepts a `null` `__metadata__`; Marmotte rejects them, so that a
+future field cannot silently change the meaning of a payload.
+
+The CLI's `info` command recognizes a Safetensors file from its content and
+reports the header and data buffer sizes, a summary by dtype, metadata, and a
+bounded tensor preview. Tests encode headers and data buffers directly and cover
+the worked example, scalars, empty tensors, reordered JSON entries, padding,
+every dtype width, duplicate keys, truncation, invalid sizes and coverage errors.
+
+Not implemented yet:
+
+- Sharded models described by `model.safetensors.index.json`, and companion files
+  such as `config.json` and tokenizer files.
+- Bounded payload access, mapping lifetimes, shared tensor storage, decoding and
+  inference, which belong to later milestones.
+- An exploration `.fsx` script; the `info` command covers inspection.
 
 ## References
 

@@ -28,8 +28,9 @@ let main args =
                 Console.Error.WriteLine("Error: " + ConsoleDsl.previewText 512 error.Message)
                 1) |> ignore
         config.AddCommand<InfoCommand>("info")
-            .WithDescription("Inspect a GGUF file without loading its weights.")
+            .WithDescription("Inspect a GGUF or Safetensors file without loading its weights.")
             .WithExample("info", "model.gguf")
+            .WithExample("info", "model.safetensors")
             .WithExample("info", "model.gguf", "--metadata", "--tensor-limit", "20")
         |> ignore
         config.AddCommand<QuantizeCommand>("quantize")

@@ -7,6 +7,7 @@
   <ItemGroup>
     <Compile Include="TestSupport.fs" />
     <Compile Include="InfoCommandTests.fs" />
+    <Compile Include="SafetensorsInfoTests.fs" />
     <Compile Include="QuantizeCommandTests.fs" />
   </ItemGroup>
   <ItemGroup>

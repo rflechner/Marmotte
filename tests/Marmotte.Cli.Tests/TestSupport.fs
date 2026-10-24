@@ -5,10 +5,11 @@ open System.Diagnostics
 open System.IO
 open Marmotte.Cli
 
-type ModelFile(bytes: byte array) =
+type ModelFile(bytes: byte array, fileName: string) =
     let directory = Directory.CreateTempSubdirectory("marmotte-cli-tests-")
-    let path = Path.Combine(directory.FullName, "[sample] model.gguf")
+    let path = Path.Combine(directory.FullName, fileName)
     do File.WriteAllBytes(path, bytes)
+    new(bytes) = new ModelFile(bytes, "[sample] model.gguf")
     member _.Path = path
     member _.Directory = directory.FullName
     member _.OutputPath = Path.Combine(directory.FullName, "[quantized] model.gguf")

@@ -7,13 +7,36 @@ open System.IO
 open Spectre.Console
 open Spectre.Console.Cli
 open Marmotte.Gguf
+open Marmotte.Safetensors
 
-/// Arguments for inspecting the index of a local GGUF file.
+/// Model file formats recognized from their leading bytes, never from the file extension.
+[<RequireQualifiedAccess>]
+type internal ModelFileFormat =
+    | Gguf
+    | Safetensors
+
+module internal ModelFileFormat =
+    /// GGUF starts with its ASCII magic. Safetensors starts with an 8-byte header length,
+    /// followed by the '{' that opens its JSON header. The stream position is restored.
+    let detect (stream: Stream) =
+        let start = stream.Position
+        let prefix = Array.zeroCreate<byte> 9
+        let count = stream.ReadAtLeast(prefix, prefix.Length, throwOnEndOfStream = false)
+        stream.Position <- start
+
+        if count >= 4 && prefix[0..3] = "GGUF"B then
+            ModelFileFormat.Gguf
+        elif count = prefix.Length && prefix[8] = byte '{' then
+            ModelFileFormat.Safetensors
+        else
+            raise (InvalidDataException("Unrecognized file format: expected the GGUF magic at byte 0 or a Safetensors JSON header at byte 8."))
+
+/// Arguments for inspecting the index of a local GGUF or Safetensors file.
 type InfoSettings() =
     inherit CommandSettings()
 
     [<CommandArgument(0, "<FILE>")>]
-    [<Description("Path to the GGUF file to inspect.")>]
+    [<Description("Path to the GGUF or Safetensors file to inspect; the format is detected from its content.")>]
     member val FilePath = "" with get, set
 
     [<CommandOption("--metadata")>]
@@ -27,7 +50,7 @@ type InfoSettings() =
 
     override this.Validate() =
         if String.IsNullOrWhiteSpace this.FilePath then
-            ValidationResult.Error("A GGUF file path is required.")
+            ValidationResult.Error("A model file path is required.")
         elif this.TensorLimit < 0 then
             ValidationResult.Error("--tensor-limit must be zero or greater.")
         else
@@ -39,10 +62,22 @@ type InfoCommand() =
 
     override _.Execute(_, settings, _) =
         use stream = File.OpenRead settings.FilePath
-        let timer = Stopwatch.StartNew()
-        let model = Gguf.read stream
-        timer.Stop()
+        let fileName = Path.GetFileName settings.FilePath
 
-        GgufReport.write AnsiConsole.Console (Path.GetFileName settings.FilePath)
-            stream.Length timer.Elapsed settings.ShowMetadata settings.TensorLimit model
+        // Only index parsing is timed, not format detection or rendering.
+        let timedRead read =
+            let timer = Stopwatch.StartNew()
+            let model = read stream
+            timer.Stop()
+            model, timer.Elapsed
+
+        match ModelFileFormat.detect stream with
+        | ModelFileFormat.Gguf ->
+            let model, elapsed = timedRead Gguf.read
+            GgufReport.write AnsiConsole.Console fileName
+                stream.Length elapsed settings.ShowMetadata settings.TensorLimit model
+        | ModelFileFormat.Safetensors ->
+            let model, elapsed = timedRead Safetensors.read
+            SafetensorsReport.write AnsiConsole.Console fileName
+                stream.Length elapsed settings.ShowMetadata settings.TensorLimit model
         0

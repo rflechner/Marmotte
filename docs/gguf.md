@@ -379,7 +379,6 @@ Not implemented:
 - Lazy tensor byte views or memory-mapped storage
 - General tensor loading, quantized-weight decoding, or model execution
 - Requantization, K-quant/IQ encoders and architecture-specific quantization policies
-- Safetensors parsing; see the [next-format plan](safetensors.md)
 
 ## References
 

@@ -9,7 +9,7 @@ work. Illustrations are conceptual aids, not executable format specifications.
 | Document | Purpose | Marmotte status |
 | --- | --- | --- |
 | [GGUF](gguf.md) | Binary layout, parser and native quantization contracts | Index reading and F32/F16/BF16 to Q4_0/Q8_0 conversion implemented |
-| [Safetensors](safetensors.md) | JSON header, packed data, and next implementation steps | Planned; no reader yet |
+| [Safetensors](safetensors.md) | JSON header, packed data, and index reader | Index reader implemented, including `info` |
 | [From model files to a response](inference-pipeline.md) | Illustrated loading, embeddings, attention, KV cache and generation pipeline | Conceptual guide; inference is planned |
 | Storage and strides below | Concepts for future tensor access and execution | No tensor storage or view API yet |
 

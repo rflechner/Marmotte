@@ -18,11 +18,12 @@ to F#, .NET, and local model inference.
 - Manage explicit NuGet package versions centrally in the root `Directory.Packages.props`. Add `PackageReference` entries without `Version` attributes to the projects that need them.
 - Include an explicit `FSharp.Core` package reference in each F# project: Central Package Management disables the SDK's implicit reference. Keep its version in `Directory.Packages.props` too.
 - `src/Marmotte.Gguf` owns GGUF types, index reading, metadata, tensor descriptors, and native streaming quantization. `Gguf.read` remains an index-only operation; `GgufQuantizer` separately converts F32/F16/BF16 weights to Q4_0 or Q8_0. There is no general tensor-loading or dequantization API yet.
-- `src/Marmotte.Core` contains shared helpers and is intended for model and inference domain code. `src/Marmotte.Cli` owns Spectre.Console orchestration and presentation, including `info` for inspection and `quantize` for writing a new GGUF. There is no inference pipeline yet.
+- `src/Marmotte.Safetensors` owns Safetensors types and index reading for a single file. `Safetensors.read` validates the JSON header, tensor descriptors, and exact data coverage without reading weights. Sharded indexes and payload access are not implemented.
+- `src/Marmotte.Core` contains shared helpers and is intended for model and inference domain code. `src/Marmotte.Cli` owns Spectre.Console orchestration and presentation, including `info` for inspecting GGUF and Safetensors files, detected from their content, and `quantize` for writing a new GGUF. There is no inference pipeline yet.
 - Keep console output and application-specific decisions in the CLI or exploration scripts. Libraries should expose usable data and explicit contracts.
-- Reuse `src/Marmotte.Cli/ConsoleDsl.fs` for table construction, text previews, byte formatting, and section rendering. Keep GGUF-specific interpretation in `GgufReport.fs`.
-- `tests/Marmotte.Gguf.Tests` contains xUnit tests using small binary fixtures. Keep automated tests independent of local model installations.
-- `tests/Marmotte.Cli.Tests` runs the CLI against temporary GGUF fixtures to check output, argument handling, and exit codes. Treat model text as literal console content, and keep metadata and tensor previews bounded.
+- Reuse `src/Marmotte.Cli/ConsoleDsl.fs` for table construction, text previews, byte formatting, and section rendering. Keep format-specific interpretation in `GgufReport.fs` and `SafetensorsReport.fs`.
+- `tests/Marmotte.Gguf.Tests` and `tests/Marmotte.Safetensors.Tests` contain xUnit tests using small binary fixtures. Keep automated tests independent of local model installations.
+- `tests/Marmotte.Cli.Tests` runs the CLI against temporary GGUF and Safetensors fixtures to check output, argument handling, and exit codes. Treat model text as literal console content, and keep metadata and tensor previews bounded.
 - Keep dependencies directed toward reusable libraries. Do not make libraries depend on the CLI or scripts, or introduce architectural layers without a concrete need.
 
 ## Document contracts and intent
@@ -39,7 +40,7 @@ to F#, .NET, and local model inference.
 - Favor straightforward code over clever, dense expressions. Give functions and modules one cohesive responsibility.
 - Prefer immutable bindings and pure transformations. Keep I/O and resource management at clear boundaries.
 - Use records for related data and discriminated unions for alternatives with different meanings. Prefer exhaustive pattern matching to flags, casts, or loosely typed dictionaries.
-- Use `option` for meaningful absence and `Result` for expected failures when designing a new API. Preserve established exception-based contracts where they are appropriate: the GGUF reader reports malformed files with `InvalidDataException` and lets ordinary I/O failures propagate.
+- Use `option` for meaningful absence and `Result` for expected failures when designing a new API. Preserve established exception-based contracts where they are appropriate: the GGUF and Safetensors readers report malformed files with `InvalidDataException` and let ordinary I/O failures propagate.
 - Use classes and interfaces when they clarify resource ownership, mutable state, .NET interoperation, or a real dependency boundary. Apply SOLID pragmatically; do not mechanically translate object-oriented patterns into F#.
 - Local mutation, arrays, spans, and explicit loops are appropriate for binary reading and measured performance needs. Keep mutation scoped and avoid shared mutable state.
 - A record containing arrays is not deeply immutable. Consider ownership and copying when exposing mutable buffers, especially large ones.
@@ -52,7 +53,7 @@ to F#, .NET, and local model inference.
 - Represent meaningful concepts with focused records, unions, or small types when they remove ambiguity. Avoid long tuples or parameter lists whose meaning callers must reconstruct.
 - Keep invariants and interpretation in the type or module that owns the concept. Expose useful members or functions rather than repeating interpretation logic in callers.
 - Keep `GgmlType` and `GgufFileType` separate. `Q3_K` is a tensor encoding; `Q3_K_S`, `Q3_K_M`, and `Q3_K_L` are file-level profiles. Their numeric identifiers belong to different domains.
-- Preserve the distinction between offsets relative to the tensor data section and absolute positions in the source stream. Preserve dimensions in GGML order, with the contiguous dimension first.
+- Preserve the distinction between offsets relative to the tensor data section and absolute positions in the source stream. Preserve GGUF dimensions in GGML order, with the contiguous dimension first, and Safetensors shapes in row-major order, with the contiguous dimension last.
 - Preserve unknown tensor and file-profile identifiers where the format remains readable, and state which validations are then unavailable. Reject unknown metadata tags when their payload layout cannot be determined.
 - Do not invent metadata or infer facts from filenames. Any deliberate inference should be explicit in the API and distinguishable from values read from the file.
 
