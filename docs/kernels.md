@@ -3,7 +3,8 @@
 `Marmotte.Core` defines the compute contracts. `Marmotte.Cpu`, `Marmotte.Cuda`
 and `Marmotte.Metal` each reference Core; Core references none of the backends.
 The implemented operations are element-wise F32 addition, the SwiGLU
-activation of the feed-forward layer, and RMS normalization.
+activation of the feed-forward layer, RMS normalization, and embedding lookup
+from stored weights.
 
 ## From GGUF to Add
 
@@ -11,17 +12,18 @@ activation of the feed-forward layer, and RMS normalization.
 
 [Open the full-size diagram](gguf-to-add-kernel.png).
 
-The diagram follows the implementation as of 2026-10-25. Solid teal paths are
+The diagram predates embedding lookup. Solid teal paths are
 implemented, dashed amber paths are planned, and gray panels identify GPU
 placeholders. Opening a source reads the index; `WeightMatrix.Read` requests a
 payload through that source. CPU `UploadWeights` then retains the encoded
 matrix without another payload copy.
 
-The missing bridge is model computation: future embedding and matrix-product
-kernels will consume stored weights and produce F32 activations. `IAddKernel`
-adds those activations, not encoded weights. Today, `examples/Add.fsx` supplies
-F32 host values directly through `Upload`. The output can feed another `Add`
-without a download; `Download` is the explicit route back to host values.
+Embedding lookup now provides the first connection from stored weights to F32
+activations; matrix products remain planned. `IAddKernel` adds those activations,
+not encoded weights. `examples/Embedding.fsx` demonstrates this lookup, while
+`examples/Add.fsx` supplies F32 host values directly through `Upload`. Kernel
+outputs can feed another kernel without a download; `Download` is the explicit
+route back to host values. The diagram's planned embedding label is now outdated.
 
 The image was generated with the built-in `image_gen` tool and visually reviewed.
 Its [generation and correction prompts](gguf-to-add-kernel.prompt.txt) are saved
@@ -36,9 +38,9 @@ backend as an `IWeightTensor`, keeping its encoding, rows and columns: the
 weights are never decoded as a whole. The CPU backend retains the matrix payload
 without copying it; a GPU backend is expected to copy it into device memory.
 Because a backend may retain the payload, keep the tensor source that produced
-the matrix alive while the weight tensor is in use. No kernel consumes weight
-tensors yet; a matrix-vector product would take an `IWeightTensor` and F32
-`ITensor` values.
+the matrix alive while the weight tensor is in use. Embedding lookup consumes
+an `IWeightTensor` and token IDs; a future matrix-vector product will consume
+an `IWeightTensor` and F32 `ITensor` values.
 
 `ITensor` represents an owned, writable, contiguous **F32 execution tensor**.
 Its `TensorShape` uses row-major dimensions: `[2; 3]` means two rows of three
@@ -68,11 +70,11 @@ decodes them automatically.
 | `IAddKernel.Add` | Safe `Vector<T>` loop with a scalar tail | `NotImplementedException` | `NotImplementedException` |
 | `ISwiGluKernel.SwiGlu` | Safe `Vector<T>` loop with `Vector.Exp`, scalar tail with `MathF.Exp` | `NotImplementedException` | `NotImplementedException` |
 | `IRmsNormKernel.RmsNorm` | Safe `Vector<T>` loops, sum of squares in double precision | `NotImplementedException` | `NotImplementedException` |
+| `IEmbeddingKernel.EmbeddingLookup` | Decodes selected weight rows directly into F32 output | `NotImplementedException` | `NotImplementedException` |
 | SDK/driver required today | None | None | None |
 
-`ITensorBackend` inherits the kernel interfaces, `IAddKernel`, `ISwiGluKernel`
-and `IRmsNormKernel`, so orchestration can call `backend.Add`, `backend.SwiGlu`
-and `backend.RmsNorm`.
+`ITensorBackend` inherits `IAddKernel`, `ISwiGluKernel`, `IRmsNormKernel` and
+`IEmbeddingKernel`, so orchestration can call each kernel directly on the backend.
 A consumer needing a single operation can accept its kernel interface directly.
 No generic operation registry, graph scheduler or native interop is needed for
 this example.
@@ -188,6 +190,61 @@ about 0.73 µs, against 3.3 µs for the same algorithm without vectors, which is
 limited by its single chain of additions. The 53 normalizations of one token
 take about 39 µs.
 
+## Embedding Lookup
+
+`EmbeddingLookup(weights, tokenIds, destination)` selects vocabulary rows:
+`destination[i, column] = weights[tokenIds[i], column]`. It applies no scaling,
+normalization or special handling for padding tokens. IDs are zero-based signed
+integers in `[0, weights.Rows)` and can repeat or arrive in any order. The caller
+chooses the matrix; the kernel does not infer architecture or tensor names.
+
+```fsharp
+let tokenIds = [| 7; 0; 7 |]
+use activations = backend.Allocate(TensorShape.Create [| tokenIds.Length; weights.Columns |])
+backend.EmbeddingLookup(weights, ReadOnlyMemory<int>(tokenIds), activations)
+```
+
+Destination must have exactly `[tokenIds.Length; weights.Columns]` dimensions,
+including `[1; Columns]` for one token. An empty batch requires `[0; Columns]`
+and performs no writes. Both tensors must be live and owned by the executing
+backend instance. Shape and ownership errors raise `ArgumentException`, null
+tensors raise `ArgumentNullException`, and an out-of-range ID raises
+`ArgumentOutOfRangeException` identifying its position. Disposal raises
+`ObjectDisposedException`. All arguments and every ID are checked before any
+output is written, including for an empty batch.
+
+The CPU decoder supports every current `TensorEncoding`: F32, F16, BF16, Q4_0,
+Q8_0, Q4_K and Q6_K. It uses safe spans and explicit little-endian reads, writing
+only requested rows directly into the destination, with no temporary decoded
+matrix, row or block buffers. Stored weights remain unchanged. `WeightMatrix`
+validates the payload length and whole blocks per row before upload; the source
+still loads the complete encoded matrix into a managed array. Lookup does not
+provide memory mapping or lazy file reads. Floating-point NaN, infinities,
+subnormals and signed zeros follow F32 conversion and arithmetic.
+
+The block layouts and reconstruction formulas were checked on 2026-10-25 against
+[GGML block definitions](https://github.com/ggml-org/llama.cpp/blob/master/ggml/src/ggml-common.h)
+and [GGML reconstruction formulas](https://github.com/ggml-org/llama.cpp/blob/master/ggml/src/ggml-quants.c):
+
+| Encoding | Stored block | Reconstruction |
+| --- | --- | --- |
+| Q4_0 | 32 values, 18 bytes | `scale × (q − 8)` with an F16 scale and four-bit `q`; low nibbles precede high nibbles |
+| Q8_0 | 32 values, 34 bytes | F16 scale times a signed byte |
+| Q4_K | 256 values, 144 bytes | Eight groups of 32, each with six-bit scale and minimum factors; `d × scale × q − dmin × minimum` |
+| Q6_K | 256 values, 210 bytes | Sixteen groups of 16; signed group scales and six-bit values centered at 32; `d × scale × (q − 32)` |
+
+This is an original scalar reference implementation, without unsafe code or a
+native dependency. Tests specify bytes and expected values independently of
+Marmotte's quantizer, exercising packed fields, signed scales, block and row
+boundaries, repeated IDs, and validation before writing. GPU lookup remains an
+explicit placeholder. Unsupported encodings on a future backend must raise
+`NotSupportedException` before submission.
+
+IDs are consumed or copied before the call returns; callers may immediately
+reuse the host ID buffer, but must not mutate it during the call. The CPU
+operation completes before returning. An asynchronous backend must copy IDs
+before returning and follow the same ordering rules as the other kernels.
+
 ## Ordering, Completion and Lifetime
 
 Operations submitted to one backend instance take effect in submission order: a
@@ -214,15 +271,17 @@ disposed backend raise `ObjectDisposedException`; invalid arguments raise
 `ArgumentException` (or `ArgumentNullException`). Concurrent calls on one
 backend, including disposal, are outside this initial contract.
 
-## Run the Example
+## Run the Examples
 
 From the repository root, with no model files or GPU installation:
 
 ```sh
 dotnet fsi examples/Add.fsx
+dotnet fsi examples/Embedding.fsx
 ```
 
-The script loads the library sources, runs the same function with each backend,
+The Add script loads the library sources, runs the same function with each backend,
 prints the CPU result, and reports the GPU placeholders' exceptions at the first
-upload. Tests also call GPU allocation, download and each kernel directly to
-verify that all unfinished operations fail explicitly.
+upload. The embedding script uses a tiny in-memory F32 vocabulary and prints
+the rows for IDs `[1; 0; 1]`. Tests also call GPU allocation, download and each
+kernel directly to verify that all unfinished operations fail explicitly.

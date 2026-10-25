@@ -150,7 +150,7 @@ type private CpuWeightTensor(owner: obj, weights: WeightMatrix, onDispose: ICpuS
 
     member _.Owner = owner
 
-    /// The stored rows that future kernels decode or multiply.
+    /// The stored rows that weight kernels consume without decoding the whole matrix.
     member this.Weights =
         match retained with
         | Some weights -> weights
@@ -172,7 +172,7 @@ type private CpuWeightTensor(owner: obj, weights: WeightMatrix, onDispose: ICpuS
                 (this :> ICpuStorage).Release()
                 onDispose this
 
-/// Safe CPU reference implementation of the tensor and kernel contracts, vectorized with Vector<T>.
+/// Safe CPU implementation of tensor and embedding contracts, with vectorized Add, SwiGLU and RMS normalization.
 /// Owns no native resources. Each instance accepts only tensors that it created, and tracks
 /// the live ones so that disposing the backend releases them. Operations complete before
 /// returning, which satisfies the ordering contract; Synchronize has nothing to wait for.
@@ -191,6 +191,12 @@ type CpuBackend() =
         match tensor with
         | :? CpuTensor as tensor when Object.ReferenceEquals(tensor.Owner, owner) -> tensor.Values
         | _ -> invalidArg argumentName "The tensor must belong to this CPU backend instance."
+
+    let weightsOf argumentName (tensor: IWeightTensor) =
+        ArgumentNullException.ThrowIfNull(tensor, argumentName)
+        match tensor with
+        | :? CpuWeightTensor as tensor when Object.ReferenceEquals(tensor.Owner, owner) -> tensor.Weights
+        | _ -> invalidArg argumentName "The weights must belong to this CPU backend instance."
 
     /// Element-wise kernels reject broadcasting: every tensor must have the reference's shape.
     let requireSameShape (operation: string) (reference: ITensor) argumentName (tensor: ITensor) =
@@ -279,6 +285,25 @@ type CpuBackend() =
                 raise (ArgumentOutOfRangeException(nameof epsilon, box epsilon, "Epsilon must be finite and positive."))
 
             CpuKernels.rmsNorm (ReadOnlySpan<single>(inputValues), ReadOnlySpan<single>(weightValues), epsilon, Span<single>(destinationValues))
+
+    interface IEmbeddingKernel with
+        member this.EmbeddingLookup(weights, tokenIds, destination) =
+            ObjectDisposedException.ThrowIf(disposed, this)
+            let matrix = weightsOf (nameof weights) weights
+            let destinationValues = valuesOf (nameof destination) destination
+            let dimensions = destination.Shape.Dimensions
+            if dimensions.Count <> 2 || dimensions[0] <> tokenIds.Length || dimensions[1] <> matrix.Columns then
+                invalidArg (nameof destination) $"Embedding lookup requires shape [{tokenIds.Length}; {matrix.Columns}], not {destination.Shape}."
+
+            let ids = tokenIds.Span
+            // Validate the entire batch first: a bad final token must not leave earlier rows written.
+            for index = 0 to ids.Length - 1 do
+                if ids[index] < 0 || ids[index] >= matrix.Rows then
+                    raise (ArgumentOutOfRangeException(nameof tokenIds, $"Token ID {ids[index]} at index {index} must be in [0, {matrix.Rows})."))
+
+            for index = 0 to ids.Length - 1 do
+                let output = destinationValues.AsSpan(index * matrix.Columns, matrix.Columns)
+                WeightRowDecoder.decode matrix ids[index] output
 
     interface IDisposable with
         member _.Dispose() =

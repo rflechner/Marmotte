@@ -140,18 +140,19 @@ split GGUF file raises it too.
 The source keeps its file open until it is disposed. Each payload request copies
 the tensor's validated byte range into a managed array with positional reads,
 which can run concurrently. A payload must therefore fit in one array, and
-loaded weights occupy as much memory as in the file. Memory mapping, row decoding,
-architecture-specific tensor names and model configuration are not implemented yet.
+loaded weights occupy as much memory as in the file. CPU embedding lookup decodes
+selected rows on demand. Memory mapping, architecture-specific tensor names and
+model configuration are not implemented yet.
 
 ## Execution tensors and kernels
 
 `Marmotte.Core` defines `TensorShape`, `ITensor`, `IWeightTensor`, `IAddKernel`,
-`ISwiGluKernel`, `IRmsNormKernel` and `ITensorBackend`.
+`ISwiGluKernel`, `IRmsNormKernel`, `IEmbeddingKernel` and `ITensorBackend`.
 The three backend projects share these contracts:
 
 - `Marmotte.Cpu`: owned F32 arrays, explicit upload/download, weight tensors that
   retain the stored payload, and `Add`, SwiGLU and RMS normalization kernels
-  vectorized with `Vector<T>`.
+  vectorized with `Vector<T>`, plus embedding lookup with scalar row decoding.
 - `Marmotte.Cuda` and `Marmotte.Metal`: buildable placeholders whose allocation,
   transfers and kernels raise `NotImplementedException`, without requiring a GPU SDK.
 
@@ -161,18 +162,27 @@ effect in submission order and may return before they complete; `Download` and
 `Synchronize` wait for them. Tensors belong to the backend instance that created
 them, transfers are explicit, and disposing a backend releases the tensors it
 still owns. `UploadWeights` places a `WeightMatrix` on a backend in its stored
-encoding, without decoding it; no kernel consumes weight tensors yet.
+encoding, without decoding it.
 `SwiGlu(gate, up, destination)` computes `silu(gate) × up` under the same tensor
 rules; its exponential makes results differ from other implementations by a few
 units in the last place. `RmsNorm(input, weight, epsilon, destination)`
 normalizes each row along the last dimension and multiplies it by an F32 weight
 vector; its CPU implementation sums the squares in double precision.
 
-See [execution tensor contracts and the Add walkthrough](docs/kernels.md), or run
-the example without a local model:
+`EmbeddingLookup(weights, tokenIds, destination)` decodes selected vocabulary
+rows into a preallocated F32 tensor of shape `[tokenIds.Length; weights.Columns]`,
+without scaling. It supports F32, F16, BF16, Q4_0, Q8_0, Q4_K and Q6_K weights,
+including the target model's `token_embd.weight`. IDs may repeat; an empty batch
+is valid. All IDs and tensor arguments are validated before writing, so invalid
+input leaves the destination unchanged. The caller may reuse the ID buffer when
+the call returns. Keep the weights' tensor source alive while they are in use.
+
+See [execution tensor and kernel contracts](docs/kernels.md), or run
+the examples without a local model:
 
 ```sh
 dotnet fsi examples/Add.fsx
+dotnet fsi examples/Embedding.fsx
 ```
 
 ## Inspect a local GGUF file
@@ -363,8 +373,9 @@ directly. CLI tests run the application against temporary GGUF and Safetensors
 fixtures and check both commands, argument handling, and errors. Core tests
 check tensor sources and weight matrices with an in-memory source and temporary
 files. Backend tests check F32 addition, SwiGLU and RMS normalization against
-scalar and double-precision references, shape validation, buffer ownership,
-transfers and disposal, plus explicit CUDA/Metal placeholder failures.
+scalar and double-precision references, embedding lookup against independently
+specified floating-point and quantized bytes, shape and ID validation, buffer
+ownership, transfers and disposal, plus explicit CUDA/Metal placeholder failures.
 No model or weight download is required.
 
 ## Coding guidelines

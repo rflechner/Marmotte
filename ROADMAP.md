@@ -39,10 +39,9 @@ local check.
 
 ### Tensor decoding
 
-- [ ] Decode F32, F16, BF16, Q4_0 and Q8_0 rows, so that synthetic models and the
-  quantizer's output can run.
-- [ ] Decode Q4_K and Q6_K rows, required by the target model.
-- [ ] Verify block layouts against llama.cpp's reference implementation with
+- [x] Decode F32, F16, BF16, Q4_0 and Q8_0 rows in the CPU embedding kernel.
+- [x] Decode Q4_K and Q6_K rows, required by the target model.
+- [x] Verify block layouts against llama.cpp's reference implementation with
   independently encoded fixtures.
 
 ### Model configuration
@@ -77,8 +76,10 @@ Contracts and element-wise operations:
 - [x] Contiguous F32 execution tensors and an `Add` contract in Core, with
   explicit allocation/transfers and a `Vector<T>` CPU implementation in
   `Marmotte.Cpu`. `Add` provides the two residual connections of each block.
-- [ ] Embedding lookup: decode the token's row of `token_embd.weight` (`Q6_K`,
-  131,072 rows of 3,072 values) into F32, without scaling.
+- [x] Embedding lookup: decode selected rows of `token_embd.weight` into F32,
+  without scaling, through `IEmbeddingKernel`. CPU supports all seven runtime
+  encodings, including the target model's `Q6_K` (131,072 rows of 3,072 values).
+  Tests use small independent fixtures; the full model remains an optional check.
 - [x] RMS normalization: `x / sqrt(mean(x²) + ε) × weight`, with ε from
   `attention.layer_norm_rms_epsilon` (1e-5) and F32 weights of 3,072 values.
   It runs before attention (`attn_norm`), before the feed-forward layer

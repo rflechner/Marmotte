@@ -127,6 +127,25 @@ type IRmsNormKernel =
     /// as the formula gives.
     abstract RmsNorm: input: ITensor * weight: ITensor * epsilon: single * destination: ITensor -> unit
 
+/// Selects vocabulary rows from stored weights and decodes them into F32 activations.
+type IEmbeddingKernel =
+    /// Writes destination[i, column] = weights[tokenIds[i], column], without scaling or
+    /// normalization. Destination must have exactly [tokenIds.Length; weights.Columns] dimensions,
+    /// including [1; Columns] for one token and [0; Columns] for an empty, no-op lookup.
+    /// IDs are zero-based, must be in [0, weights.Rows), and may repeat or arrive in any order.
+    /// Weights and destination must belong to this backend instance. Only selected rows are decoded;
+    /// weights stay unchanged. CPU supports F32, F16, BF16, Q4_0, Q8_0, Q4_K and Q6_K.
+    /// Floating-point special values follow ordinary F32 conversion and arithmetic.
+    ///
+    /// All arguments, including every ID, are validated before submission or any destination write:
+    /// ArgumentNullException for null tensors, ArgumentException for incompatible tensors,
+    /// ArgumentOutOfRangeException for an invalid ID, NotSupportedException for an unsupported
+    /// encoding, and ObjectDisposedException for disposed storage or backend.
+    /// IDs are consumed or copied before returning, so callers may immediately reuse their buffer.
+    /// Do not mutate it during the call. Results follow ITensorBackend's ordering and lifetime rules;
+    /// keep the weights' tensor source alive while they are in use.
+    abstract EmbeddingLookup: weights: IWeightTensor * tokenIds: ReadOnlyMemory<int> * destination: ITensor -> unit
+
 /// Creates and operates on its own tensors. Separate instances are separate ownership domains,
 /// even when their Backend values match.
 ///
@@ -149,6 +168,7 @@ type ITensorBackend =
     inherit IAddKernel
     inherit ISwiGluKernel
     inherit IRmsNormKernel
+    inherit IEmbeddingKernel
 
     abstract Backend: BackendKind
 

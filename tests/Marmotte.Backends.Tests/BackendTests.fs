@@ -456,6 +456,7 @@ let ``GPU operations explicitly fail without requiring GPU hardware`` name =
     use host = cpu ()
     let shape = TensorShape.Create [| 1 |]
     use tensor = host.Allocate(shape)
+    use weights = host.UploadWeights(weightMatrix ())
     let operations =
         [ (fun () -> backend.Allocate(shape) |> ignore)
           (fun () -> backend.Upload(shape, ReadOnlyMemory<single>([| 1.0f |])) |> ignore)
@@ -464,7 +465,8 @@ let ``GPU operations explicitly fail without requiring GPU hardware`` name =
           (fun () -> backend.Synchronize())
           (fun () -> backend.Add(tensor, tensor, tensor))
           (fun () -> backend.SwiGlu(tensor, tensor, tensor))
-          (fun () -> backend.RmsNorm(tensor, tensor, 1e-5f, tensor)) ]
+          (fun () -> backend.RmsNorm(tensor, tensor, 1e-5f, tensor))
+          (fun () -> backend.EmbeddingLookup(weights, ReadOnlyMemory<int>([| 0 |]), tensor)) ]
 
     let expectedKind = if name = "CUDA" then BackendKind.Cuda else BackendKind.Metal
     Assert.Equal(expectedKind, backend.Backend)
@@ -481,6 +483,7 @@ let ``disposed backends reject all operations and allow repeated disposal`` name
     use host = cpu ()
     let shape = TensorShape.Create [| 1 |]
     use tensor = host.Allocate(shape)
+    use weights = host.UploadWeights(weightMatrix ())
     backend.Dispose()
     backend.Dispose()
 
@@ -492,3 +495,4 @@ let ``disposed backends reject all operations and allow repeated disposal`` name
     Assert.Throws<ObjectDisposedException>(fun () -> backend.Add(tensor, tensor, tensor)) |> ignore
     Assert.Throws<ObjectDisposedException>(fun () -> backend.SwiGlu(tensor, tensor, tensor)) |> ignore
     Assert.Throws<ObjectDisposedException>(fun () -> backend.RmsNorm(tensor, tensor, 1e-5f, tensor)) |> ignore
+    Assert.Throws<ObjectDisposedException>(fun () -> backend.EmbeddingLookup(weights, ReadOnlyMemory<int>([| 0 |]), tensor)) |> ignore

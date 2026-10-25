@@ -5,8 +5,8 @@ open System.Collections.Generic
 
 /// Tensor encodings Marmotte represents at runtime, independent of GGUF's GgmlType and
 /// Safetensors' dtypes. Deliberately narrower than both formats: the encodings of the first
-/// target models. Compute currently supports contiguous F32 Add only; row decoders and
-/// kernels for the other encodings are not implemented yet.
+/// target models. CPU embedding lookup decodes these encodings into contiguous F32 activations;
+/// Add, SwiGLU and RMS normalization operate on F32 execution tensors.
 /// Block layouts follow block_q4_0, block_q8_0, block_q4_K and block_q6_K in
 /// https://github.com/ggml-org/llama.cpp/blob/master/ggml/src/ggml-common.h
 /// and match the GGUF reader's payload size table.

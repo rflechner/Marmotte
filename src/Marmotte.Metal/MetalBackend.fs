@@ -33,5 +33,8 @@ type MetalBackend() =
     interface IRmsNormKernel with
         member _.RmsNorm(_, _, _, _) = notImplemented "RMS normalization kernel"
 
+    interface IEmbeddingKernel with
+        member _.EmbeddingLookup(_, _, _) = notImplemented "embedding lookup kernel"
+
     interface IDisposable with
         member _.Dispose() = disposed <- true
