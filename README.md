@@ -162,8 +162,13 @@ The three backend projects share these contracts:
   matrix-matrix products over stored weights, which all decode rows with Core's
   `RowDecoder`, rotary position embedding, attention temperature and a
   key-value cache.
-- `Marmotte.Cuda` and `Marmotte.Metal`: buildable placeholders whose allocation,
-  transfers and kernels raise `NotImplementedException`, without requiring a GPU SDK.
+- `Marmotte.Cuda`: owned F32 device tensors, transfers and Add through a native
+  CUDA library. Build it automatically with `dotnet build Marmotte.slnx -p:MarmotteBuildCuda=true`.
+  Native compilation and GPU tests are optional; see the
+  [CUDA guide](docs/cuda.md) for prerequisites, builds and how the backend works.
+  Weight upload, caches and other kernels still raise `NotImplementedException`.
+- `Marmotte.Metal`: a buildable placeholder whose operations raise
+  `NotImplementedException`, without requiring a GPU SDK.
 
 `Add` writes into a preallocated destination and requires identical contiguous,
 row-major shapes. In-place addition is supported. Operations on one backend take
@@ -381,6 +386,7 @@ block layouts, numerical limits and tensor selection policy.
 - [GGUF format and current implementation](docs/gguf.md)
 - [Safetensors format and current implementation](docs/safetensors.md)
 - [Execution tensors and kernels on CPU, CUDA and Metal](docs/kernels.md)
+- [Build and understand the CUDA backend](docs/cuda.md)
 - [Roadmap](ROADMAP.md): CPU inference first, then CUDA and Metal backends
 
 ## Build and tests
@@ -408,7 +414,8 @@ files, and row decoding against blocks packed by hand. Backend tests check F32
 addition, SwiGLU, RMS normalization and matrix-vector products against scalar
 and double-precision references, embedding lookup against independently
 specified floating-point and quantized bytes, shape and ID validation, buffer
-ownership, transfers and disposal, plus explicit CUDA/Metal placeholder failures.
+ownership, transfers and disposal, plus explicit failures for unfinished GPU
+operations. CUDA Add has optional GPU tests; see [how to run them](docs/cuda.md#run-the-tests).
 No model or weight download is required.
 
 ## Coding guidelines

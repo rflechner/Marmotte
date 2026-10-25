@@ -8,13 +8,11 @@
 #load "../src/Marmotte.Core/Compute.fs"
 #load "../src/Marmotte.Cpu/CpuKernels.fs"
 #load "../src/Marmotte.Cpu/CpuBackend.fs"
-#load "../src/Marmotte.Cuda/CudaBackend.fs"
 #load "../src/Marmotte.Metal/MetalBackend.fs"
 
 open System
 open Marmotte.Core
 open Marmotte.Cpu
-open Marmotte.Cuda
 open Marmotte.Metal
 
 // The same orchestration uses opaque tensors on every backend. Only the factory changes.
@@ -30,9 +28,9 @@ let runAdd (backend: ITensorBackend) =
     backend.Download(destination, result.AsMemory())
     result
 
+// For CUDA, examples/CudaAdd.fsx loads the compiled assembly and its native library.
 let backends =
     [ "CPU", (fun () -> new CpuBackend() :> ITensorBackend)
-      "CUDA", (fun () -> new CudaBackend() :> ITensorBackend)
       "Metal", (fun () -> new MetalBackend() :> ITensorBackend) ]
 
 for name, createBackend in backends do
@@ -40,5 +38,5 @@ for name, createBackend in backends do
     try
         printfn "%s Add: %A" name (runAdd backend)
     with :? NotImplementedException as error ->
-        // GPU placeholders fail at the first transfer, before a tensor or kernel is created.
+        // The Metal placeholder fails before a tensor or kernel is created.
         printfn "%s: %s" name error.Message

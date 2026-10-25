@@ -48,8 +48,9 @@ use unrounded intermediates.
 | AttentionTemperature | One query value multiplied by a factor of its position block | [Scale queries](#attention-temperature) |
 | StoreKeyValues / ReadKeyValues | One cached key or value of a past position, encoded and decoded back to F32 | [Key-value cache](#key-value-cache) |
 
-All eight kernels and the key-value cache have CPU implementations; CUDA and
-Metal remain placeholders.
+All eight kernels and the key-value cache have CPU implementations. CUDA also
+implements Add and F32 device storage/transfers; its remaining kernels and Metal
+remain placeholders. See the [CUDA build and implementation guide](cuda.md).
 Core implements YaRN parameter preparation. Attention temperature has a worked
 example in text. The eight walkthrough images were
 generated with the built-in `image_gen` tool, visually reviewed, and their
@@ -67,7 +68,8 @@ images. The older overview below has its own status note.
 The diagram predates embedding lookup and `MatVec`, so it still shows both as
 planned. Solid teal paths are
 implemented, dashed amber paths are planned, and gray panels identify GPU
-placeholders. Opening a source reads the index; `WeightMatrix.Read` requests a
+placeholders at the time the diagram was drawn; CUDA Add is now implemented.
+Opening a source reads the index; `WeightMatrix.Read` requests a
 payload through that source. CPU `UploadWeights` then retains the encoded
 matrix without another payload copy.
 
@@ -113,15 +115,15 @@ them one row at a time.
 
 ## One Contract, Three Implementations
 
-| Concern | CPU today | CUDA placeholder | Metal placeholder |
+| Concern | CPU today | CUDA today | Metal placeholder |
 | --- | --- | --- | --- |
-| Factory | `CpuBackend()` | `CudaBackend()` | `MetalBackend()` |
-| Owned tensor storage | Private `single array` | Future device allocation | Future Metal buffer |
-| `Allocate` | Zero-filled array | `NotImplementedException` | `NotImplementedException` |
-| `Upload` / `Download` | Explicit host copies | `NotImplementedException` | `NotImplementedException` |
+| Factory | `CpuBackend()` | `CudaBackend(deviceIndex = 0)` | `MetalBackend()` |
+| Owned tensor storage | Private `single array` | Private device allocation | Future Metal buffer |
+| `Allocate` | Zero-filled array | Device allocation, zeroed on the stream | `NotImplementedException` |
+| `Upload` / `Download` | Explicit host copies | Explicit copies through managed staging arrays, complete on return | `NotImplementedException` |
 | `UploadWeights` | Retains the payload without copying | `NotImplementedException` | `NotImplementedException` |
-| `Synchronize` | Nothing to wait for | `NotImplementedException` | `NotImplementedException` |
-| `IAddKernel.Add` | Safe `Vector<T>` loop with a scalar tail | `NotImplementedException` | `NotImplementedException` |
+| `Synchronize` | Nothing to wait for | Waits for the instance's stream | `NotImplementedException` |
+| `IAddKernel.Add` | Safe `Vector<T>` loop with a scalar tail | Native CUDA kernel, 256 threads per block | `NotImplementedException` |
 | `ISwiGluKernel.SwiGlu` | Safe `Vector<T>` loop with `Vector.Exp`, scalar tail with `MathF.Exp` | `NotImplementedException` | `NotImplementedException` |
 | `IRmsNormKernel.RmsNorm` | Safe `Vector<T>` loops, sum of squares in double precision | `NotImplementedException` | `NotImplementedException` |
 | `IEmbeddingKernel.EmbeddingLookup` | Decodes selected rows with `RowDecoder` directly into F32 output | `NotImplementedException` | `NotImplementedException` |
@@ -131,18 +133,17 @@ them one row at a time.
 | `IAttentionTemperatureKernel.ApplyAttentionTemperature` | One F32 factor per token, `Vector<T>` multiplication | `NotImplementedException` | `NotImplementedException` |
 | `AllocateKeyValueCache` | Whole capacity up front: one byte array per layer for keys, one for values | `NotImplementedException` | `NotImplementedException` |
 | `IKeyValueCacheKernel` | Encodes whole batches with `RowEncoder`, reads them back with `RowDecoder` | `NotImplementedException` | `NotImplementedException` |
-| SDK/driver required today | None | None | None |
+| SDK/driver required today | None | Toolkit for native builds, driver/GPU for non-empty tensors | None |
 
 `ITensorBackend` inherits `IAddKernel`, `ISwiGluKernel`, `IRmsNormKernel`,
 `IEmbeddingKernel`, `IMatVecKernel`, `IMatMulKernel`, `IRopeKernel`,
 `IAttentionTemperatureKernel` and `IKeyValueCacheKernel`, so orchestration can
 call each kernel directly on the backend.
 A consumer needing a single operation can accept its kernel interface directly.
-No generic operation registry, graph scheduler or native interop is needed for
-this example.
-GPU factories and disposal work on any host; all other operations fail explicitly,
-without a CPU fallback. Concrete GPU tensor types will be introduced with their
-storage implementation, rather than exposing unusable device handles now.
+CUDA uses a small native library through P/Invoke. Construction and empty tensors
+need no CUDA installation; the first non-empty allocation initializes the device.
+GPU tensors expose only Core's interfaces, not native pointers. Metal operations
+and unfinished CUDA operations fail explicitly, without a CPU fallback.
 
 ## Add and Buffer Reuse
 
@@ -837,10 +838,12 @@ dotnet fsi examples/Embedding.fsx
 dotnet fsi examples/KeyValueCache.fsx
 ```
 
-The Add script loads the library sources, runs the same function with each backend,
-prints the CPU result, and reports the GPU placeholders' exceptions at the first
-upload. The embedding script uses a tiny in-memory F32 vocabulary and prints
+The Add script loads the library sources, prints the CPU result, and reports the
+Metal placeholder's exception at the first upload. `examples/CudaAdd.fsx` uses
+compiled assemblies and a native library to run Add on CUDA; follow the
+[CUDA build instructions](cuda.md) first. The embedding script uses a tiny in-memory F32 vocabulary and prints
 the rows for IDs `[1; 0; 1]`. The key-value cache script prints the target
 model's cache size for each encoding, then stores random keys in a small CPU
-cache and prints the largest error after reading them back. Tests also call GPU allocation, download and each
-kernel directly to verify that all unfinished operations fail explicitly.
+cache and prints the largest error after reading them back. Tests verify that
+unfinished GPU operations fail explicitly; optional CUDA tests exercise Add,
+device transfers, ordering and lifetime on a real GPU.

@@ -255,8 +255,7 @@ type IKeyValueCacheKernel =
 /// disposal is idempotent, and later operations raise ObjectDisposedException.
 ///
 /// Concurrent calls on one instance, including disposal, are not supported. Allocation can fail
-/// with OutOfMemoryException. CUDA and Metal placeholders raise NotImplementedException for all
-/// operations until implemented.
+/// with OutOfMemoryException. Unimplemented backend operations raise NotImplementedException.
 type ITensorBackend =
     inherit IDisposable
     inherit IAddKernel

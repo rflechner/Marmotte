@@ -201,20 +201,23 @@ This milestone follows the CPU milestone directly. The CPU implementation remain
 the reference for results.
 
 - [x] Create `Marmotte.Cuda` and `Marmotte.Metal` projects implementing the common
-  tensor and `Add` contracts with explicit `NotImplementedException` placeholders.
+  tensor and kernel contracts. Metal and unfinished CUDA operations remain explicit placeholders.
+- [x] CUDA F32 device storage, copying transfers, synchronization and native Add
+  through P/Invoke, with optional GPU tests against the CPU and a
+  [beginner's build guide](docs/cuda.md).
 - [x] Define backend contracts for weights kept in their stored encoding,
   submission-ordered execution with explicit synchronization, and tensor
   lifetimes owned by the backend.
 - [ ] Extend the boundary to the key-value cache and the operations used by the
   forward pass as they are implemented.
-- [ ] Choose the interop approach for each backend: native kernels called through
-  P/Invoke, or a .NET GPU library.
+- [x] Choose CUDA interop: native kernels called through P/Invoke.
+- [ ] Choose the Metal interop approach.
 - [ ] CUDA backend: weight upload, quantized matrix products and the remaining
   kernels.
 - [ ] Metal backend: Metal Shading Language kernels, sharing mapped weights
   through unified memory without copies where alignment allows.
 - [ ] Compare each backend with the CPU reference within documented tolerances.
-- [ ] Keep GPU tests optional, so that normal development does not require a GPU.
+- [x] Keep CUDA GPU tests optional, so that normal development does not require a GPU.
 - [ ] Measure each backend with the same workloads as the CPU.
 
 ## GGUF reader and quantizer

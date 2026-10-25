@@ -6,6 +6,7 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="BackendTests.fs" />
+    <Compile Include="CudaTests.fs" />
     <Compile Include="EmbeddingTests.fs" />
     <Compile Include="RopeTests.fs" />
     <Compile Include="AttentionTemperatureTests.fs" />

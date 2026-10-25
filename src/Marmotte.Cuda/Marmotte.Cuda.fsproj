@@ -2,12 +2,52 @@
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <MarmotteBuildCuda Condition="'$(MarmotteBuildCuda)' == ''">false</MarmotteBuildCuda>
+  </PropertyGroup>
+  <!-- Keep native tools optional, including during IDE design-time builds. -->
+  <PropertyGroup Condition="'$(MarmotteBuildCuda)' == 'true'">
+    <DisableFastUpToDateCheck>true</DisableFastUpToDateCheck>
+    <MarmotteCudaArchitectures Condition="'$(MarmotteCudaArchitectures)' == ''">native</MarmotteCudaArchitectures>
+    <MarmotteCudaGenerator Condition="'$(MarmotteCudaGenerator)' == '' and $([MSBuild]::IsOSPlatform('Windows'))">Visual Studio 17 2022</MarmotteCudaGenerator>
+    <MarmotteCudaBuildDirectory Condition="'$(MarmotteCudaBuildDirectory)' == ''">$(MSBuildProjectDirectory)/../../artifacts/cuda/msbuild/$(Configuration)</MarmotteCudaBuildDirectory>
+    <_MarmotteCudaGeneratorArguments Condition="'$(MarmotteCudaGenerator)' != ''">-G &quot;$(MarmotteCudaGenerator)&quot;</_MarmotteCudaGeneratorArguments>
+    <_MarmotteCudaPlatformArguments Condition="$(MarmotteCudaGenerator.StartsWith('Visual Studio '))">-A x64</_MarmotteCudaPlatformArguments>
+    <_MarmotteCudaBuildTypeArgument Condition="!$(MarmotteCudaGenerator.StartsWith('Visual Studio ')) and '$(MarmotteCudaGenerator)' != 'Ninja Multi-Config'">&quot;-DCMAKE_BUILD_TYPE=$(Configuration)&quot;</_MarmotteCudaBuildTypeArgument>
+    <_MarmotteCudaLibraryName Condition="$([MSBuild]::IsOSPlatform('Windows'))">marmotte_cuda.dll</_MarmotteCudaLibraryName>
+    <_MarmotteCudaLibraryName Condition="$([MSBuild]::IsOSPlatform('Linux'))">libmarmotte_cuda.so</_MarmotteCudaLibraryName>
+    <_MarmotteCudaBuildEnabled Condition="'$(MarmotteCudaNativePath)' == ''">true</_MarmotteCudaBuildEnabled>
+    <MarmotteCudaNativePath Condition="'$(_MarmotteCudaBuildEnabled)' == 'true'">$(MarmotteCudaBuildDirectory)/native/$(_MarmotteCudaLibraryName)</MarmotteCudaNativePath>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="CudaNative.fs" />
     <Compile Include="CudaBackend.fs" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="native/**/*.cu" />
+    <None Include="native/**/*.h" />
+    <None Include="native/CMakeLists.txt" />
+  </ItemGroup>
+  <!-- Both built and prebuilt native libraries propagate to consumers and publish output. -->
+  <ItemGroup Condition="'$(MarmotteCudaNativePath)' != ''">
+    <None Include="$(MarmotteCudaNativePath)" Link="%(Filename)%(Extension)"
+          CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="FSharp.Core" ExcludeAssets="contentFiles" />
     <ProjectReference Include="../Marmotte.Core/Marmotte.Core.fsproj" />
   </ItemGroup>
+  <!-- Let CMake track source/header dependencies on every real build, even if F# is unchanged. -->
+  <Target Name="BuildCudaNative" BeforeTargets="PrepareForBuild;GetCopyToOutputDirectoryItems"
+          Condition="'$(MarmotteBuildCuda)' == 'true' and '$(DesignTimeBuild)' != 'true'">
+    <Error Condition="'$(_MarmotteCudaLibraryName)' == ''"
+           Text="The native CUDA build supports Windows and Linux only." />
+    <Error Condition="'$(_MarmotteCudaBuildEnabled)' != 'true'"
+           Text="Use either MarmotteBuildCuda=true or MarmotteCudaNativePath for a prebuilt library, not both." />
+    <Exec WorkingDirectory="$(MSBuildProjectDirectory)"
+          Command="cmake -S &quot;$(MSBuildProjectDirectory)/native&quot; -B &quot;$(MarmotteCudaBuildDirectory)&quot; $(_MarmotteCudaGeneratorArguments) $(_MarmotteCudaPlatformArguments) &quot;-DCMAKE_CUDA_ARCHITECTURES=$(MarmotteCudaArchitectures)&quot; $(_MarmotteCudaBuildTypeArgument)" />
+    <Exec WorkingDirectory="$(MSBuildProjectDirectory)"
+          Command="cmake --build &quot;$(MarmotteCudaBuildDirectory)&quot; --config &quot;$(Configuration)&quot; --parallel" />
+    <Error Condition="!Exists('$(MarmotteCudaNativePath)')"
+           Text="The CUDA build did not produce the expected library: $(MarmotteCudaNativePath)" />
+  </Target>
 </Project>

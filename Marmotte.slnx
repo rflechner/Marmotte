@@ -7,6 +7,7 @@
     <File Path="ROADMAP.md" />
   </Folder>
   <Folder Name="/docs/">
+    <File Path="docs/cuda.md" />
     <File Path="docs\README.md" />
     <File Path="docs\gguf-format.png" />
     <File Path="docs\gguf.md" />
@@ -33,6 +34,7 @@
   </Folder>
   <Folder Name="/examples/">
     <File Path="examples/Add.fsx" />
+    <File Path="examples/CudaAdd.fsx" />
     <File Path="examples\Embedding.fsx" />
     <File Path="examples/Yarn.fsx" />
     <File Path="examples\KeyValueCache.fsx" />

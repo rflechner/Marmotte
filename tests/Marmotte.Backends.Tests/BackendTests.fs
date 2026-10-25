@@ -700,7 +700,7 @@ let private createBackend name =
 [<Theory>]
 [<InlineData("CUDA")>]
 [<InlineData("Metal")>]
-let ``GPU operations explicitly fail without requiring GPU hardware`` name =
+let ``unfinished GPU operations explicitly fail without requiring GPU hardware`` name =
     use backend = createBackend name
     use host = cpu ()
     let shape = TensorShape.Create [| 1 |]
@@ -708,13 +708,8 @@ let ``GPU operations explicitly fail without requiring GPU hardware`` name =
     use weights = host.UploadWeights(weightMatrix ())
     use cache = host.AllocateKeyValueCache(cacheLayout ())
     let operations =
-        [ (fun () -> backend.Allocate(shape) |> ignore)
-          (fun () -> backend.Upload(shape, ReadOnlyMemory<single>([| 1.0f |])) |> ignore)
-          (fun () -> backend.UploadWeights(weightMatrix ()) |> ignore)
+        [ (fun () -> backend.UploadWeights(weightMatrix ()) |> ignore)
           (fun () -> backend.AllocateKeyValueCache(cacheLayout ()) |> ignore)
-          (fun () -> backend.Download(tensor, Memory<single>([| 0.0f |])))
-          (fun () -> backend.Synchronize())
-          (fun () -> backend.Add(tensor, tensor, tensor))
           (fun () -> backend.SwiGlu(tensor, tensor, tensor))
           (fun () -> backend.RmsNorm(tensor, tensor, 1e-5f, tensor))
           (fun () -> backend.EmbeddingLookup(weights, ReadOnlyMemory<int>([| 0 |]), tensor))
@@ -730,6 +725,13 @@ let ``GPU operations explicitly fail without requiring GPU hardware`` name =
     for operation in operations do
         let error = Assert.Throws<NotImplementedException>(fun () -> operation ())
         Assert.Contains(name, error.Message)
+
+    if name = "Metal" then
+        Assert.Throws<NotImplementedException>(fun () -> backend.Allocate(shape) |> ignore) |> ignore
+        Assert.Throws<NotImplementedException>(fun () -> backend.Upload(shape, ReadOnlyMemory<single>([| 1.0f |])) |> ignore) |> ignore
+        Assert.Throws<NotImplementedException>(fun () -> backend.Download(tensor, Memory<single>([| 0.0f |]))) |> ignore
+        Assert.Throws<NotImplementedException>(fun () -> backend.Synchronize()) |> ignore
+        Assert.Throws<NotImplementedException>(fun () -> backend.Add(tensor, tensor, tensor)) |> ignore
 
 [<Theory>]
 [<InlineData("CPU")>]
