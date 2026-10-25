@@ -1,0 +1,58 @@
+Generated with the built-in image_gen tool.
+Use case: infographic-diagram
+Source: current Marmotte contracts and implementations, reviewed on 2026-10-25.
+
+Use case: infographic-diagram.
+Asset type: a high-resolution technical documentation image for the Marmotte F#/.NET repository.
+Primary request: Explain the complete intended journey from a GGUF model file to IAddKernel, carefully distinguishing implemented code from planned model computation and GPU stubs.
+Create one polished, readable landscape engineering infographic, ideally 3840x2160. All visible text in English. Use precise monospaced API identifiers and readable sans-serif explanations. Light background, clear spacing, restrained colors, simple file/buffer/block illustrations. No decorative mascots, no logos, no photographic elements. Prioritize diagram accuracy and legible labels. Title: "Marmotte: from GGUF to IAddKernel". Subtitle: "Stored weights, execution tensors and backend dispatch". Small status note: "Implementation snapshot: 2026-10-25".
+
+Layout: three ordered horizontal bands with clear numbered stages. Connectors must be clean and unambiguous. Solid teal connectors/borders mean implemented. Amber dashed connectors/borders mean planned. Gray GPU panels mean placeholder. Include a compact legend with those three labels. Do not imply that the entire model pipeline currently runs.
+
+BAND 1 — "1. Read and place stored weights"
+Five cards from left to right, connected by solid teal arrows:
+1) "GGUF file" with small illustrated segments "Header", "Metadata", "Tensor index", "Weight bytes".
+2) "GgufTensorSource.openFile" with "Calls Gguf.readWithOptions" and "Validate metadata, shapes and byte ranges" and emphasized "Index only — no weight loading". Tiny note "Runtime source: complete little-endian GGUF".
+3) "ITensorSource" with "TensorDescriptor" and "GGUF [columns; rows] → Core [rows; columns]" and "Same bytes, no transpose". Bottom sub-box "FileTensorSource.ReadPayload" with "Copy one requested payload from disk". This indicates lazy requests, not loading all model weights during parsing.
+4) "WeightMatrix.Read" with "Rank 2 • rows of whole encoding blocks" and "Encoded payload + Row(i)" and "F32 / F16 / BF16 / Q4_0 / Q8_0 / Q4_K / Q6_K".
+5) "backend.UploadWeights(matrix)" with output prominently "IWeightTensor" and "Keep stored encoding" and "CPU retains payload; no extra copy". Mark this CPU step implemented. Add a small note "Keep source alive while weights are used". Do not imply GPU upload is implemented.
+
+BAND 2 — "2. Produce F32 activations, then add"
+Read this band left to right. Route an AMBER DASHED arrow from the IWeightTensor card down to an amber card at the left named "Future model execution", containing "Row decoding as needed", "Embedding lookup / matrix products", and prominent badge "PLANNED — no weight kernel yet". Show a small additional input to this card "Input activations / token IDs". Its dashed outgoing arrow is labelled "F32 activations" and leads to the "left: ITensor" operand. A separate operand "right: ITensor" is annotated "Residual / another activation". Make absolutely clear that IWeightTensor itself never enters Add. Place the compact prominent note "IWeightTensor ≠ ITensor — Add does not consume encoded weights".
+
+Also show a clearly implemented independent input route: a small teal box "Host F32 values" with arrow "backend.Upload(shape, values)" leading to both F32 operand boxes. Label this branch "Available now: examples/Add.fsx". It is an alternative to the planned model-produced activations, not a decoder for weight bytes.
+
+Draw the left and right operand boxes flowing into a large clear central/center-right kernel card:
+"IAddKernel"
+"Add(left, right, destination)"
+"destination[i] = left[i] + right[i]"
+Three short requirements inside: "Contiguous F32 • identical shapes", "Same backend instance", "In-place addition supported".
+A small input box "backend.Allocate(shape)" feeds the destination port, labelled "Zero-filled destination". The destination is a caller-supplied ITensor; Add does not allocate it.
+To the right, show output "destination: ITensor" with a branch "Next kernel" and another branch "backend.Download" → "Host F32 result". Put a short callout: "Download waits + copies" and "Synchronize waits without copying". Keep this sequence distinct from the GPU dispatch comparison below.
+
+BAND 3 — "3. The same contracts, different storage and kernels"
+Three equal comparison cards, connected conceptually by a bracket labelled "ITensorBackend inherits IAddKernel" (do not draw them as three sequential processing stages):
+CPU — teal badge "IMPLEMENTED". Text: "ITensor: private single array"; "IWeightTensor: retained encoded payload"; "Add: safe Vector<T> + scalar tail"; "Operations complete before return".
+CUDA — gray badge "PLACEHOLDER". Text: "Future: device buffers + CUDA kernel"; "Today: NotImplementedException".
+Metal — gray badge "PLACEHOLDER". Text: "Future: Metal buffers + compute kernel"; "Today: NotImplementedException".
+Below the GPU cards a shared small note: "Allocation, transfers, weight upload, Add and synchronization are not implemented. Constructors and disposal work without a GPU SDK."
+
+Footer strip with two concise contract notes:
+"Ordering: submissions take effect in order; GPU work may complete later."
+"Lifetime: tensor disposal follows its queued uses; backend disposal waits and releases remaining tensors."
+
+Accuracy constraints:
+- Do not show direct GGUF → Add or encoded weights → Add.
+- No full-model conversion to F32. Weight row decoding and model kernels are planned, not implemented.
+- Only the CPU implementation currently executes Add; GPU panels must remain visibly unfinished.
+- Index parsing does not load weight payloads. A ReadPayload request copies the selected payload; CPU UploadWeights then retains that payload without an additional copy.
+- Dimension reversal describes the same bytes and is NOT a matrix transpose.
+- Synchronization and lifetime notes describe the shared contract; CPU already completes synchronously.
+- No invented APIs, fake device handles, extra unsupported encodings or misleading native library logos.
+Render all specified identifiers exactly, including GgufTensorSource, ITensorSource, FileTensorSource.ReadPayload, WeightMatrix.Read, IWeightTensor, ITensor, IAddKernel and ITensorBackend. Avoid overly tiny text or crossed connectors.
+
+Correction prompt applied to the first generated image:
+Edit this Marmotte technical diagram. Make exactly two text corrections, preserving all other layout, content, arrows, colors, identifiers and visual styling:
+1. In the center-right "destination: ITensor" box, replace the explanatory text "Result after addition (in-place)." with "F32 result after addition". This destination is not necessarily aliased with an input.
+2. In the upper-right output box, replace "Next kernel (e.g. MatMul, etc.)" with "Next Add call". MatMul is not implemented yet, so the solid implemented arrow should show a possible subsequent Add operation.
+Keep every other detail and every other text string unchanged. Preserve the full canvas with no cropping. Keep small labels highly legible.

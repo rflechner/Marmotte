@@ -10,6 +10,8 @@
     <File Path="docs\README.md" />
     <File Path="docs\gguf-format.png" />
     <File Path="docs\gguf.md" />
+    <File Path="docs\gguf-to-add-kernel.png" />
+    <File Path="docs\gguf-to-add-kernel.prompt.txt" />
     <File Path="docs\inference-pipeline.md" />
     <File Path="docs\inference-pipeline.png" />
     <File Path="docs\kernels.md" />

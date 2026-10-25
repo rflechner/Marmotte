@@ -4,6 +4,28 @@
 and `Marmotte.Metal` each reference Core; Core references none of the backends.
 The first implemented operation is element-wise F32 addition.
 
+## From GGUF to Add
+
+![GGUF index reading, requested payload loading, weight placement, planned model computation, F32 Add and CPU/CUDA/Metal backends](gguf-to-add-kernel.png)
+
+[Open the full-size diagram](gguf-to-add-kernel.png).
+
+The diagram follows the implementation as of 2026-10-25. Solid teal paths are
+implemented, dashed amber paths are planned, and gray panels identify GPU
+placeholders. Opening a source reads the index; `WeightMatrix.Read` requests a
+payload through that source. CPU `UploadWeights` then retains the encoded
+matrix without another payload copy.
+
+The missing bridge is model computation: future embedding and matrix-product
+kernels will consume stored weights and produce F32 activations. `IAddKernel`
+adds those activations, not encoded weights. Today, `examples/Add.fsx` supplies
+F32 host values directly through `Upload`. The output can feed another `Add`
+without a download; `Download` is the explicit route back to host values.
+
+The image was generated with the built-in `image_gen` tool and visually reviewed.
+Its [generation and correction prompts](gguf-to-add-kernel.prompt.txt) are saved
+alongside it. The contracts below remain the authoritative description.
+
 ## Stored Weights and Execution Tensors
 
 `ITensorSource` and `WeightMatrix` provide read-only access to encoded model
