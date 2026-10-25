@@ -381,7 +381,7 @@ Implemented:
 - Quantizer tests for exact blocks, numerical error, preservation and failed writes
 - A format-neutral tensor source through `GgufTensorSource`, copying validated
   payload ranges of `F32`, `F16`, `BF16`, `Q4_0`, `Q4_1`, `Q5_0`, `Q5_1`,
-  `Q8_0`, `IQ4_NL`, `Q4_K` and `Q6_K` tensors on request
+  `Q8_0`, `IQ4_NL`, `Q2_K`, `Q3_K`, `Q4_K`, `Q5_K` and `Q6_K` tensors on request
 - Row dequantization of those encodings through `Marmotte.Core`'s `RowDecoder`,
   verified against blocks packed by hand from `ggml-common.h` layouts
 - Tests for valid files, malformed input, partial reads, and stream ownership

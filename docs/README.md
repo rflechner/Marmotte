@@ -12,6 +12,7 @@ work. Illustrations are conceptual aids, not executable format specifications.
 | [Safetensors](safetensors.md) | JSON header, packed data, and index reader | Index reader and tensor source implemented, including `info` |
 | [From model files to a response](inference-pipeline.md) | Illustrated loading, embeddings, attention, KV cache and generation pipeline | Conceptual guide; inference is planned |
 | [Execution tensors and kernels](kernels.md) | Eight illustrations covering kernels and YaRN, formula notation, GGUF-to-kernel diagram and backend contracts | Eight CPU kernels, a key-value cache and YaRN preparation implemented; CUDA/Metal placeholders |
+| [Q2_K, Q3_K and BitNet b1.58](quantization.md) | Three illustrations of code levels, `twoBitQuant` packing, storage cost and ternary training | Q2_K/Q3_K decoding implemented; BitNet execution not implemented |
 | Storage and strides below | Concepts for tensor access and execution | Copying tensor source and weight matrix rows implemented; no mapped storage or strided views |
 
 `Marmotte.Core` contains shared helpers and

@@ -1,0 +1,100 @@
+Marmotte quantization illustrations
+Generated with the built-in image_gen tool.
+Primary references and checked examples: docs/quantization.md.
+
+=== quantization-levels.png ===
+
+Use case: scientific-educational.
+Create an original teaching infographic for the Marmotte repository docs. Audience: developers learning low-bit model weights. All visible text in English. Landscape 3:2, large crisp readable typography, near-white background, navy headings, blue Q2_K, purple Q3_K, teal BitNet, amber operations. Flat technical illustration, restrained outlines, plenty of whitespace. No photographs, mascot, logos, invented formulas or decorative code. Do not reproduce a published figure. Exact math, signs, labels and number of cells are essential. Do not include implementation status badges.
+Title: "Q2_K / Q3_K vs BitNet b1.58"
+Subtitle: "Packed bits, quantized codes and reconstructed weights are different things"
+Three equal vertical panels:
+LEFT "Q2_K · 4 codes"
+Show four boxes with bit patterns 00, 01, 10, 11, each with its decimal q underneath: 0, 1, 2, 3.
+Formula "w = a × q − b"
+Label "a = d × scale; b = dmin × minimum"
+A worked example labeled "Example: a = 0.5, b = 0.75" maps the four q values to exactly four weight boxes "-0.75", "-0.25", "0.25", "0.75", respectively. Clear table or separate parallel vertical arrows for the mapping. Caption "Scales and offsets vary across groups of 16 weights."
+CENTER "Q3_K · 8 codes"
+Show two rows with header "low bits: 00  01  10  11".
+Row label "h = 0" and signed code cells "-4  -3  -2  -1".
+Row label "h = 1" and signed code cells "0  1  2  3".
+Formula "q = low − 4 when h = 0; otherwise q = low"
+Formula "w = a × q", label "a = d × signed scale".
+Example "a = 0.25" gives eight values, arranged as two rows of four:
+"-1.00  -0.75  -0.50  -0.25"
+"0  0.25  0.50  0.75"
+Caption "2 low bits + 1 separate bit = 8 possible codes."
+RIGHT "BitNet b1.58 · 3 states"
+Show three large ternary cells "-1", "0", "+1".
+Below, aligned with these cells, show operations on activation x: "-x", "0", "+x" with labels "subtract", "skip", "add".
+Formula "t ∈ {−1, 0, +1}"
+Label "Scale factors are applied separately."
+Caption "The model learns with ternary weights during training."
+Footer across all panels: "twoBitQuant extracts 0…3. It does not assign ternary meaning."
+Small note: "Examples illustrate reconstruction, not measured model weights."
+
+=== quantization-two-bit-layout.png ===
+
+Use case: scientific-educational.
+Create an original teaching infographic for the Marmotte repository docs. Audience: developers learning low-bit model weights. All visible text in English. Landscape 3:2, large crisp readable typography, near-white background, navy headings, blue Q2_K, purple Q3_K, teal BitNet, amber operations. Flat technical illustration, restrained outlines, plenty of whitespace. No photographs, mascot, logos, invented formulas or decorative code. Do not reproduce a published figure. Exact math, signs, labels and number of cells are essential. Do not include implementation status badges.
+Title: "What twoBitQuant actually extracts"
+Subtitle: "Q2_K and Q3_K share the same 64-byte low-bit layout"
+Use two large horizontal sections.
+TOP section "1. One byte stores four codes, 32 positions apart".
+Show one byte with precisely four pairs, ordered MSB to LSB from left to right:
+"11" at bits "7–6" with position label "v = 96";
+"10" at bits "5–4" with position label "v = 64";
+"01" at bits "3–2" with position label "v = 32";
+"00" at bits "1–0" with position label "v = 0".
+Label byte "lowBits[0] = 0xE4 = 11100100".
+A mapping table, in INCREASING position order, with exact rows:
+"v | byte index | shift | extracted low"
+"0 | 0 | 0 | 0"
+"32 | 0 | 2 | 1"
+"64 | 0 | 4 | 2"
+"96 | 0 | 6 | 3"
+Display formula "(byte >> shift) & 3".
+Callout "These are positions 0, 32, 64, 96 — not four adjacent weights."
+Below, a simple two-part strip: "lowBits[0…31] → positions 0…127" and "lowBits[32…63] → positions 128…255".
+BOTTOM section "2. The caller gives those bits meaning".
+Left path blue: "Q2_K" then "low ∈ {0,1,2,3}" then "w = d × scale × low − dmin × minimum".
+Right path purple: "Q3_K" then a small table:
+"low | 0 | 1 | 2 | 3"
+"h = 0: q | −4 | −3 | −2 | −1"
+"h = 1: q | 0 | 1 | 2 | 3"
+Under it "w = d × signed scale × q".
+A compact annotation "h comes from a separate 32-byte mask."
+Bottom footer "A bit-extraction helper is not a ternary quantizer."
+Avoid showing low-bit integer as an already reconstructed weight. No training or storage-size content in this figure.
+
+=== quantization-storage.png ===
+
+Use case: scientific-educational.
+Create an original teaching infographic for the Marmotte repository docs. Audience: developers learning low-bit model weights. All visible text in English. Landscape 3:2, large crisp readable typography, near-white background, navy headings, blue Q2_K, purple Q3_K, teal BitNet, amber operations. Flat technical illustration, restrained outlines, plenty of whitespace. No photographs, mascot, logos, invented formulas or decorative code. Do not reproduce a published figure. Exact math, signs, labels and number of cells are essential. Do not include implementation status badges.
+Title: "Bits per weight: count the metadata too"
+Subtitle: "Q2_K / Q3_K block layouts and BitNet's three-state alphabet"
+Three main horizontal rows; clear typography and generous spacing.
+First blue row: "Q2_K · 256 weights".
+Show a left-to-right storage diagram in exact field order, explicitly labeled "Fields in byte order; widths schematic":
+"scales + minimums: 16 B" | "2-bit codes: 64 B" | "d: 2 B" | "dmin: 2 B".
+Large result at the right "84 B" and "2.625 bits / weight".
+Arithmetic beneath "(16 + 64 + 2 + 2) × 8 / 256 = 2.625".
+Second purple row: "Q3_K · 256 weights".
+Exact field order:
+"high-bit mask: 32 B" | "2-bit low codes: 64 B" | "scales: 12 B" | "d: 2 B".
+Large result "110 B" and "3.4375 bits / weight".
+Arithmetic "(32 + 64 + 12 + 2) × 8 / 256 = 3.4375".
+Note under these two rows "Includes block scales; excludes file headers and alignment."
+Third teal row: "BitNet b1.58 · 3 possible states".
+Show three large tokens "-1", "0", "+1" then formula "log₂(3) ≈ 1.585".
+Caption "Information capacity per ternary symbol — not a file-size guarantee."
+Below show two conceptual packing choices, NOT described as an actual BitNet file format:
+"Simple fixed-width: 2 bits / symbol"
+"Example only: 5 ternary symbols fit in 1 byte"
+Small arithmetic "3⁵ = 243 ≤ 256 → 8 / 5 = 1.6 bits / symbol"
+Note "Packing, scales and other tensors determine actual storage."
+Bottom section with two clean independent flow lines:
+"Typical K-quant workflow: trained floating-point weights → quantize for storage"
+"BitNet b1.58: train with ternary quantization → pack for inference"
+Bottom note "Storage encoding and training method answer different questions."
+

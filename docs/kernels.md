@@ -323,7 +323,8 @@ output is written, including for an empty batch.
 
 The CPU lookup decodes each selected row with Core's `RowDecoder`, through
 `WeightMatrix.DecodeRow`, which supports every current `TensorEncoding`: F32,
-F16, BF16, Q4_0, Q4_1, Q5_0, Q5_1, Q8_0, IQ4_NL, Q4_K and Q6_K. It uses safe spans and explicit
+F16, BF16, Q4_0, Q4_1, Q5_0, Q5_1, Q8_0, IQ4_NL, Q2_K, Q3_K, Q4_K, Q5_K and
+Q6_K. It uses safe spans and explicit
 little-endian reads, writing only requested rows directly into the destination,
 with no temporary decoded matrix, row or block buffers. Stored weights remain unchanged. `WeightMatrix`
 validates the payload length and whole blocks per row before upload; the source
@@ -343,8 +344,15 @@ and [GGML reconstruction formulas](https://github.com/ggml-org/llama.cpp/blob/ma
 | Q5_1 | 32 values, 24 bytes | `q × scale + minimum` with five-bit `q` stored as in Q5_0 |
 | Q8_0 | 32 values, 34 bytes | F16 scale times a signed byte |
 | IQ4_NL | 32 values, 18 bytes | `scale × level[q]` with four-bit indices into 16 non-uniform levels from −127 to 113 (`kvalues_iq4nl`) |
+| Q2_K | 256 values, 84 bytes | Sixteen groups of 16, each with four-bit scale and minimum factors and two-bit `q`; `d × scale × q − dmin × minimum`, with `d` and `dmin` last |
+| Q3_K | 256 values, 110 bytes | Sixteen groups of 16 with signed six-bit scales; `q` is two low bits minus 4 when its separate high bit is clear; `d × scale × q` |
 | Q4_K | 256 values, 144 bytes | Eight groups of 32, each with six-bit scale and minimum factors; `d × scale × q − dmin × minimum` |
+| Q5_K | 256 values, 176 bytes | Q4_K with a fifth bit per value, stored in 32 bytes between the scales and the low bits |
 | Q6_K | 256 values, 210 bytes | Sixteen groups of 16; signed group scales and six-bit values centered at 32; `d × scale × (q − 32)` |
+
+The illustrated [Q2_K, Q3_K and BitNet b1.58 guide](quantization.md) follows
+`twoBitQuant` from packed bits to reconstructed values, and separates K-quant
+storage costs from BitNet's ternary alphabet and training method.
 
 `RowDecoder` is an original scalar reference implementation, without unsafe
 code or a native dependency. Embedding tests specify bytes and expected values
@@ -389,11 +397,16 @@ input. Validation and ordering otherwise follow `Add`.
 The weights stay in their stored encoding. Core's `RowDecoder` decodes one row
 of any `TensorEncoding` into F32, and `WeightMatrix.DecodeRow` applies it to a
 row of a matrix. Block layouts and arithmetic follow `block_q4_0`, `block_q4_1`,
-`block_q5_0`, `block_q5_1`, `block_q8_0`, `block_iq4_nl`, `block_q4_K` and
-`block_q6_K` in llama.cpp's `ggml-common.h`, with the IQ4_NL levels of
+`block_q5_0`, `block_q5_1`, `block_q8_0`, `block_iq4_nl`, `block_q2_K`,
+`block_q3_K`, `block_q4_K`, `block_q5_K` and `block_q6_K` in llama.cpp's
+`ggml-common.h`, with the IQ4_NL levels of
 `kvalues_iq4nl`, and its reference `dequantize_row_*` functions in
 `ggml-quants.c`. Tests pack blocks of every quantized encoding by hand from
-chosen scales, minimums and quants, and check every decoded value exactly. Embedding lookup uses the same decoder.
+chosen scales, minimums and quants, and check every decoded value exactly. The
+Q5_K and Q5_0 tensors of local `Q4_K_S` and `Q4_K_M` files decode to the same
+mean, spread and range as Q4_K or Q8_0 tensors of the same roles, an optional
+check; no local Q2_K or Q3_K file has been decoded yet. Embedding lookup uses
+the same decoder.
 
 The CPU backend decodes one row at a time into a pooled buffer, so its memory
 use is one row, not a decoded matrix. It then computes the dot product with
