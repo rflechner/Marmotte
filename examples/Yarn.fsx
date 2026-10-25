@@ -2,6 +2,7 @@
 #load "../src/Marmotte.Core/RowDecoder.fs"
 #load "../src/Marmotte.Core/WeightMatrix.fs"
 #load "../src/Marmotte.Core/RotaryEmbedding.fs"
+#load "../src/Marmotte.Core/AttentionTemperature.fs"
 #load "../src/Marmotte.Core/Compute.fs"
 #load "../src/Marmotte.Cpu/CpuKernels.fs"
 #load "../src/Marmotte.Cpu/CpuBackend.fs"

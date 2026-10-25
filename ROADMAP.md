@@ -132,12 +132,14 @@ Attention:
   and retained numerical fixtures, including position 262,143. See the
   [formulas and validation](docs/kernels.md#yarn-context-extension) and
   [runnable example](examples/Yarn.fsx).
-- [ ] Attention temperature: after RoPE, multiply Q by
+- [x] Attention temperature: after RoPE, multiply Q by
   `1 + β × ln(floor(p / L) + 1)`, where `p` is the token position,
   β = `attention.temperature_scale` (0.1) and
   L = `rope.scaling.original_context_length` (16,384). The factor is exactly 1
   for the first 16,384 positions. Source: `llm_graph_input_attn_temp` in
-  llama.cpp's `src/llama-graph.cpp`.
+  llama.cpp's `src/llama-graph.cpp`. `AttentionTemperature` and
+  `IAttentionTemperatureKernel` in Core; `Marmotte.Cpu` scales each token with
+  `Vector<T>`.
 - [ ] Key-value cache: append K, after RoPE, and V for each position and block,
   8 heads of 128 values each. That is 208 KiB per token in F32, or 832 MiB for
   a 4,096-token context; F16 halves it.

@@ -184,6 +184,18 @@ type IRopeKernel =
     /// approximate sines and cosines differently, so compare results with a tolerance.
     abstract Rope: input: ITensor * positions: ReadOnlyMemory<int> * embedding: RotaryEmbedding * destination: ITensor -> unit
 
+/// Attention temperature: multiplies every query value of a token, after RoPE, by
+/// AttentionTemperature.Factor of the token's position. Keys and values are not scaled.
+type IAttentionTemperatureKernel =
+    /// Queries and destination have the same shape, of rank 2 or more, whose first dimension
+    /// counts tokens: [tokens; heads × HeadDimension] or [tokens; heads; HeadDimension].
+    /// positions holds each token's absolute position, at least 0, and is read before the call
+    /// returns. Destination may be queries. Ownership, validation and ordering follow
+    /// IAddKernel.Add; positions.Length must equal the token count, and a negative position raises
+    /// ArgumentOutOfRangeException. Each value is multiplied by the F32 factor once, so positions
+    /// below FloorLength leave queries unchanged.
+    abstract ApplyAttentionTemperature: queries: ITensor * positions: ReadOnlyMemory<int> * temperature: AttentionTemperature * destination: ITensor -> unit
+
 /// Creates and operates on its own tensors. Separate instances are separate ownership domains,
 /// even when their Backend values match.
 ///
@@ -210,6 +222,7 @@ type ITensorBackend =
     inherit IMatVecKernel
     inherit IMatMulKernel
     inherit IRopeKernel
+    inherit IAttentionTemperatureKernel
 
     abstract Backend: BackendKind
 

@@ -45,5 +45,8 @@ type CudaBackend() =
     interface IRopeKernel with
         member _.Rope(_, _, _, _) = notImplemented "RoPE kernel"
 
+    interface IAttentionTemperatureKernel with
+        member _.ApplyAttentionTemperature(_, _, _, _) = notImplemented "attention temperature kernel"
+
     interface IDisposable with
         member _.Dispose() = disposed <- true

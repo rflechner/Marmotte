@@ -105,6 +105,18 @@ type CpuBackend() =
         if tensor.Shape.Rank <> 1 || tensor.Shape.Dimensions[0] <> length then
             invalidArg argumentName $"{operation} requires {argumentName} of shape [{length}], not {tensor.Shape}."
 
+    /// Position-based kernels take one token per first-dimension row.
+    let requireTokenRows (operation: string) argumentName (tensor: ITensor) (tokens: int) =
+        let shape = tensor.Shape
+        if shape.Rank < 2 || shape.Dimensions[0] <> tokens then
+            invalidArg argumentName $"{operation} of {tokens} positions requires {argumentName} of rank 2 or more with {tokens} tokens, not {shape}."
+
+    /// Checks every position before any write, so a bad last position leaves the destination unchanged.
+    let requireNonNegativePositions (positions: ReadOnlySpan<int>) =
+        for index = 0 to positions.Length - 1 do
+            if positions[index] < 0 then
+                raise (ArgumentOutOfRangeException(nameof positions, $"Position {positions[index]} at index {index} must be at least 0."))
+
     let createTensor shape values =
         let tensor = new CpuTensor(owner, shape, values, forget)
         track tensor
@@ -248,21 +260,35 @@ type CpuBackend() =
             let inputValues = valuesOf (nameof input) input
             let destinationValues = valuesOf (nameof destination) destination
 
+            requireTokenRows "RoPE" (nameof input) input positions.Length
             let shape = input.Shape
-            if shape.Rank < 2 || shape.Dimensions[0] <> positions.Length then
-                invalidArg (nameof input) $"RoPE of {positions.Length} positions requires input of rank 2 or more with {positions.Length} tokens, not {shape}."
-
             let valuesPerToken = shape.Dimensions |> Seq.skip 1 |> Seq.fold (fun product dimension -> product * int64 dimension) 1L
             if valuesPerToken % int64 embedding.HeadDimension <> 0L then
                 invalidArg (nameof input) $"RoPE requires whole heads of {embedding.HeadDimension} values per token, not {shape}."
             requireSameShape "RoPE" input (nameof destination) destination
 
             let ids = positions.Span
-            for index = 0 to ids.Length - 1 do
-                if ids[index] < 0 then
-                    raise (ArgumentOutOfRangeException(nameof positions, $"Position {ids[index]} at index {index} must be at least 0."))
+            requireNonNegativePositions ids
 
             CpuKernels.rope (ReadOnlySpan<single>(inputValues), ids, embedding, Span<single>(destinationValues))
+
+    interface IAttentionTemperatureKernel with
+        member this.ApplyAttentionTemperature(queries, positions, temperature, destination) =
+            ObjectDisposedException.ThrowIf(disposed, this)
+            ArgumentNullException.ThrowIfNull(temperature)
+            let queryValues = valuesOf (nameof queries) queries
+            let destinationValues = valuesOf (nameof destination) destination
+
+            requireTokenRows "Attention temperature" (nameof queries) queries positions.Length
+            requireSameShape "Attention temperature" queries (nameof destination) destination
+            let ids = positions.Span
+            requireNonNegativePositions ids
+
+            let factors = Array.zeroCreate<single> ids.Length
+            for index = 0 to ids.Length - 1 do
+                factors[index] <- temperature.Factor(ids[index])
+
+            CpuKernels.scaleTokens (ReadOnlySpan<single>(queryValues), ReadOnlySpan<single>(factors), Span<single>(destinationValues))
 
     interface IDisposable with
         member _.Dispose() =

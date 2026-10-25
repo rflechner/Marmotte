@@ -149,15 +149,16 @@ names and model configuration are not implemented yet.
 
 `Marmotte.Core` defines `TensorShape`, `ITensor`, `IWeightTensor`, `IAddKernel`,
 `ISwiGluKernel`, `IRmsNormKernel`, `IEmbeddingKernel`, `IMatVecKernel`,
-`IMatMulKernel`, `IRopeKernel` and `ITensorBackend`, plus `RotaryEmbedding` and
-`YarnParameters`.
+`IMatMulKernel`, `IRopeKernel`, `IAttentionTemperatureKernel` and
+`ITensorBackend`, plus `RotaryEmbedding`, `YarnParameters` and
+`AttentionTemperature`.
 The three backend projects share these contracts:
 
 - `Marmotte.Cpu`: owned F32 arrays, explicit upload/download, weight tensors that
   retain the stored payload, `Add`, SwiGLU and RMS normalization kernels
   vectorized with `Vector<T>`, embedding lookup, and matrix-vector and
   matrix-matrix products over stored weights, which all decode rows with Core's
-  `RowDecoder`, and rotary position embedding.
+  `RowDecoder`, rotary position embedding and attention temperature.
 - `Marmotte.Cuda` and `Marmotte.Metal`: buildable placeholders whose allocation,
   transfers and kernels raise `NotImplementedException`, without requiring a GPU SDK.
 
@@ -181,8 +182,9 @@ pairing of a `RotaryEmbedding`. `RotaryEmbedding.Yarn` prepares the corrected
 frequencies and final magnitude from explicit `YarnParameters`, for use by the
 same kernel. For the target model (factor 16, original context 16,384, betas
 32/1, logarithmic multiplier 1), the effective magnitude is exactly 1.
-Model metadata loading and the separate position-dependent attention temperature
-remain to be implemented.
+`ApplyAttentionTemperature(queries, positions, temperature, destination)` then
+multiplies queries by the position-dependent factor of an `AttentionTemperature`.
+Model metadata loading remains to be implemented.
 
 `EmbeddingLookup(weights, tokenIds, destination)` decodes selected vocabulary
 rows into a preallocated F32 tensor of shape `[tokenIds.Length; weights.Columns]`,

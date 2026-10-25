@@ -4,8 +4,8 @@
 and `Marmotte.Metal` each reference Core; Core references none of the backends.
 The implemented operations are element-wise F32 addition, the SwiGLU
 activation of the feed-forward layer, RMS normalization, embedding lookup from
-stored weights, matrix-vector and matrix-matrix products with stored weights, and
-rotary position embedding.
+stored weights, matrix-vector and matrix-matrix products with stored weights,
+rotary position embedding, and the attention temperature applied to queries.
 
 ## Reading the Formulas
 
@@ -43,9 +43,11 @@ use unrounded intermediates.
 | MatMul | The same dot product for one token in a batch | [Reuse rows across tokens](#matrix-matrix-product) |
 | Rope | One value of a pair turned by an angle that grows with the token's position | [Rotate pairs](#rotary-position-embedding) |
 | YaRN (parameter preparation) | Adjusted RoPE frequencies and an attention magnitude factor | [Extend context](#yarn-context-extension) |
+| AttentionTemperature | One query value multiplied by a factor of its position block | [Scale queries](#attention-temperature) |
 
-All seven kernels have CPU implementations; CUDA and Metal remain placeholders.
-Core implements YaRN parameter preparation. The eight walkthrough images were
+All eight kernels have CPU implementations; CUDA and Metal remain placeholders.
+Core implements YaRN parameter preparation. Attention temperature has a worked
+example in text. The eight walkthrough images were
 generated with the built-in `image_gen` tool, visually reviewed, and their
 numerical examples checked independently. The prompts for the
 [first six kernels](kernel-illustrations.prompt.txt) and for
@@ -122,11 +124,13 @@ them one row at a time.
 | `IMatVecKernel.MatVec` | One decoded row at a time, `Vector<T>` dot product in double precision | `NotImplementedException` | `NotImplementedException` |
 | `IMatMulKernel.MatMul` | Each decoded row shared by every token of the batch | `NotImplementedException` | `NotImplementedException` |
 | `IRopeKernel.Rope` | Angles in double precision once per token, shared by every head | `NotImplementedException` | `NotImplementedException` |
+| `IAttentionTemperatureKernel.ApplyAttentionTemperature` | One F32 factor per token, `Vector<T>` multiplication | `NotImplementedException` | `NotImplementedException` |
 | SDK/driver required today | None | None | None |
 
 `ITensorBackend` inherits `IAddKernel`, `ISwiGluKernel`, `IRmsNormKernel`,
-`IEmbeddingKernel`, `IMatVecKernel`, `IMatMulKernel` and `IRopeKernel`, so
-orchestration can call each kernel directly on the backend.
+`IEmbeddingKernel`, `IMatVecKernel`, `IMatMulKernel`, `IRopeKernel` and
+`IAttentionTemperatureKernel`, so orchestration can call each kernel directly on
+the backend.
 A consumer needing a single operation can accept its kernel interface directly.
 No generic operation registry, graph scheduler or native interop is needed for
 this example.
@@ -586,7 +590,8 @@ m = AttentionFactor × (1 + 0.1 × ln(s)) / (1 + 0.1 × LogMultiplier × ln(s))
 when absent to get the reference rule above. `AttentionFactor` corresponds to
 `rope.scaling.attn_factor`, with a default of one when absent. Model-specific
 policies such as DeepSeek's alternative numerator are not inferred. The
-position-dependent `attention.temperature_scale` is a separate roadmap item.
+position-dependent `attention.temperature_scale` is applied separately; see
+[Attention Temperature](#attention-temperature).
 
 For the target model, `D = 128`, `B = 1,000,000`, `L = 16,384`, `s = 16`,
 `beta_fast = 32` and `beta_slow = 1`. The unrounded cutoff indices are about
@@ -637,6 +642,52 @@ context lengths.
 
 Run [`examples/Yarn.fsx`](../examples/Yarn.fsx) to inspect the frequencies and
 CPU rotations without a model file.
+
+## Attention Temperature
+
+`mistral3` also multiplies its queries, after RoPE, by a factor that grows with
+the position:
+
+```text
+factor(p) = 1 + β × ln(floor(p / L) + 1)
+```
+
+`β` is `attention.temperature_scale` and `L` is
+`rope.scaling.original_context_length`: 0.1 and 16,384 for the target model.
+The factor is exactly 1 for the first 16,384 positions, then stays constant over
+each block of 16,384 positions: about 1.0693 (`1 + 0.1 × ln 2`) from position
+16,384, 1.1099 from 32,768, and 1.2773 at position 262,143, the last position of
+the training context. Multiplying a query multiplies all its attention scores by
+the same factor, which sharpens their softmax over long contexts. Keys and
+values are not scaled. This is unrelated to the sampling temperature of
+generated tokens.
+
+`AttentionTemperature.Create(float 0.1f, 16384)` holds these parameters, and
+`Factor(position)` returns the F32 factor of a position.
+`ApplyAttentionTemperature(queries, positions, temperature, destination)`
+multiplies every value of each token by the factor of its position. `queries`
+has rank 2 or more, with one token per row of the first dimension, as for
+`Rope`. `destination` may be `queries`, and a negative position raises
+`ArgumentOutOfRangeException` before any write.
+
+```fsharp
+let temperature = AttentionTemperature.Create(float 0.1f, 16384)
+
+backend.Rope(queries, positions, embedding, queries)
+backend.ApplyAttentionTemperature(queries, positions, temperature, queries)
+backend.Rope(keys, positions, embedding, keys)
+```
+
+The formula follows `llm_graph_input_attn_temp` in llama.cpp's
+`src/llama-graph.cpp`, which evaluates it in double precision and stores it in
+F32; its `mistral3` graph then multiplies the queries after RoPE. Marmotte
+computes the floor with an exact integer division. llama.cpp's position offset,
+zero for `mistral3`, and its power variant are not supported. The CPU backend
+computes one factor per token and multiplies with `Vector<T>`. Each value is
+multiplied once, so positions below `L` leave queries unchanged, bit for bit.
+Tests check the factors at block boundaries against values computed by hand,
+the per-token scaling in rank 2 and rank 3, in-place use, empty batches and
+validation.
 
 ## Ordering, Completion and Lifetime
 

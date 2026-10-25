@@ -204,3 +204,32 @@ module internal CpuKernels =
         finally
             ArrayPool<single>.Shared.Return(cosines)
             ArrayPool<single>.Shared.Return(sines)
+
+    /// destination[i] = row[i] × factor, with one F32 multiplication per value in vector lanes and
+    /// in the tail alike, so a factor of 1 leaves values unchanged.
+    let private multiplyRow (row: ReadOnlySpan<single>) (factor: single) (destination: Span<single>) =
+        let mutable firstScalar = 0
+        if Vector.IsHardwareAccelerated then
+            let rowVectors = MemoryMarshal.Cast<single, Vector<single>>(row)
+            let destinationVectors = MemoryMarshal.Cast<single, Vector<single>>(destination)
+            let factorVector = Vector<single>(factor)
+            for index = 0 to destinationVectors.Length - 1 do
+                destinationVectors[index] <- rowVectors[index] * factorVector
+            firstScalar <- destinationVectors.Length * Vector<single>.Count
+
+        for index = firstScalar to destination.Length - 1 do
+            destination[index] <- row[index] * factor
+
+    /// Multiplies each of the consecutive token rows of input by its own factor:
+    /// destination[t, i] = input[t, i] × factors[t]. Destination may be exactly input.
+    let scaleTokens (input: ReadOnlySpan<single>, factors: ReadOnlySpan<single>, destination: Span<single>) =
+        let tokens = factors.Length
+        let holdsWholeRows = if tokens = 0 then input.Length = 0 else input.Length % tokens = 0
+        if input.Length <> destination.Length || not holdsWholeRows then
+            invalidArg (nameof destination) "Token scaling spans must hold one whole row per factor."
+
+        if tokens > 0 then
+            let valuesPerToken = input.Length / tokens
+            for token = 0 to tokens - 1 do
+                let row = input.Slice(token * valuesPerToken, valuesPerToken)
+                multiplyRow row factors[token] (destination.Slice(token * valuesPerToken, valuesPerToken))

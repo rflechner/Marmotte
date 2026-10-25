@@ -84,3 +84,28 @@ let ``standard rotary embedding rejects odd heads and invalid bases`` () =
         Assert.Throws<ArgumentException>(fun () -> RotaryEmbedding.Standard(headDimension, 10000.0, RopePairing.AdjacentPairs) |> ignore) |> ignore
     for frequencyBase in [ 0.0; -10.0; Double.NaN; Double.PositiveInfinity ] do
         Assert.Throws<ArgumentOutOfRangeException>(fun () -> RotaryEmbedding.Standard(4, frequencyBase, RopePairing.AdjacentPairs) |> ignore) |> ignore
+
+[<Fact>]
+let ``attention temperature is 1 within the first floor and grows logarithmically after it`` () =
+    let temperature = AttentionTemperature.Create(float 0.1f, 16384)
+
+    Assert.Equal(1.0f, temperature.Factor 0)
+    Assert.Equal(1.0f, temperature.Factor 16383)
+    // 1 + 0.1 ln 2, 1 + 0.1 ln 3 and 1 + 0.1 ln 16, computed by hand.
+    Assert.Equal(1.06931, float (temperature.Factor 16384), 5)
+    Assert.Equal(temperature.Factor 16384, temperature.Factor 32767)
+    Assert.Equal(1.10986, float (temperature.Factor 32768), 5)
+    Assert.Equal(1.27726, float (temperature.Factor 262143), 5)
+    Assert.Equal(16384, temperature.FloorLength)
+
+[<Fact>]
+let ``attention temperature validates its parameters and positions`` () =
+    let disabled = AttentionTemperature.Create(0.0, 16384)
+    Assert.Equal(1.0f, disabled.Factor Int32.MaxValue)
+
+    let temperature = AttentionTemperature.Create(0.1, 10)
+    Assert.Throws<ArgumentOutOfRangeException>(fun () -> temperature.Factor -1 |> ignore) |> ignore
+    for scale in [ -0.1; Double.NaN; Double.PositiveInfinity ] do
+        Assert.Throws<ArgumentOutOfRangeException>(fun () -> AttentionTemperature.Create(scale, 10) |> ignore) |> ignore
+    for floorLength in [ 0; -1 ] do
+        Assert.Throws<ArgumentOutOfRangeException>(fun () -> AttentionTemperature.Create(0.1, floorLength) |> ignore) |> ignore
