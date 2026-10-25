@@ -206,6 +206,7 @@ let ``null shapes and tensors are rejected`` () =
     for left, right, destination in [ nullTensor, tensor, tensor; tensor, nullTensor, tensor; tensor, tensor, nullTensor ] do
         Assert.Throws<ArgumentNullException>(fun () -> backend.Add(left, right, destination)) |> ignore
         Assert.Throws<ArgumentNullException>(fun () -> backend.SwiGlu(left, right, destination)) |> ignore
+        Assert.Throws<ArgumentNullException>(fun () -> backend.RmsNorm(left, right, 1e-5f, destination)) |> ignore
 
 [<Fact>]
 let ``Add matches a scalar reference for every vector tail length`` () =
@@ -328,6 +329,118 @@ let ``SwiGlu validates shapes ownership and disposal before writing`` () =
     Assert.Throws<ObjectDisposedException>(fun () -> backend.SwiGlu(gate, disposed, destination)) |> ignore
     Assert.Equal<single>(Array.create 6 42.0f, download backend destination)
 
+/// RMS normalization of each row in double precision, independent of the kernel's summation order.
+let private rmsNormReference (input: single array) (weight: single array) (epsilon: single) =
+    let normalizeRow (row: single array) =
+        let mean = row |> Array.averageBy (fun value -> float value * float value)
+        let scale = 1.0 / Math.Sqrt(mean + float epsilon)
+        Array.map2 (fun value weightValue -> float value * scale * float weightValue) row weight
+
+    input |> Array.chunkBySize weight.Length |> Array.collect normalizeRow
+
+[<Fact>]
+let ``RmsNorm matches a double-precision reference for every row width`` () =
+    use backend = cpu ()
+    let random = Random(91011)
+    let randomValues length low high = Array.init length (fun _ -> float32 (low + random.NextDouble() * (high - low)))
+
+    // Widths below, at and between multiples of 4, 8 and 16 lanes exercise vector blocks and tails.
+    for columns in 1 .. 67 do
+        let shape = TensorShape.Create [| 3; columns |]
+        let inputValues = randomValues (3 * columns) -10.0 10.0
+        let weightValues = randomValues columns 0.5 1.5
+        let expected = rmsNormReference inputValues weightValues 1e-5f
+        use input = backend.Upload(shape, ReadOnlyMemory<single>(inputValues))
+        use weight = backend.Upload(TensorShape.Create [| columns |], ReadOnlyMemory<single>(weightValues))
+        use destination = backend.Allocate(shape)
+
+        backend.RmsNorm(input, weight, 1e-5f, destination)
+        Array.iter2 assertClose expected (download backend destination)
+        Assert.Equal<single>(inputValues, download backend input)
+
+        backend.RmsNorm(input, weight, 1e-5f, input)
+        Array.iter2 assertClose expected (download backend input)
+
+[<Fact>]
+let ``RmsNorm normalizes Ministral-sized rows of any rank`` () =
+    use backend = cpu ()
+    let random = Random(1213)
+    let inputValues = Array.init (4 * 3072) (fun _ -> float32 (random.NextDouble() * 2.0 - 1.0))
+    let weightValues = Array.init 3072 (fun _ -> float32 (random.NextDouble() * 2.0))
+    let expected = rmsNormReference inputValues weightValues 1e-5f
+    use weight = backend.Upload(TensorShape.Create [| 3072 |], ReadOnlyMemory<single>(weightValues))
+
+    for dimensions in [ [| 2; 2; 3072 |]; [| 4; 3072 |] ] do
+        let shape = TensorShape.Create dimensions
+        use input = backend.Upload(shape, ReadOnlyMemory<single>(inputValues))
+        use destination = backend.Allocate(shape)
+        backend.RmsNorm(input, weight, 1e-5f, destination)
+        Array.iter2 assertClose expected (download backend destination)
+
+    use vector = backend.Upload(TensorShape.Create [| 3072 |], ReadOnlyMemory<single>(inputValues[..3071]))
+    backend.RmsNorm(vector, weight, 1e-5f, vector)
+    Array.iter2 assertClose expected[..3071] (download backend vector)
+
+[<Fact>]
+let ``RmsNorm keeps huge zero and NaN rows independent`` () =
+    use backend = cpu ()
+    // Nine columns place values in full vectors and in the scalar tail. The squares of 1e30
+    // exceed the F32 range, so the sum of squares must not be accumulated in F32.
+    let huge = Array.init 9 (fun index -> if index % 2 = 0 then 1e30f else -1e30f)
+    let zeros = Array.zeroCreate<single> 9
+    let withNaN = Array.init 9 (fun index -> if index = 4 then Single.NaN else 1.0f)
+    let weightValues = Array.init 9 (fun index -> float32 (index + 1))
+    let shape = TensorShape.Create [| 3; 9 |]
+    use input = backend.Upload(shape, ReadOnlyMemory<single>(Array.concat [ huge; zeros; withNaN ]))
+    use weight = backend.Upload(TensorShape.Create [| 9 |], ReadOnlyMemory<single>(weightValues))
+
+    backend.RmsNorm(input, weight, 1e-5f, input)
+
+    let result = download backend input
+    Array.iter2 assertClose (rmsNormReference huge weightValues 1e-5f) result[..8]
+    Assert.Equal<single>(zeros, result[9..17])
+    Assert.All(result[18..], fun value -> Assert.True(Single.IsNaN value))
+
+[<Fact>]
+let ``RmsNorm validates rank weight epsilon ownership and disposal before writing`` () =
+    use backend = cpu ()
+    use otherBackend = cpu ()
+    let shape = TensorShape.Create [| 2; 3 |]
+    use input = backend.Upload(shape, ReadOnlyMemory<single>(Array.create 6 1.0f))
+    use weight = backend.Upload(TensorShape.Create [| 3 |], ReadOnlyMemory<single>(Array.create 3 1.0f))
+    use destination = backend.Upload(shape, ReadOnlyMemory<single>(Array.create 6 42.0f))
+    use scalar = backend.Allocate(TensorShape.Create [||])
+    use scalarWeight = backend.Allocate(TensorShape.Create [| 1 |])
+    use longWeight = backend.Allocate(TensorShape.Create [| 4 |])
+    use matrixWeight = backend.Allocate(TensorShape.Create [| 1; 3 |])
+    use transposed = backend.Allocate(TensorShape.Create [| 3; 2 |])
+    use foreign = otherBackend.Allocate(TensorShape.Create [| 3 |])
+    let disposed = backend.Allocate(shape)
+    disposed.Dispose()
+
+    Assert.Throws<ArgumentException>(fun () -> backend.RmsNorm(scalar, scalarWeight, 1e-5f, scalar)) |> ignore
+    let weightError = Assert.Throws<ArgumentException>(fun () -> backend.RmsNorm(input, longWeight, 1e-5f, destination))
+    Assert.Contains("[3]", weightError.Message)
+    Assert.Contains("[4]", weightError.Message)
+    Assert.Throws<ArgumentException>(fun () -> backend.RmsNorm(input, matrixWeight, 1e-5f, destination)) |> ignore
+    Assert.Throws<ArgumentException>(fun () -> backend.RmsNorm(input, weight, 1e-5f, transposed)) |> ignore
+    for epsilon in [ 0.0f; -1e-5f; Single.NaN; Single.PositiveInfinity ] do
+        Assert.Throws<ArgumentOutOfRangeException>(fun () -> backend.RmsNorm(input, weight, epsilon, destination)) |> ignore
+    Assert.Throws<ArgumentException>(fun () -> backend.RmsNorm(input, foreign, 1e-5f, destination)) |> ignore
+    Assert.Throws<ObjectDisposedException>(fun () -> backend.RmsNorm(disposed, weight, 1e-5f, destination)) |> ignore
+    Assert.Equal<single>(Array.create 6 42.0f, download backend destination)
+
+[<Fact>]
+let ``RmsNorm accepts empty tensors as no-ops`` () =
+    use backend = cpu ()
+    for dimensions, columns in [ [| 0; 3 |], 3; [| 2; 0 |], 0 ] do
+        let shape = TensorShape.Create dimensions
+        use input = backend.Allocate(shape)
+        use weight = backend.Allocate(TensorShape.Create [| columns |])
+        use destination = backend.Allocate(shape)
+        backend.RmsNorm(input, weight, 1e-5f, destination)
+        Assert.Empty(download backend destination)
+
 let private createBackend name =
     match name with
     | "CPU" -> cpu ()
@@ -350,7 +463,8 @@ let ``GPU operations explicitly fail without requiring GPU hardware`` name =
           (fun () -> backend.Download(tensor, Memory<single>([| 0.0f |])))
           (fun () -> backend.Synchronize())
           (fun () -> backend.Add(tensor, tensor, tensor))
-          (fun () -> backend.SwiGlu(tensor, tensor, tensor)) ]
+          (fun () -> backend.SwiGlu(tensor, tensor, tensor))
+          (fun () -> backend.RmsNorm(tensor, tensor, 1e-5f, tensor)) ]
 
     let expectedKind = if name = "CUDA" then BackendKind.Cuda else BackendKind.Metal
     Assert.Equal(expectedKind, backend.Backend)
@@ -377,3 +491,4 @@ let ``disposed backends reject all operations and allow repeated disposal`` name
     Assert.Throws<ObjectDisposedException>(fun () -> backend.Synchronize()) |> ignore
     Assert.Throws<ObjectDisposedException>(fun () -> backend.Add(tensor, tensor, tensor)) |> ignore
     Assert.Throws<ObjectDisposedException>(fun () -> backend.SwiGlu(tensor, tensor, tensor)) |> ignore
+    Assert.Throws<ObjectDisposedException>(fun () -> backend.RmsNorm(tensor, tensor, 1e-5f, tensor)) |> ignore

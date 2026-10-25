@@ -4,7 +4,7 @@ open System
 open Marmotte.Core
 
 /// CUDA contract placeholder. Construction and disposal need no driver or device.
-/// Allocation, transfers, weight upload, synchronization, Add and SwiGLU raise NotImplementedException;
+/// Allocation, transfers, weight upload, synchronization and kernels raise NotImplementedException;
 /// there is no CPU fallback.
 /// Operations after disposal raise ObjectDisposedException.
 [<Sealed>]
@@ -29,6 +29,9 @@ type CudaBackend() =
 
     interface ISwiGluKernel with
         member _.SwiGlu(_, _, _) = notImplemented "SwiGLU kernel"
+
+    interface IRmsNormKernel with
+        member _.RmsNorm(_, _, _, _) = notImplemented "RMS normalization kernel"
 
     interface IDisposable with
         member _.Dispose() = disposed <- true

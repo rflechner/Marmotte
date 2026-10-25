@@ -6,10 +6,10 @@ open System.Numerics
 open System.Runtime.InteropServices
 open Marmotte.Core
 
-/// Element-wise F32 kernels over equal-length host spans, safe and vectorized with Vector<T>.
-/// Each processes Vector<single>.Count lanes at a time (4 with ARM64 NEON, 8 with AVX2), then the
-/// remaining elements one by one. Destination may be exactly an input, but must not partially
-/// overlap one: each vector is read before the same positions are written.
+/// F32 kernels over host spans, safe and vectorized with Vector<T>. Each processes
+/// Vector<single>.Count lanes at a time (4 with ARM64 NEON, 8 with AVX2), then the remaining
+/// elements one by one. Destination may be exactly an input, but must not partially overlap one:
+/// each vector is read before the same positions are written.
 module private CpuKernels =
     let private requireSameLength (first: ReadOnlySpan<single>) (second: ReadOnlySpan<single>) (destination: Span<single>) =
         if first.Length <> destination.Length || second.Length <> destination.Length then
@@ -54,6 +54,59 @@ module private CpuKernels =
             let x = gate[index]
             let silu = x / (1.0f + MathF.Exp(-x))
             destination[index] <- silu * up[index]
+
+    /// Sum of squares in double precision: rows of thousands of values keep F32 accuracy, and
+    /// squares beyond the F32 range, such as that of 1e20, do not overflow.
+    let private sumOfSquares (row: ReadOnlySpan<single>) =
+        let mutable sum = 0.0
+        let mutable firstScalar = 0
+        if Vector.IsHardwareAccelerated then
+            let vectors = MemoryMarshal.Cast<single, Vector<single>>(row)
+            let mutable lowSum = Vector<double>.Zero
+            let mutable highSum = Vector<double>.Zero
+            for index = 0 to vectors.Length - 1 do
+                let low = Vector.WidenLower(vectors[index])
+                let high = Vector.WidenUpper(vectors[index])
+                lowSum <- lowSum + low * low
+                highSum <- highSum + high * high
+            sum <- Vector.Sum(lowSum + highSum)
+            firstScalar <- vectors.Length * Vector<single>.Count
+
+        for index = firstScalar to row.Length - 1 do
+            let value = float row[index]
+            sum <- sum + value * value
+        sum
+
+    /// destination[c] = row[c] × scale × weight[c], multiplied in that order with two F32 roundings.
+    let private scaleRow (row: ReadOnlySpan<single>) (scale: single) (weight: ReadOnlySpan<single>) (destination: Span<single>) =
+        let mutable firstScalar = 0
+        if Vector.IsHardwareAccelerated then
+            let rowVectors = MemoryMarshal.Cast<single, Vector<single>>(row)
+            let weightVectors = MemoryMarshal.Cast<single, Vector<single>>(weight)
+            let destinationVectors = MemoryMarshal.Cast<single, Vector<single>>(destination)
+            let scaleVector = Vector<single>(scale)
+            for index = 0 to destinationVectors.Length - 1 do
+                destinationVectors[index] <- rowVectors[index] * scaleVector * weightVectors[index]
+            firstScalar <- destinationVectors.Length * Vector<single>.Count
+
+        for index = firstScalar to destination.Length - 1 do
+            destination[index] <- row[index] * scale * weight[index]
+
+    /// Normalizes consecutive rows of weight.Length values: each row's sum of squares is complete
+    /// before the row is written, so destination may be exactly input. The scale
+    /// 1 / sqrt(mean + epsilon) is computed in double precision and rounded once to F32.
+    let rmsNorm (input: ReadOnlySpan<single>, weight: ReadOnlySpan<single>, epsilon: single, destination: Span<single>) =
+        let columns = weight.Length
+        let holdsWholeRows = if columns = 0 then input.Length = 0 else input.Length % columns = 0
+        if input.Length <> destination.Length || not holdsWholeRows then
+            invalidArg (nameof destination) "RMS normalization spans must hold whole rows of the weight's length."
+
+        if columns > 0 then
+            for row = 0 to input.Length / columns - 1 do
+                let inputRow = input.Slice(row * columns, columns)
+                let mean = sumOfSquares inputRow / float columns
+                let scale = float32 (1.0 / Math.Sqrt(mean + float epsilon))
+                scaleRow inputRow scale weight (destination.Slice(row * columns, columns))
 
 /// Storage that its backend releases when the backend itself is disposed.
 type private ICpuStorage =
@@ -119,7 +172,7 @@ type private CpuWeightTensor(owner: obj, weights: WeightMatrix, onDispose: ICpuS
                 (this :> ICpuStorage).Release()
                 onDispose this
 
-/// Safe CPU reference implementation of the tensor, Add and SwiGLU contracts, vectorized with Vector<T>.
+/// Safe CPU reference implementation of the tensor and kernel contracts, vectorized with Vector<T>.
 /// Owns no native resources. Each instance accepts only tensors that it created, and tracks
 /// the live ones so that disposing the backend releases them. Operations complete before
 /// returning, which satisfies the ordering contract; Synchronize has nothing to wait for.
@@ -206,6 +259,26 @@ type CpuBackend() =
             requireSameShape "SwiGLU" gate (nameof destination) destination
 
             CpuKernels.swiGlu (ReadOnlySpan<single>(gateValues), ReadOnlySpan<single>(upValues), Span<single>(destinationValues))
+
+    interface IRmsNormKernel with
+        member this.RmsNorm(input, weight, epsilon, destination) =
+            ObjectDisposedException.ThrowIf(disposed, this)
+            let inputValues = valuesOf (nameof input) input
+            let weightValues = valuesOf (nameof weight) weight
+            let destinationValues = valuesOf (nameof destination) destination
+
+            let shape = input.Shape
+            if shape.Rank = 0 then
+                invalidArg (nameof input) "RMS normalization requires a rank of at least 1; a scalar has no row to normalize."
+
+            let columns = shape.Dimensions[shape.Rank - 1]
+            if weight.Shape.Rank <> 1 || weight.Shape.Dimensions[0] <> columns then
+                invalidArg (nameof weight) $"RMS normalization of {shape} requires a weight of shape [{columns}], not {weight.Shape}."
+            requireSameShape "RMS normalization" input (nameof destination) destination
+            if not (Single.IsFinite epsilon) || epsilon <= 0.0f then
+                raise (ArgumentOutOfRangeException(nameof epsilon, box epsilon, "Epsilon must be finite and positive."))
+
+            CpuKernels.rmsNorm (ReadOnlySpan<single>(inputValues), ReadOnlySpan<single>(weightValues), epsilon, Span<single>(destinationValues))
 
     interface IDisposable with
         member _.Dispose() =

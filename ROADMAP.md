@@ -79,10 +79,12 @@ Contracts and element-wise operations:
   `Marmotte.Cpu`. `Add` provides the two residual connections of each block.
 - [ ] Embedding lookup: decode the token's row of `token_embd.weight` (`Q6_K`,
   131,072 rows of 3,072 values) into F32, without scaling.
-- [ ] RMS normalization: `x / sqrt(mean(x²) + ε) × weight`, with ε from
+- [x] RMS normalization: `x / sqrt(mean(x²) + ε) × weight`, with ε from
   `attention.layer_norm_rms_epsilon` (1e-5) and F32 weights of 3,072 values.
   It runs before attention (`attn_norm`), before the feed-forward layer
   (`ffn_norm`) and before the LM head (`output_norm`): 53 times per token.
+  `Marmotte.Cpu` vectorizes it with `Vector<T>` and sums the squares in double
+  precision.
 - [x] SwiGLU: `silu(gate) × up` over 9,216 values, with
   `silu(x) = x / (1 + e^-x)`, vectorized with `Vector<T>` and `Vector.Exp` in
   `Marmotte.Cpu`.

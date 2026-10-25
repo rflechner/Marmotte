@@ -2,8 +2,8 @@
 
 `Marmotte.Core` defines the compute contracts. `Marmotte.Cpu`, `Marmotte.Cuda`
 and `Marmotte.Metal` each reference Core; Core references none of the backends.
-The implemented operations are element-wise F32 addition and the SwiGLU
-activation of the feed-forward layer.
+The implemented operations are element-wise F32 addition, the SwiGLU
+activation of the feed-forward layer, and RMS normalization.
 
 ## From GGUF to Add
 
@@ -67,10 +67,12 @@ decodes them automatically.
 | `Synchronize` | Nothing to wait for | `NotImplementedException` | `NotImplementedException` |
 | `IAddKernel.Add` | Safe `Vector<T>` loop with a scalar tail | `NotImplementedException` | `NotImplementedException` |
 | `ISwiGluKernel.SwiGlu` | Safe `Vector<T>` loop with `Vector.Exp`, scalar tail with `MathF.Exp` | `NotImplementedException` | `NotImplementedException` |
+| `IRmsNormKernel.RmsNorm` | Safe `Vector<T>` loops, sum of squares in double precision | `NotImplementedException` | `NotImplementedException` |
 | SDK/driver required today | None | None | None |
 
-`ITensorBackend` inherits the kernel interfaces, `IAddKernel` and
-`ISwiGluKernel`, so orchestration can call `backend.Add` and `backend.SwiGlu`.
+`ITensorBackend` inherits the kernel interfaces, `IAddKernel`, `ISwiGluKernel`
+and `IRmsNormKernel`, so orchestration can call `backend.Add`, `backend.SwiGlu`
+and `backend.RmsNorm`.
 A consumer needing a single operation can accept its kernel interface directly.
 No generic operation registry, graph scheduler or native interop is needed for
 this example.
@@ -148,6 +150,44 @@ On an Apple M4 Max, single-threaded in Release, the vectorized kernel takes abou
 0.63 ns per value, against 1.43 ns for a scalar loop with the same formula. One
 feed-forward layer of 9,216 values takes about 5.8 µs instead of 13.3 µs.
 
+## RMS Normalization
+
+Each block normalizes the hidden state before attention and before the
+feed-forward layer, and the model normalizes it once more before the LM head.
+`RmsNorm(input, weight, epsilon, destination)` normalizes every row along the
+last dimension, then multiplies each column by its weight:
+
+```text
+destination[r, c] = input[r, c] / sqrt(mean(input[r, *]²) + epsilon) × weight[c]
+```
+
+See [Root Mean Square Layer Normalization](https://arxiv.org/abs/1910.07467).
+For the target model, rows have 3,072 values, `epsilon` is
+`attention.layer_norm_rms_epsilon` (1e-5), and `weight` is one of the F32
+`attn_norm`, `ffn_norm` or `output_norm` vectors. `input` and `destination` have
+the same shape, of rank 1 or more, so one call can normalize every token of a
+prompt. `weight` is an F32 `ITensor` of shape `[columns]`, not an
+`IWeightTensor`: these vectors are small and already F32, so a caller can read
+their payload and upload them once. `epsilon` must be finite and positive, so
+that an all-zero row stays finite. Ownership, exact aliasing and validation
+follow `Add`; empty tensors are valid no-ops.
+
+The mean of the squares is a reduction, so its result depends on the summation
+order. The CPU backend widens each vector to double precision and sums the
+squares in two vector accumulators. This keeps rows of thousands of values
+accurate, and squares beyond the F32 range, such as that of 1e30, do not
+overflow. The scale `1 / sqrt(mean + epsilon)` is computed in double precision
+and rounded once, then each value is multiplied by the scale and by its weight
+in F32. Over 1,000 random rows of 3,072 values, the largest relative error
+against a double-precision reference was 1.6e-7, and tests use a relative
+tolerance of 1e-6. NaN or infinite values make their row's results NaN or zero,
+as the formula gives; other rows are unaffected.
+
+On an Apple M4 Max, single-threaded in Release, one row of 3,072 values takes
+about 0.73 µs, against 3.3 µs for the same algorithm without vectors, which is
+limited by its single chain of additions. The 53 normalizations of one token
+take about 39 µs.
+
 ## Ordering, Completion and Lifetime
 
 Operations submitted to one backend instance take effect in submission order: a
@@ -184,5 +224,5 @@ dotnet fsi examples/Add.fsx
 
 The script loads the library sources, runs the same function with each backend,
 prints the CPU result, and reports the GPU placeholders' exceptions at the first
-upload. Tests also call GPU allocation, download, `Add` and `SwiGlu` directly
-to verify that all unfinished operations fail explicitly.
+upload. Tests also call GPU allocation, download and each kernel directly to
+verify that all unfinished operations fail explicitly.

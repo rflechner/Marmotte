@@ -112,6 +112,21 @@ type ISwiGluKernel =
     /// magnitude, and silu(-∞) is NaN, as the formula gives.
     abstract SwiGlu: gate: ITensor * up: ITensor * destination: ITensor -> unit
 
+/// RMS normalization of each row along the last dimension, followed by a weight per column:
+/// destination[r, c] = input[r, c] / sqrt(mean(input[r, *]²) + epsilon) × weight[c].
+/// See "Root Mean Square Layer Normalization", https://arxiv.org/abs/1910.07467.
+type IRmsNormKernel =
+    /// Input and destination have the same shape, of rank 1 or more. Weight is a vector whose
+    /// length is the last dimension of input, shared by every row. Epsilon must be finite and
+    /// positive, so that an all-zero row stays finite; models store it as
+    /// attention.layer_norm_rms_epsilon. Destination may be any input; otherwise inputs are
+    /// unchanged. Empty tensors are valid no-ops. Ownership, validation and ordering follow
+    /// IAddKernel.Add, and an invalid epsilon raises ArgumentOutOfRangeException.
+    /// The mean is a reduction that implementations sum in different orders, so compare results
+    /// with a relative tolerance. NaN or infinite values make their row's results NaN or zero,
+    /// as the formula gives.
+    abstract RmsNorm: input: ITensor * weight: ITensor * epsilon: single * destination: ITensor -> unit
+
 /// Creates and operates on its own tensors. Separate instances are separate ownership domains,
 /// even when their Backend values match.
 ///
@@ -133,6 +148,7 @@ type ITensorBackend =
     inherit IDisposable
     inherit IAddKernel
     inherit ISwiGluKernel
+    inherit IRmsNormKernel
 
     abstract Backend: BackendKind
 
