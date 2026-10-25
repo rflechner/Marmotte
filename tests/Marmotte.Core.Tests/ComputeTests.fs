@@ -109,3 +109,56 @@ let ``attention temperature validates its parameters and positions`` () =
         Assert.Throws<ArgumentOutOfRangeException>(fun () -> AttentionTemperature.Create(scale, 10) |> ignore) |> ignore
     for floorLength in [ 0; -1 ] do
         Assert.Throws<ArgumentOutOfRangeException>(fun () -> AttentionTemperature.Create(0.1, floorLength) |> ignore) |> ignore
+
+/// The target model: 26 layers with 8 key-value heads of 128 values, for a 4,096-token context.
+let private ministralCache keyEncoding valueEncoding =
+    KeyValueCacheLayout.Create(
+        layers = 26,
+        capacity = 4096,
+        keyValueHeads = 8,
+        headDimension = 128,
+        keyEncoding = keyEncoding,
+        valueEncoding = valueEncoding)
+
+[<Fact>]
+let ``key-value cache layouts size the target model's cache for each encoding`` () =
+    // Each position stores 26 key rows and 26 value rows of 1,024 values: 208 KiB in F32.
+    let f32 = ministralCache TensorEncoding.F32 TensorEncoding.F32
+    Assert.Equal(1024, f32.RowValues)
+    Assert.Equal(212992L, f32.BytesPerPosition)
+    Assert.Equal(832L * 1024L * 1024L, f32.TotalBytes)
+
+    // A row holds 32 blocks of 32 values: 34 bytes each in Q8_0 and 18 in Q4_0.
+    let cases =
+        [ TensorEncoding.F16, TensorEncoding.F16, 2048, 2048, 106496L
+          TensorEncoding.BF16, TensorEncoding.BF16, 2048, 2048, 106496L
+          TensorEncoding.Q8_0, TensorEncoding.Q8_0, 1088, 1088, 56576L
+          TensorEncoding.Q4_0, TensorEncoding.Q4_0, 576, 576, 29952L
+          TensorEncoding.Q8_0, TensorEncoding.Q4_0, 1088, 576, 43264L ]
+
+    for keyEncoding, valueEncoding, keyRowBytes, valueRowBytes, bytesPerPosition in cases do
+        let layout = ministralCache keyEncoding valueEncoding
+        Assert.Equal(keyRowBytes, layout.KeyRowBytes)
+        Assert.Equal(valueRowBytes, layout.ValueRowBytes)
+        Assert.Equal(bytesPerPosition, layout.BytesPerPosition)
+        Assert.Equal(bytesPerPosition * 4096L, layout.TotalBytes)
+
+[<Fact>]
+let ``key-value cache layouts reject invalid dimensions encodings and sizes`` () =
+    let create layers capacity heads headDimension keyEncoding valueEncoding =
+        KeyValueCacheLayout.Create(layers, capacity, heads, headDimension, keyEncoding, valueEncoding) |> ignore
+
+    for layers, capacity, heads, headDimension in [ 0, 1, 1, 32; 1, 0, 1, 32; 1, 1, -1, 32; 1, 1, 1, 0 ] do
+        Assert.Throws<ArgumentOutOfRangeException>(fun () -> create layers capacity heads headDimension TensorEncoding.F32 TensorEncoding.F32) |> ignore
+
+    Assert.Throws<NotSupportedException>(fun () -> create 1 1 1 256 TensorEncoding.Q4_K TensorEncoding.F32) |> ignore
+    Assert.Throws<NotSupportedException>(fun () -> create 1 1 1 256 TensorEncoding.F32 TensorEncoding.Q6_K) |> ignore
+
+    // A Q8_0 block of 32 values would span two heads of 16.
+    let spanning = Assert.Throws<ArgumentException>(fun () -> create 1 1 8 16 TensorEncoding.F16 TensorEncoding.Q8_0)
+    Assert.Equal("valueEncoding", spanning.ParamName)
+
+    // One layer of 524,288 F32 rows of 4,096 bytes needs 2 GiB, beyond a managed array; F16 needs half.
+    Assert.Throws<ArgumentException>(fun () -> create 1 524288 8 128 TensorEncoding.F32 TensorEncoding.F16) |> ignore
+    create 1 524288 8 128 TensorEncoding.F16 TensorEncoding.F16
+    Assert.Throws<ArgumentException>(fun () -> create 1 1 65536 65536 TensorEncoding.F16 TensorEncoding.F16) |> ignore

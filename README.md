@@ -147,18 +147,21 @@ names and model configuration are not implemented yet.
 
 ## Execution tensors and kernels
 
-`Marmotte.Core` defines `TensorShape`, `ITensor`, `IWeightTensor`, `IAddKernel`,
-`ISwiGluKernel`, `IRmsNormKernel`, `IEmbeddingKernel`, `IMatVecKernel`,
-`IMatMulKernel`, `IRopeKernel`, `IAttentionTemperatureKernel` and
-`ITensorBackend`, plus `RotaryEmbedding`, `YarnParameters` and
-`AttentionTemperature`.
+`Marmotte.Core` defines `TensorShape`, `ITensor`, `IWeightTensor`,
+`IKeyValueCache`, `IAddKernel`, `ISwiGluKernel`, `IRmsNormKernel`,
+`IEmbeddingKernel`, `IMatVecKernel`, `IMatMulKernel`, `IRopeKernel`,
+`IAttentionTemperatureKernel`, `IKeyValueCacheKernel` and `ITensorBackend`, plus
+`RotaryEmbedding`, `YarnParameters`, `AttentionTemperature` and
+`KeyValueCacheLayout`. `RowEncoder` writes F32, F16, BF16, Q8_0 and Q4_0 rows,
+the inverse of `RowDecoder`.
 The three backend projects share these contracts:
 
 - `Marmotte.Cpu`: owned F32 arrays, explicit upload/download, weight tensors that
   retain the stored payload, `Add`, SwiGLU and RMS normalization kernels
   vectorized with `Vector<T>`, embedding lookup, and matrix-vector and
   matrix-matrix products over stored weights, which all decode rows with Core's
-  `RowDecoder`, rotary position embedding and attention temperature.
+  `RowDecoder`, rotary position embedding, attention temperature and a
+  key-value cache.
 - `Marmotte.Cuda` and `Marmotte.Metal`: buildable placeholders whose allocation,
   transfers and kernels raise `NotImplementedException`, without requiring a GPU SDK.
 
@@ -186,6 +189,16 @@ same kernel. For the target model (factor 16, original context 16,384, betas
 multiplies queries by the position-dependent factor of an `AttentionTemperature`.
 Model metadata loading remains to be implemented.
 
+`AllocateKeyValueCache(layout)` allocates a cache for the keys, after RoPE, and
+values of every layer, with a separate encoding for each, like LM Studio's K and
+V cache quantization. `StoreKeyValues(cache, layer, position, keys, values)`
+appends positions to a layer, or replaces them and discards the later ones;
+`ReadKeyValues` decodes them back into F32 tensors. For the target model and a
+4,096-token context, the cache takes 832 MiB in F32, 416 MiB in F16 or BF16,
+221 MiB in Q8_0 and 117 MiB in Q4_0. Q8_0 and Q4_0 are lossy: see the
+[precision notes](docs/kernels.md#key-value-cache). Attention does not read the
+cache yet.
+
 `EmbeddingLookup(weights, tokenIds, destination)` decodes selected vocabulary
 rows into a preallocated F32 tensor of shape `[tokenIds.Length; weights.Columns]`,
 without scaling. It supports F32, F16, BF16, Q4_0, Q8_0, Q4_K and Q6_K weights,
@@ -201,6 +214,7 @@ the examples without a local model:
 dotnet fsi examples/Add.fsx
 dotnet fsi examples/Embedding.fsx
 dotnet fsi examples/Yarn.fsx
+dotnet fsi examples/KeyValueCache.fsx
 ```
 
 ## Inspect a local GGUF file

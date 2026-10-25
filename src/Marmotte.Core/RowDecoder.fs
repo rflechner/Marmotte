@@ -4,11 +4,10 @@ open System
 open System.Buffers.Binary
 
 /// Decodes stored rows into F32 values, one quantization block at a time, without decoding a
-/// whole matrix. Block layouts and arithmetic follow block_q4_0, block_q8_0, block_q4_K and
-/// block_q6_K in https://github.com/ggml-org/llama.cpp/blob/master/ggml/src/ggml-common.h, and
-/// dequantize_row_q4_0, _q8_0, _q4_K and _q6_K in ggml/src/ggml-quants.c (checked 2026-10-25).
-/// Each value uses the same F32 operations in the same order as those functions, so the results
-/// match unless a C compiler fuses their multiplications and subtractions.
+/// whole matrix. Block layouts and arithmetic follow the reference block definitions and
+/// reconstruction functions cited in docs/kernels.md (checked 2026-10-25). Each value uses the
+/// same F32 operations in the same order as those functions, so the results match unless a C
+/// compiler fuses their multiplications and subtractions.
 [<RequireQualifiedAccess>]
 module RowDecoder =
     let private readHalf (bytes: ReadOnlySpan<byte>) =

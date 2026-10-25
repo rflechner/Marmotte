@@ -35,6 +35,7 @@
     <File Path="examples/Add.fsx" />
     <File Path="examples\Embedding.fsx" />
     <File Path="examples/Yarn.fsx" />
+    <File Path="examples\KeyValueCache.fsx" />
   </Folder>
   <Folder Name="/src/">
     <Project Path="src/Marmotte.Cli/Marmotte.Cli.fsproj" />

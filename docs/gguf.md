@@ -157,7 +157,10 @@ mix several tensor encodings. `GgmlType` describes each tensor's actual encoding
 The numeric identifiers are not interchangeable: value 12 means
 `GgufFileType.Q3_K_M` for a file profile and `GgmlType.Q4_K` for a tensor.
 An absent or incorrectly typed profile produces `None`; it is not guessed
-from the filename or from tensor encodings.
+from the filename or from tensor encodings. Encoding identifiers and their block
+sizes (`GGML_QUANT_SIZES`), and profile identifiers (`LlamaFileType`, llama.cpp's
+`llama_ftype`), follow the [tensor encodings and file profiles](https://github.com/ggml-org/llama.cpp/blob/master/gguf-py/gguf/constants.py)
+listed in the references.
 
 ## Tensor Descriptors
 
@@ -279,7 +282,7 @@ profiles the reader can identify, not conversions the writer can perform.
 | Eligible tensors | Non-empty, rank at least 2, contiguous dimension divisible by 32 |
 | Other floating-point tensors | Copied byte for byte, preserving their encoding |
 | Output | GGUF v3 little-endian, Q4_0 or Q8_0 blocks, original alignment |
-| Metadata | Preserve typed values; replace `general.file_type` and `general.quantization_version` (2) |
+| Metadata | Preserve typed values; replace `general.file_type` and `general.quantization_version` (2, `GGML_QNT_VERSION`) |
 | Payload memory | Less than 128 KiB of reusable buffers, independent of tensor size |
 | Index memory | Default reader limits; final validation also reads the output index |
 | Publication | Temporary sibling file, validated before moving to a previously absent output path |
@@ -305,9 +308,11 @@ Q8_0 uses a positive scale and rounds halfway values away from zero. Integer cod
 are calculated with the unrounded scale, then the scale is stored as F16.
 Reconstruction therefore includes both integer rounding and F16 scale error.
 
-Converted NaN/infinite weights and scales exceeding the finite F16 range are
-rejected. Blocks whose scale underflows to F16 zero decode to zero; the encoder
-handles these without an infinite reciprocal. Copied payloads are not numerically
+The block arithmetic lives in `Marmotte.Core`'s `RowEncoder`, which the
+key-value cache shares. Converted NaN/infinite weights and scales exceeding the
+finite F16 range are rejected, whereas `RowEncoder` alone would store such a
+block with a NaN scale. Blocks whose scale underflows to F16 zero decode to
+zero; the encoder handles these without an infinite reciprocal. Copied payloads are not numerically
 validated. The output contains no new provenance inferred from its filename.
 
 The input remains read-only. Existing files/directories at the output path are
@@ -399,4 +404,5 @@ Not implemented:
 - [GGUF public definitions](https://github.com/ggml-org/ggml/blob/master/include/gguf.h)
 - [Upstream reader and alignment validation](https://github.com/ggml-org/llama.cpp/blob/master/gguf-py/gguf/gguf_reader.py)
 - [Tensor encodings and file profiles](https://github.com/ggml-org/llama.cpp/blob/master/gguf-py/gguf/constants.py)
+- [Quantization version `GGML_QNT_VERSION`](https://github.com/ggml-org/llama.cpp/blob/master/ggml/include/ggml.h)
 - [Hugging Face Hub GGUF documentation](https://huggingface.co/docs/hub/gguf)

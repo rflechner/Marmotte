@@ -74,7 +74,7 @@ type private GgufReader(stream: Stream, options: GgufReadOptions) =
 /// Reads GGUF v2/v3 headers, metadata and tensor descriptors without loading weights.
 [<RequireQualifiedAccess>]
 module Gguf =
-    // (elements per block, bytes per block), matching gguf-py's GGML_QUANT_SIZES.
+    // (elements per block, bytes per block), matching the reference size table cited in docs/gguf.md.
     let private blockLayout = function
         | GgmlType.F32 | GgmlType.I32 -> Some(1UL, 4UL)
         | GgmlType.F16 | GgmlType.BF16 | GgmlType.I16 -> Some(1UL, 2UL)

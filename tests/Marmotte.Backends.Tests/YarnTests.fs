@@ -68,11 +68,9 @@ let ``YaRN applies its magnitude to both Q and K so their score scales quadratic
     let magnitude = 1.5 * expectedMagnitude
     Assert.InRange(abs (product scaled - product baseline * magnitude * magnitude), 0.0, 5e-5)
 
-// Captured by running the unmodified ggml CPU kernel, llama.cpp commit
-// 2280f0fd163b03d4331d49e08460f66502e35854 (2026-10-25), on an F32 [128; 1; 4] tensor
-// whose every adjacent pair is (1, 0). ggml_rope_ext: NORMAL, n_dims=128, n_ctx_orig=16384,
-// freq_base=1e6, freq_scale=1/16, ext_factor=1, attn_factor=1/(1+0.1*ln(16)), betas=32/1.
-// Values below are output data, not values computed by Marmotte or a port of ggml's kernel.
+// Outputs of the unmodified reference RoPE kernel for the target configuration, on pairs (1, 0),
+// recorded on 2026-10-25; docs/kernels.md records the revision and the call. Values below are
+// output data, not values computed by Marmotte or a port of that kernel.
 [<Theory>]
 [<InlineData(0, 0, 1.0, 0.0)>]
 [<InlineData(0, 27, 1.0, 0.0)>]
@@ -91,11 +89,12 @@ let ``YaRN applies its magnitude to both Q and K so their score scales quadratic
 [<InlineData(262143, 27, -0.728520811, 0.685023665)>]
 [<InlineData(262143, 37, 0.754706740, -0.656062305)>]
 [<InlineData(262143, 63, 0.999793351, 0.0203300007)>]
-let ``target YaRN agrees with recorded ggml rotations within F32 angle rounding`` position pair expectedFirst expectedSecond =
+let ``target YaRN agrees with recorded reference rotations within F32 angle rounding`` position pair expectedFirst expectedSecond =
     let values = Array.init 128 (fun index -> if index % 2 = 0 then 1.0f else 0.0f)
     let output = rotate [| 1; 128 |] [| position |] values RopePairing.AdjacentPairs target
-    // ggml repeatedly multiplies its angle in F32; Marmotte prepares frequencies and angles in
-    // double precision. The error bound grows with the number of multiplications and the angle.
+    // The reference repeatedly multiplies its angle in F32; Marmotte prepares frequencies and
+    // angles in double precision. The error bound grows with the number of multiplications and
+    // the angle.
     let frequency = RotaryEmbedding.Yarn(128, 1000000.0, RopePairing.AdjacentPairs, target).Frequencies[pair]
     let tolerance = 2e-7 + 2e-7 * float (pair + 2) * float position * frequency
     Assert.InRange(abs (float output[2 * pair] - expectedFirst), 0.0, tolerance)

@@ -7,9 +7,8 @@ open System.Collections.Generic
 /// Safetensors' dtypes. Deliberately narrower than both formats: the encodings of the first
 /// target models. RowDecoder decodes their rows into F32 for embedding lookup and matrix-vector
 /// products; Add, SwiGLU and RMS normalization operate on F32 execution tensors.
-/// Block layouts follow block_q4_0, block_q8_0, block_q4_K and block_q6_K in
-/// https://github.com/ggml-org/llama.cpp/blob/master/ggml/src/ggml-common.h
-/// and match the GGUF reader's payload size table.
+/// Block layouts follow the reference block definitions cited in docs/gguf.md and match the
+/// GGUF reader's payload size table.
 [<RequireQualifiedAccess>]
 type TensorEncoding =
     | F32

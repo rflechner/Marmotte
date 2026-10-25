@@ -5,7 +5,9 @@ and `Marmotte.Metal` each reference Core; Core references none of the backends.
 The implemented operations are element-wise F32 addition, the SwiGLU
 activation of the feed-forward layer, RMS normalization, embedding lookup from
 stored weights, matrix-vector and matrix-matrix products with stored weights,
-rotary position embedding, and the attention temperature applied to queries.
+rotary position embedding, and the attention temperature applied to queries. A
+key-value cache keeps the keys and values of past positions in an encoding
+chosen separately for each, from F32 down to Q4_0.
 
 ## Reading the Formulas
 
@@ -44,8 +46,10 @@ use unrounded intermediates.
 | Rope | One value of a pair turned by an angle that grows with the token's position | [Rotate pairs](#rotary-position-embedding) |
 | YaRN (parameter preparation) | Adjusted RoPE frequencies and an attention magnitude factor | [Extend context](#yarn-context-extension) |
 | AttentionTemperature | One query value multiplied by a factor of its position block | [Scale queries](#attention-temperature) |
+| StoreKeyValues / ReadKeyValues | One cached key or value of a past position, encoded and decoded back to F32 | [Key-value cache](#key-value-cache) |
 
-All eight kernels have CPU implementations; CUDA and Metal remain placeholders.
+All eight kernels and the key-value cache have CPU implementations; CUDA and
+Metal remain placeholders.
 Core implements YaRN parameter preparation. Attention temperature has a worked
 example in text. The eight walkthrough images were
 generated with the built-in `image_gen` tool, visually reviewed, and their
@@ -125,12 +129,14 @@ them one row at a time.
 | `IMatMulKernel.MatMul` | Each decoded row shared by every token of the batch | `NotImplementedException` | `NotImplementedException` |
 | `IRopeKernel.Rope` | Angles in double precision once per token, shared by every head | `NotImplementedException` | `NotImplementedException` |
 | `IAttentionTemperatureKernel.ApplyAttentionTemperature` | One F32 factor per token, `Vector<T>` multiplication | `NotImplementedException` | `NotImplementedException` |
+| `AllocateKeyValueCache` | Whole capacity up front: one byte array per layer for keys, one for values | `NotImplementedException` | `NotImplementedException` |
+| `IKeyValueCacheKernel` | Encodes whole batches with `RowEncoder`, reads them back with `RowDecoder` | `NotImplementedException` | `NotImplementedException` |
 | SDK/driver required today | None | None | None |
 
 `ITensorBackend` inherits `IAddKernel`, `ISwiGluKernel`, `IRmsNormKernel`,
-`IEmbeddingKernel`, `IMatVecKernel`, `IMatMulKernel`, `IRopeKernel` and
-`IAttentionTemperatureKernel`, so orchestration can call each kernel directly on
-the backend.
+`IEmbeddingKernel`, `IMatVecKernel`, `IMatMulKernel`, `IRopeKernel`,
+`IAttentionTemperatureKernel` and `IKeyValueCacheKernel`, so orchestration can
+call each kernel directly on the backend.
 A consumer needing a single operation can accept its kernel interface directly.
 No generic operation registry, graph scheduler or native interop is needed for
 this example.
@@ -631,9 +637,13 @@ Tests check the transition, magnitude cancellation and non-default magnitude
 parameters, invalid inputs, collapsed or out-of-range cutoffs, and CPU
 rotations of 32 query heads and 8 key heads through position 262,143 with both
 pairings. A separate check ran the unmodified ggml CPU kernel at revision
-`2280f0fd163b03d4331d49e08460f66502e35854` on pairs `(1, 0)` at positions
-0, 1, 16,384 and 262,143, using the target configuration and ggml's compensated
-`attn_factor = 1 / (1 + 0.1 × ln(16))`. Recorded output values are retained in
+`2280f0fd163b03d4331d49e08460f66502e35854` at positions 0, 1, 16,384 and
+262,143. It called `ggml_rope_ext` in NORMAL mode on an F32 `[128; 1; 4]` tensor
+whose every adjacent pair is `(1, 0)`, with the target configuration:
+`n_dims = 128`, `n_ctx_orig = 16384`, `freq_base = 1e6`, `freq_scale = 1/16`,
+`ext_factor = 1`, `beta_fast = 32`, `beta_slow = 1` and ggml's compensated
+`attn_factor = 1 / (1 + 0.1 × ln(16))`. The recorded outputs, not values
+computed by Marmotte or by a port of that kernel, are retained in
 [`YarnTests.fs`](../tests/Marmotte.Backends.Tests/YarnTests.fs); running the tests
 does not require ggml or GPU hardware. They account for ggml's F32 angle
 accumulation, while a separate double-precision reference checks Marmotte with
@@ -689,6 +699,108 @@ Tests check the factors at block boundaries against values computed by hand,
 the per-token scaling in rank 2 and rank 3, in-place use, empty batches and
 validation.
 
+## Key-Value Cache
+
+Attention is the only operation in which a token reads the other positions: its
+query is compared with the keys of every earlier position, and their values are
+weighted by the result. Everything else in a block is computed token by token.
+Without a cache, generating a token would recompute the key and value
+projections of the whole prefix in every layer. The cache stores them instead,
+once per position and layer. Queries are not stored: a past token asks nothing
+more.
+
+`KeyValueCacheLayout` describes the cache: its layers, its capacity in
+positions, its key-value heads and their dimension, and one encoding for keys
+and another for values. Each position of a layer is a row of
+`KeyValueHeads × HeadDimension` values for keys and another for values, 1,024
+values for the target model:
+
+| Encoding | Bytes per 32 values | Per token | 4,096 tokens | 32,768 tokens |
+| --- | --- | --- | --- | --- |
+| F32 | 128 | 208 KiB | 832 MiB | 6,656 MiB |
+| F16, BF16 | 64 | 104 KiB | 416 MiB | 3,328 MiB |
+| Q8_0 | 34 | 55.25 KiB | 221 MiB | 1,768 MiB |
+| Q4_0 | 18 | 29.25 KiB | 117 MiB | 936 MiB |
+
+```fsharp
+let layout =
+    KeyValueCacheLayout.Create(
+        layers = 26,
+        capacity = 4096,
+        keyValueHeads = 8,
+        headDimension = 128,
+        keyEncoding = TensorEncoding.Q8_0,
+        valueEncoding = TensorEncoding.Q8_0)
+
+use cache = backend.AllocateKeyValueCache(layout)
+
+// In each layer: rotate the keys, then store keys and values at their positions.
+backend.Rope(keys, positions, embedding, keys)
+backend.StoreKeyValues(cache, layer, firstPosition, keys, values)
+```
+
+`BytesPerPosition` and `TotalBytes` give these sizes before allocating anything.
+Keys and values have separate encodings, like llama.cpp's `--cache-type-k` and
+`--cache-type-v` options, which LM Studio exposes as K and V cache quantization.
+Marmotte supports the encodings it can both write and read: F32, F16, BF16,
+Q8_0 and Q4_0. llama.cpp's default is F16. llama.cpp also offers Q4_1, Q5_0,
+Q5_1 and IQ4_NL, which `TensorEncoding` does not represent yet. K-quants such as
+Q4_K are rejected: their reference quantizers search for sub-block scales, which
+Marmotte does not implement. A head dimension must hold whole blocks, so a
+32-value block never spans two heads and attention can decode one head at a
+time.
+
+Unlike llama.cpp, a quantized value cache does not require flash attention.
+Without flash attention, llama.cpp stores values transposed, with positions
+contiguous, so that blocks would have to span positions; Marmotte stores every
+position as a row of whole blocks, for values as for keys.
+
+`RowEncoder` in Core writes the rows; it is the inverse of `RowDecoder` and also
+encodes the GGUF quantizer's blocks. F16 and BF16 round to nearest, ties to
+even. Q8_0 rounds each value to half a step of `max / 127`, where `max` is the
+largest magnitude of its block of 32. Q4_0 uses 16 steps of `max / 8` and can
+clip the end opposite to its scale by a whole step. Both store their scale in
+F16. Quantization is lossy, and the precision attention needs is a measurement
+to make on the model, not a property of the cache: keys have outlier channels,
+which inflate the scale of every block that contains one
+([KIVI](https://arxiv.org/abs/2402.02750)), so they usually tolerate
+quantization less well than values. Q8_0 for both is a common starting point,
+and a lower-precision value cache the next step.
+
+`StoreKeyValues(cache, layer, position, keys, values)` encodes F32 tensors of
+shape `[tokens; KeyValueHeads × HeadDimension]` or
+`[tokens; KeyValueHeads; HeadDimension]` into positions `position` to
+`position + tokens - 1`. Each layer stores consecutive positions from 0, counted
+by `StoredPositions(layer)`: `position` may not leave a gap. Storing below that
+count replaces those positions and discards every later one, which was
+computed from the replaced tokens. Regenerating a response from position `p`
+therefore needs no separate truncation, and an empty batch at `p` only
+truncates. `position + tokens` may not exceed the capacity.
+
+`ReadKeyValues(cache, layer, position, keys, values)` decodes stored positions
+into two different F32 tensors of the same shapes. An F32 cache reads back bit
+for bit; another encoding reads back what `RowDecoder` decodes from the stored
+blocks. Attention will read the cache this way until it decodes cached rows
+directly.
+
+Values that an encoding cannot hold are never replaced by plausible numbers.
+F16 and BF16 turn values beyond their range into infinities, and NaN stays NaN.
+A Q8_0 or Q4_0 block that contains NaN or an infinity, or whose scale exceeds
+the F16 range, is stored with a NaN scale: its 32 values read back as NaN, and
+the other blocks are unaffected. The GGUF quantizer is stricter and rejects
+such weights.
+
+The CPU backend allocates the whole capacity up front, as llama.cpp does: one
+byte array of `Capacity` rows per layer for keys and one for values. Blocks
+never span rows, so a batch of positions is encoded or decoded in one call. A
+layer's keys or values must fit in a managed array: 524,287 F32 positions for
+the target model, twice its 262,144-position context. Tests check hand-computed F16, BF16, Q8_0
+and Q4_0 bytes, rounding errors, non-finite blocks, the target model's sizes,
+appending, replacing and truncating positions, validation before any write,
+ownership and disposal. Run
+[`examples/KeyValueCache.fsx`](../examples/KeyValueCache.fsx) to print the sizes
+above and the error of each encoding.
+
 ## Ordering, Completion and Lifetime
 
 Operations submitted to one backend instance take effect in submission order: a
@@ -722,10 +834,13 @@ From the repository root, with no model files or GPU installation:
 ```sh
 dotnet fsi examples/Add.fsx
 dotnet fsi examples/Embedding.fsx
+dotnet fsi examples/KeyValueCache.fsx
 ```
 
 The Add script loads the library sources, runs the same function with each backend,
 prints the CPU result, and reports the GPU placeholders' exceptions at the first
 upload. The embedding script uses a tiny in-memory F32 vocabulary and prints
-the rows for IDs `[1; 0; 1]`. Tests also call GPU allocation, download and each
+the rows for IDs `[1; 0; 1]`. The key-value cache script prints the target
+model's cache size for each encoding, then stores random keys in a small CPU
+cache and prints the largest error after reading them back. Tests also call GPU allocation, download and each
 kernel directly to verify that all unfinished operations fail explicitly.

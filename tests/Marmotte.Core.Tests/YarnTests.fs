@@ -59,7 +59,7 @@ let ``YaRN handles a collapsed transition without division by zero`` () =
     Assert.Equal<double>([| 1.0; 0.0025 |], embedding.Frequencies)
 
 [<Fact>]
-let ``YaRN keeps ggml cutoff bounds even when the transition extends past the last pair`` () =
+let ``YaRN bounds the upper cutoff by D - 1 even when the transition extends past the last pair`` () =
     // D=8, base=100, L=1000 gives raw cutoffs 2.4036 and 4.4036, rounded to 2 and 5.
     // Clamping the upper cutoff to D/2-1=3 instead of D-1 would wrongly fully scale pair 3.
     let parameters = { target with OriginalContextLength = 1000; ScalingFactor = 4.0; BetaFast = 10.0 }

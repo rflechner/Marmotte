@@ -91,6 +91,22 @@ type IWeightTensor =
     abstract Columns: int
     abstract Backend: BackendKind
 
+/// Keys and values of past positions, stored on a backend in the encodings of a
+/// KeyValueCacheLayout. Each layer stores consecutive positions from 0; IKeyValueCacheKernel
+/// writes and reads them. Disposal follows ITensor's rules. Layout and Backend remain readable
+/// after disposal.
+type IKeyValueCache =
+    inherit IDisposable
+
+    abstract Layout: KeyValueCacheLayout
+    abstract Backend: BackendKind
+
+    /// Positions stored in a layer, from position 0, once the store operations submitted so far
+    /// complete; a backend tracks this count when they are submitted, without waiting for them.
+    /// Raises ArgumentOutOfRangeException for a layer outside [0, Layers) and
+    /// ObjectDisposedException after disposal of the cache or its backend.
+    abstract StoredPositions: layer: int -> int
+
 /// Element-wise F32 addition: destination[i] = left[i] + right[i].
 type IAddKernel =
     /// All tensors must belong to the executing backend instance and have exactly the same shape.
@@ -196,6 +212,34 @@ type IAttentionTemperatureKernel =
     /// below FloorLength leave queries unchanged.
     abstract ApplyAttentionTemperature: queries: ITensor * positions: ReadOnlyMemory<int> * temperature: AttentionTemperature * destination: ITensor -> unit
 
+/// Stores the keys and values of new positions in a key-value cache, in the layout's encodings,
+/// and decodes stored positions back into F32 tensors.
+///
+/// Both operations take F32 keys and values tensors of the same shape, whose first dimension counts
+/// tokens: [tokens; KeyValueHeads × HeadDimension] or [tokens; KeyValueHeads; HeadDimension]. Token
+/// t is position position + t of the layer. Every tensor and the cache must belong to the executing
+/// backend instance. All arguments are validated before submission or any write:
+/// ArgumentNullException for null, ArgumentException for incompatible tensors or a foreign cache,
+/// ArgumentOutOfRangeException for a layer or positions outside the ranges below, and
+/// ObjectDisposedException for disposed storage or backend. Ordering follows IAddKernel.Add.
+type IKeyValueCacheKernel =
+    /// Encodes keys, after RoPE, and values into positions [position, position + tokens) of a
+    /// layer, with the layout's KeyEncoding and ValueEncoding; the tensors are unchanged. position
+    /// must be in [0, StoredPositions(layer)], so that stored positions stay contiguous, and
+    /// position + tokens must not exceed Capacity. Storing below StoredPositions replaces those
+    /// positions and discards every later one of the layer, which was computed from the replaced
+    /// tokens: StoredPositions(layer) becomes position + tokens, even for an empty batch, which
+    /// then only truncates the layer. Keys and values may be the same tensor. See RowEncoder for
+    /// the rounding of each encoding and its handling of non-finite values.
+    abstract StoreKeyValues: cache: IKeyValueCache * layer: int * position: int * keys: ITensor * values: ITensor -> unit
+
+    /// Decodes stored positions [position, position + tokens) of a layer into keys and values,
+    /// which must be different tensors. position must be at least 0 and position + tokens at most
+    /// StoredPositions(layer). An F32 cache returns the stored values bit for bit; other encodings
+    /// return what RowDecoder decodes from the stored rows, so a stored row always reads back the
+    /// same. Reading an empty batch is a valid no-op.
+    abstract ReadKeyValues: cache: IKeyValueCache * layer: int * position: int * keys: ITensor * values: ITensor -> unit
+
 /// Creates and operates on its own tensors. Separate instances are separate ownership domains,
 /// even when their Backend values match.
 ///
@@ -223,6 +267,7 @@ type ITensorBackend =
     inherit IMatMulKernel
     inherit IRopeKernel
     inherit IAttentionTemperatureKernel
+    inherit IKeyValueCacheKernel
 
     abstract Backend: BackendKind
 
@@ -242,6 +287,11 @@ type ITensorBackend =
     /// Raises ArgumentNullException for null, NotSupportedException for an encoding this backend
     /// cannot hold, or ObjectDisposedException after backend disposal.
     abstract UploadWeights: weights: WeightMatrix -> IWeightTensor
+
+    /// Allocates storage for every position of every layer of the layout, about TotalBytes, with no
+    /// stored positions. Raises ArgumentNullException for null, NotSupportedException for an
+    /// encoding this backend cannot store, or ObjectDisposedException after backend disposal.
+    abstract AllocateKeyValueCache: layout: KeyValueCacheLayout -> IKeyValueCache
 
     /// Waits for previously submitted operations, then copies the tensor to an exact-length host
     /// buffer in row-major order; the buffer is complete on return. Validates before writing.

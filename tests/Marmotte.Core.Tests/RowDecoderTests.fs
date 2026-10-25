@@ -6,9 +6,9 @@ open Marmotte.Core
 open Xunit
 
 // Fixtures pack chosen integer quants and scales by hand, following the field descriptions of
-// llama.cpp's ggml-common.h and the bit positions written by its reference quantizers. The
-// expected values come from those integers, not from the decoder under test. Scales are chosen
-// to be exact in half precision.
+// the block layouts cited in docs/kernels.md and the bit positions written by the reference
+// quantizers. The expected values come from those integers, not from the decoder under test.
+// Scales are chosen to be exact in half precision.
 
 let private halfBytes (value: single) =
     let bytes = Array.zeroCreate<byte> 2

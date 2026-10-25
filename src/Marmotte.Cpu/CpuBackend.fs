@@ -68,10 +68,59 @@ type private CpuWeightTensor(owner: obj, weights: WeightMatrix, onDispose: ICpuS
                 (this :> ICpuStorage).Release()
                 onDispose this
 
+/// Allocates the whole capacity up front: one byte array of Capacity encoded rows per layer for
+/// keys and another for values, with position p at row p. The stored position
+/// count of each layer is the only state besides the bytes.
+type private CpuKeyValueCache(owner: obj, layout: KeyValueCacheLayout, onDispose: ICpuStorage -> unit) =
+    let allocateRows (rowBytes: int) =
+        Array.init layout.Layers (fun _ -> Array.zeroCreate<byte> (layout.Capacity * rowBytes))
+
+    let mutable keyRows = allocateRows layout.KeyRowBytes
+    let mutable valueRows = allocateRows layout.ValueRowBytes
+    let storedPositions = Array.zeroCreate<int> layout.Layers
+    let mutable disposed = false
+
+    member _.Owner = owner
+
+    /// Encoded keys of a layer that StoredPositions has already validated.
+    member this.KeyRows(layer: int) =
+        ObjectDisposedException.ThrowIf(disposed, this)
+        keyRows[layer]
+
+    /// Encoded values of a layer that StoredPositions has already validated.
+    member this.ValueRows(layer: int) =
+        ObjectDisposedException.ThrowIf(disposed, this)
+        valueRows[layer]
+
+    member _.SetStoredPositions(layer: int, count: int) = storedPositions[layer] <- count
+
+    interface ICpuStorage with
+        member _.Release() =
+            disposed <- true
+            keyRows <- Array.empty
+            valueRows <- Array.empty
+
+    interface IKeyValueCache with
+        member _.Layout = layout
+        member _.Backend = BackendKind.Cpu
+
+        member this.StoredPositions(layer) =
+            ObjectDisposedException.ThrowIf(disposed, this)
+            if layer < 0 || layer >= layout.Layers then
+                raise (ArgumentOutOfRangeException(nameof layer, box layer, $"The layer must be in [0, {layout.Layers})."))
+            storedPositions[layer]
+
+    interface IDisposable with
+        member this.Dispose() =
+            if not disposed then
+                (this :> ICpuStorage).Release()
+                onDispose this
+
 /// Safe CPU implementation of the tensor and kernel contracts. This type is the plumbing: storage,
-/// ownership, lifetime and argument validation, while CpuKernels does the arithmetic. It owns no
-/// native resources. Each instance accepts only tensors that it created, and tracks the live ones
-/// so that disposing the backend releases them. Operations complete before returning, which
+/// ownership, lifetime and argument validation, while CpuKernels does the arithmetic and Core's
+/// RowEncoder and RowDecoder convert stored rows. It owns no native resources. Each instance
+/// accepts only tensors and key-value caches that it created, and tracks the live ones so that
+/// disposing the backend releases them. Operations complete before returning, which
 /// satisfies the ordering contract; Synchronize has nothing to wait for.
 [<Sealed>]
 type CpuBackend() =
@@ -94,6 +143,25 @@ type CpuBackend() =
         match tensor with
         | :? CpuWeightTensor as tensor when Object.ReferenceEquals(tensor.Owner, owner) -> tensor.Weights
         | _ -> invalidArg argumentName "The weights must belong to this CPU backend instance."
+
+    let cacheOf argumentName (cache: IKeyValueCache) =
+        ArgumentNullException.ThrowIfNull(cache, argumentName)
+        match cache with
+        | :? CpuKeyValueCache as cache when Object.ReferenceEquals(cache.Owner, owner) -> cache
+        | _ -> invalidArg argumentName "The key-value cache must belong to this CPU backend instance."
+
+    /// Requires keys or values of one cache row per token, [tokens; RowValues] or
+    /// [tokens; KeyValueHeads; HeadDimension], and returns the token count.
+    let requireCacheRows (operation: string) (layout: KeyValueCacheLayout) argumentName (tensor: ITensor) =
+        let dimensions = tensor.Shape.Dimensions
+        let isCacheRows =
+            match dimensions.Count with
+            | 2 -> dimensions[1] = layout.RowValues
+            | 3 -> dimensions[1] = layout.KeyValueHeads && dimensions[2] = layout.HeadDimension
+            | _ -> false
+        if not isCacheRows then
+            invalidArg argumentName $"{operation} requires {argumentName} of shape [tokens; {layout.RowValues}] or [tokens; {layout.KeyValueHeads}; {layout.HeadDimension}], not {tensor.Shape}."
+        dimensions[0]
 
     /// Element-wise kernels reject broadcasting: every tensor must have the reference's shape.
     let requireSameShape (operation: string) (reference: ITensor) argumentName (tensor: ITensor) =
@@ -144,6 +212,13 @@ type CpuBackend() =
             let tensor = new CpuWeightTensor(owner, weights, forget)
             track tensor
             tensor :> IWeightTensor
+
+        member this.AllocateKeyValueCache(layout) =
+            ObjectDisposedException.ThrowIf(disposed, this)
+            ArgumentNullException.ThrowIfNull(layout)
+            let cache = new CpuKeyValueCache(owner, layout, forget)
+            track cache
+            cache :> IKeyValueCache
 
         member this.Download(tensor, destination) =
             ObjectDisposedException.ThrowIf(disposed, this)
@@ -289,6 +364,53 @@ type CpuBackend() =
                 factors[index] <- temperature.Factor(ids[index])
 
             CpuKernels.scaleTokens (ReadOnlySpan<single>(queryValues), ReadOnlySpan<single>(factors), Span<single>(destinationValues))
+
+    // Blocks never span rows, so a batch of consecutive rows is encoded or decoded in one call.
+    interface IKeyValueCacheKernel with
+        member this.StoreKeyValues(cache, layer, position, keys, values) =
+            ObjectDisposedException.ThrowIf(disposed, this)
+            let storage = cacheOf (nameof cache) cache
+            let keyValues = valuesOf (nameof keys) keys
+            let valueValues = valuesOf (nameof values) values
+
+            let layout = cache.Layout
+            let stored = cache.StoredPositions(layer)
+            let tokens = requireCacheRows "Key-value store" layout (nameof keys) keys
+            requireSameShape "Key-value store" keys (nameof values) values
+            if position < 0 || position > stored then
+                raise (ArgumentOutOfRangeException(nameof position, box position, $"Layer {layer} stores {stored} positions: new positions must start in [0, {stored}] so that stored positions stay contiguous."))
+            if tokens > layout.Capacity - position then
+                raise (ArgumentOutOfRangeException(nameof position, box position, $"{tokens} positions from {position} exceed the capacity of {layout.Capacity} positions."))
+
+            let keyRowBytes = layout.KeyRowBytes
+            let valueRowBytes = layout.ValueRowBytes
+            let keyRows = storage.KeyRows(layer).AsSpan(position * keyRowBytes, tokens * keyRowBytes)
+            let valueRows = storage.ValueRows(layer).AsSpan(position * valueRowBytes, tokens * valueRowBytes)
+            RowEncoder.encode (layout.KeyEncoding, ReadOnlySpan<single>(keyValues), keyRows)
+            RowEncoder.encode (layout.ValueEncoding, ReadOnlySpan<single>(valueValues), valueRows)
+            storage.SetStoredPositions(layer, position + tokens)
+
+        member this.ReadKeyValues(cache, layer, position, keys, values) =
+            ObjectDisposedException.ThrowIf(disposed, this)
+            let storage = cacheOf (nameof cache) cache
+            let keyValues = valuesOf (nameof keys) keys
+            let valueValues = valuesOf (nameof values) values
+
+            let layout = cache.Layout
+            let stored = cache.StoredPositions(layer)
+            let tokens = requireCacheRows "Key-value read" layout (nameof keys) keys
+            requireSameShape "Key-value read" keys (nameof values) values
+            if Object.ReferenceEquals(keys, values) then
+                invalidArg (nameof values) "Key-value read requires different keys and values tensors."
+            if position < 0 || tokens > stored - position then
+                raise (ArgumentOutOfRangeException(nameof position, box position, $"Layer {layer} stores {stored} positions; {tokens} positions from {position} are not all stored."))
+
+            let keyRowBytes = layout.KeyRowBytes
+            let valueRowBytes = layout.ValueRowBytes
+            let keyRows = ReadOnlySpan<byte>(storage.KeyRows(layer), position * keyRowBytes, tokens * keyRowBytes)
+            let valueRows = ReadOnlySpan<byte>(storage.ValueRows(layer), position * valueRowBytes, tokens * valueRowBytes)
+            RowDecoder.decode (layout.KeyEncoding, keyRows, Span<single>(keyValues))
+            RowDecoder.decode (layout.ValueEncoding, valueRows, Span<single>(valueValues))
 
     interface IDisposable with
         member _.Dispose() =

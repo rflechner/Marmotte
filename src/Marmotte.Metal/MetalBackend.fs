@@ -4,8 +4,8 @@ open System
 open Marmotte.Core
 
 /// Metal contract placeholder. Construction and disposal need no driver or device.
-/// Allocation, transfers, weight upload, synchronization and kernels raise NotImplementedException;
-/// there is no CPU fallback.
+/// Allocation, transfers, weight upload, key-value caches, synchronization and kernels raise
+/// NotImplementedException; there is no CPU fallback.
 /// Operations after disposal raise ObjectDisposedException.
 [<Sealed>]
 type MetalBackend() =
@@ -21,6 +21,7 @@ type MetalBackend() =
         member _.Allocate(_) = notImplemented "tensor allocation"
         member _.Upload(_, _) = notImplemented "tensor upload"
         member _.UploadWeights(_) = notImplemented "weight upload"
+        member _.AllocateKeyValueCache(_) = notImplemented "key-value cache allocation"
         member _.Download(_, _) = notImplemented "tensor download"
         member _.Synchronize() = notImplemented "synchronization"
 
@@ -47,6 +48,10 @@ type MetalBackend() =
 
     interface IAttentionTemperatureKernel with
         member _.ApplyAttentionTemperature(_, _, _, _) = notImplemented "attention temperature kernel"
+
+    interface IKeyValueCacheKernel with
+        member _.StoreKeyValues(_, _, _, _, _) = notImplemented "key-value cache store"
+        member _.ReadKeyValues(_, _, _, _, _) = notImplemented "key-value cache read"
 
     interface IDisposable with
         member _.Dispose() = disposed <- true

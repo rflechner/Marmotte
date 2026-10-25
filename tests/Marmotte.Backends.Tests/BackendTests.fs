@@ -41,6 +41,9 @@ let private matrixOf encoding rows columns payload =
 /// A Q4_0 matrix of two rows: two 18-byte blocks per 64-value row.
 let private weightMatrix () = matrixOf TensorEncoding.Q4_0 2 64 (Array.zeroCreate 72)
 
+/// A one-layer, one-position cache of a single 32-value head.
+let private cacheLayout () = KeyValueCacheLayout.Create(1, 1, 1, 32, TensorEncoding.F16, TensorEncoding.Q8_0)
+
 [<Fact>]
 let ``Add computes matrices scalars and empty tensors without modifying separate inputs`` () =
     use backend = cpu ()
@@ -479,7 +482,8 @@ let private randomPayload (random: Random) (encoding: TensorEncoding) rows colum
         let blockBytes = encoding.BlockBytes
         let bytes = Array.zeroCreate<byte> (valueCount / encoding.BlockElements * blockBytes)
         random.NextBytes(bytes)
-        // Super-block scale offsets from ggml-common.h: d first, plus dmin for Q4_K; d last for Q6_K.
+        // Super-block scale offsets from the block layouts cited in docs/kernels.md: d first, plus
+        // dmin for Q4_K; d last for Q6_K.
         let scaleOffsets =
             match encoding with
             | TensorEncoding.Q4_K -> [ 0; 2 ]
@@ -702,10 +706,12 @@ let ``GPU operations explicitly fail without requiring GPU hardware`` name =
     let shape = TensorShape.Create [| 1 |]
     use tensor = host.Allocate(shape)
     use weights = host.UploadWeights(weightMatrix ())
+    use cache = host.AllocateKeyValueCache(cacheLayout ())
     let operations =
         [ (fun () -> backend.Allocate(shape) |> ignore)
           (fun () -> backend.Upload(shape, ReadOnlyMemory<single>([| 1.0f |])) |> ignore)
           (fun () -> backend.UploadWeights(weightMatrix ()) |> ignore)
+          (fun () -> backend.AllocateKeyValueCache(cacheLayout ()) |> ignore)
           (fun () -> backend.Download(tensor, Memory<single>([| 0.0f |])))
           (fun () -> backend.Synchronize())
           (fun () -> backend.Add(tensor, tensor, tensor))
@@ -715,7 +721,9 @@ let ``GPU operations explicitly fail without requiring GPU hardware`` name =
           (fun () -> backend.MatVec(weights, tensor, tensor))
           (fun () -> backend.MatMul(weights, tensor, tensor))
           (fun () -> backend.Rope(tensor, ReadOnlyMemory<int>([| 0 |]), RotaryEmbedding.Standard(2, 10000.0, RopePairing.AdjacentPairs), tensor))
-          (fun () -> backend.ApplyAttentionTemperature(tensor, ReadOnlyMemory<int>([| 0 |]), AttentionTemperature.Create(0.1, 16384), tensor)) ]
+          (fun () -> backend.ApplyAttentionTemperature(tensor, ReadOnlyMemory<int>([| 0 |]), AttentionTemperature.Create(0.1, 16384), tensor))
+          (fun () -> backend.StoreKeyValues(cache, 0, 0, tensor, tensor))
+          (fun () -> backend.ReadKeyValues(cache, 0, 0, tensor, tensor)) ]
 
     let expectedKind = if name = "CUDA" then BackendKind.Cuda else BackendKind.Metal
     Assert.Equal(expectedKind, backend.Backend)
@@ -733,6 +741,7 @@ let ``disposed backends reject all operations and allow repeated disposal`` name
     let shape = TensorShape.Create [| 1 |]
     use tensor = host.Allocate(shape)
     use weights = host.UploadWeights(weightMatrix ())
+    use cache = host.AllocateKeyValueCache(cacheLayout ())
     backend.Dispose()
     backend.Dispose()
 
@@ -749,3 +758,6 @@ let ``disposed backends reject all operations and allow repeated disposal`` name
     Assert.Throws<ObjectDisposedException>(fun () -> backend.MatMul(weights, tensor, tensor)) |> ignore
     Assert.Throws<ObjectDisposedException>(fun () -> backend.Rope(tensor, ReadOnlyMemory<int>([| 0 |]), RotaryEmbedding.Standard(2, 10000.0, RopePairing.AdjacentPairs), tensor)) |> ignore
     Assert.Throws<ObjectDisposedException>(fun () -> backend.ApplyAttentionTemperature(tensor, ReadOnlyMemory<int>([| 0 |]), AttentionTemperature.Create(0.1, 16384), tensor)) |> ignore
+    Assert.Throws<ObjectDisposedException>(fun () -> backend.AllocateKeyValueCache(cacheLayout ()) |> ignore) |> ignore
+    Assert.Throws<ObjectDisposedException>(fun () -> backend.StoreKeyValues(cache, 0, 0, tensor, tensor)) |> ignore
+    Assert.Throws<ObjectDisposedException>(fun () -> backend.ReadKeyValues(cache, 0, 0, tensor, tensor)) |> ignore

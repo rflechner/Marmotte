@@ -48,7 +48,7 @@ let private stored name encoding shape (payload: byte array) =
 
 let private sourceOf tensors = new InMemoryTensorSource(tensors)
 
-// Block sizes from block_q4_0, block_q8_0, block_q4_K and block_q6_K in llama.cpp's ggml-common.h.
+// Block sizes from the Q4_0, Q8_0, Q4_K and Q6_K block layouts cited in docs/gguf.md.
 let private encodingNamed name =
     match name with
     | "F32" -> TensorEncoding.F32

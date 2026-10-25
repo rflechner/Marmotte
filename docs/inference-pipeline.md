@@ -128,6 +128,12 @@ it. Feed its ID directly to the embedding lookup; do not re-tokenize the streame
 text. With a cache, previous tokens need not repeat their projections and
 feed-forward computations, although full attention still reads their K/V.
 
+The cache grows by one key row and one value row per layer and token, so its
+memory is proportional to the context length. Storing keys and values in F16,
+Q8_0 or Q4_0 instead of F32 divides it by about 2, 4 or 7, at the cost of
+precision; Marmotte, like llama.cpp, lets keys and values use different
+encodings. See the [key-value cache](kernels.md#key-value-cache).
+
 For uniform full-attention layers, this approximate payload size follows from
 counting both K and V elements:
 
@@ -159,7 +165,8 @@ finished answers, and must match the exact processed prefix and positions.
 | Execution tensors and kernels | Contiguous F32 contracts with CPU Add, SwiGLU, RMS normalization, MatVec, MatMul, RoPE and attention temperature, plus YaRN parameter preparation in Core; CUDA/Metal placeholders. See [kernel contracts](kernels.md) |
 | Token embeddings | CPU lookup decodes selected rows in all seven runtime encodings into F32, without scaling; CUDA/Metal placeholders |
 | Tokenizer | Planned |
-| Transformer kernels, KV cache and response generation | Planned; CPU first, then CUDA/Metal |
+| KV cache | CPU cache storing keys and values in F32, F16, BF16, Q8_0 or Q4_0, chosen separately; CUDA/Metal placeholders. See the [key-value cache](kernels.md#key-value-cache) |
+| Attention and response generation | Planned; CPU first, then CUDA/Metal |
 
 The illustration simplifies a text-only generation path. It does not specify
 multimodal encoders, MoE routing, speculative decoding or every architecture's

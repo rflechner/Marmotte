@@ -78,7 +78,8 @@ type GgmlType =
     | Q1_0 = 41u
     | Q2_0 = 42u
 
-/// File-level quantization profiles stored in general.file_type (llama.cpp's llama_ftype).
+/// File-level quantization profiles stored in general.file_type, with the identifiers cited in
+/// docs/gguf.md.
 /// Except F32, these describe the predominant encoding or a mixture of tensor encodings.
 /// Their numeric IDs are independent of GgmlType. Unrecognized IDs are preserved.
 type GgufFileType =

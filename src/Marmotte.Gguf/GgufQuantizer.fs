@@ -73,7 +73,7 @@ module GgufQuantizer =
     let private writeOutput format (input: Stream) (output: Stream) (model: GgufFile)
                             tensors dataBytes (cancellationToken: CancellationToken) =
         let _, profile, _ = QuantizationCodec.layout format
-        // GGML_QNT_VERSION in https://github.com/ggml-org/llama.cpp/blob/master/ggml/include/ggml.h
+        // The current block layout version; docs/gguf.md cites its source.
         let metadata =
             model.Metadata
             |> Map.add "general.file_type" (GgufValue.UInt32(uint32 profile))

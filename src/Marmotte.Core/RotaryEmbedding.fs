@@ -4,20 +4,20 @@ open System
 open System.Collections.Generic
 
 /// Which two values of a head rotary position embedding rotates together. Pairings and rotation
-/// formulas follow rotate_pairs in llama.cpp's ggml/src/ggml-cpu/ops.cpp (checked 2026-10-25).
+/// formulas follow the reference implementation cited in docs/kernels.md (checked 2026-10-25).
 [<RequireQualifiedAccess>]
 type RopePairing =
-    /// Values 2j and 2j + 1: llama.cpp's "normal" type (LLAMA_ROPE_TYPE_NORM), which its graph
-    /// uses for mistral3 and other LLaMA-family architectures stored in GGUF.
+    /// Values 2j and 2j + 1: the "normal" pairing of mistral3 and other LLaMA-family
+    /// architectures stored in GGUF.
     | AdjacentPairs
-    /// Values j and j + HeadDimension / 2: llama.cpp's NeoX type, and the rotate_half convention
+    /// Values j and j + HeadDimension / 2: the GPT-NeoX pairing, and the rotate_half convention
     /// of Hugging Face checkpoints.
     | SplitHalves
 
 /// Model parameters for full-head YaRN context extension, independent of any file format.
 /// RotaryEmbedding.Yarn validates the record. Positions remain absolute token indices.
 type YarnParameters =
-    { /// Context extension ratio, at least 1. This is the inverse of ggml's freq_scale.
+    { /// Context extension ratio, at least 1. Interpolated pairs divide their frequency by it.
       ScalingFactor: double
       /// Number of positions in the original training context, before extension; must be positive.
       OriginalContextLength: int
@@ -55,7 +55,7 @@ module private YarnPreparation =
             "The attention factor must be finite and positive."
 
     let magnitude (parameters: YarnParameters) =
-        // Combine llama-context's compensation and ggml's RoPE magnitude once, before rotation.
+        // Combine the reference's context compensation and RoPE magnitude once, before rotation.
         // No architecture-specific policy (such as DeepSeek's numerator adjustment) is inferred.
         let logarithmicScale = 0.1 * Math.Log parameters.ScalingFactor
         let correction = (1.0 + logarithmicScale) / (1.0 + parameters.LogMultiplier * logarithmicScale)
@@ -71,7 +71,7 @@ module private YarnPreparation =
         let pairAtRotations rotations =
             float headDimension / (2.0 * Math.Log frequencyBase) * (contextLog - Math.Log rotations)
 
-        // ggml bounds the upper cutoff by D - 1, not by the number of pairs minus one.
+        // The reference bounds the upper cutoff by D - 1, not by the number of pairs minus one.
         let fastPair = max 0.0 (Math.Floor(pairAtRotations parameters.BetaFast))
         let slowPair = min (float (headDimension - 1)) (Math.Ceiling(pairAtRotations parameters.BetaSlow))
         let transitionWidth = max 0.001 (slowPair - fastPair)
@@ -84,8 +84,9 @@ module private YarnPreparation =
 /// Rotary position embedding (RoPE) parameters of one model: one angular frequency per pair of
 /// head values, a magnitude factor and a pairing. At position p, pair j rotates by the angle
 /// p × Frequencies[j], and both rotated values are multiplied by Magnitude. Frequencies stay in
-/// double precision so that angles remain accurate at long positions; llama.cpp accumulates them
-/// in F32. Every value of a head is rotated: partial rotary dimensions are not supported.
+/// double precision so that angles remain accurate at long positions; the reference
+/// implementation accumulates them in F32. Every value of a head is rotated: partial rotary
+/// dimensions are not supported.
 [<Sealed>]
 type RotaryEmbedding private (frequencies: double array, magnitude: single, pairing: RopePairing) =
     let readOnlyFrequencies = Array.AsReadOnly(frequencies)
@@ -116,14 +117,14 @@ type RotaryEmbedding private (frequencies: double array, magnitude: single, pair
         RotaryEmbedding(Array.init (headDimension / 2) frequencyOf, 1.0f, pairing)
 
     /// Prepare YaRN frequencies in double precision and the final F32 magnitude for IRopeKernel.
-    /// Uses the full YaRN blend (ggml ext_factor = 1) and the general llama.cpp magnitude with
+    /// Uses the full YaRN blend (an extrapolation factor of 1) and the general magnitude with
     /// mscale = 1: AttentionFactor * (1 + 0.1 ln(s)) / (1 + 0.1 LogMultiplier ln(s)).
     /// A LogMultiplier of 1 cancels the logarithmic correction; 0 gives the original YaRN rule.
     /// Apply the returned embedding to Q and K, not V. This does not load model metadata or apply
     /// the separate, position-dependent attention temperature. Pairing affects layout only.
-    /// Formulas verified against llama.cpp revision 2280f0fd163b03d4331d49e08460f66502e35854:
-    /// ggml/src/ggml.c (ggml_rope_yarn_corr_dims), ggml/src/ggml-cpu/ops.cpp (rope_yarn), and
-    /// src/llama-context.cpp (magnitude compensation). See docs/kernels.md for equations and links.
+    /// Formulas verified against the reference revision cited in docs/kernels.md, for the
+    /// correction dimensions, the rotation and the magnitude compensation; see there for equations
+    /// and links.
     /// Raises ArgumentException for non-positive or odd head dimensions, non-positive original
     /// context lengths or an unrepresentable magnitude; ArgumentOutOfRangeException for invalid
     /// numeric parameters, including a frequency base that is not finite and greater than 1;

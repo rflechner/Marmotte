@@ -140,11 +140,20 @@ Attention:
   llama.cpp's `src/llama-graph.cpp`. `AttentionTemperature` and
   `IAttentionTemperatureKernel` in Core; `Marmotte.Cpu` scales each token with
   `Vector<T>`.
-- [ ] Key-value cache: append K, after RoPE, and V for each position and block,
+- [x] Key-value cache: append K, after RoPE, and V for each position and block,
   8 heads of 128 values each. That is 208 KiB per token in F32, or 832 MiB for
-  a 4,096-token context; F16 halves it.
+  a 4,096-token context; F16 halves it. `KeyValueCacheLayout`, `IKeyValueCache`
+  and `IKeyValueCacheKernel` in Core give keys and values separate encodings,
+  like LM Studio's K and V cache quantization: F32, F16, BF16, Q8_0 (221 MiB for
+  4,096 tokens) or Q4_0 (117 MiB). Core's `RowEncoder` writes their rows, also
+  for the GGUF quantizer. Storing at an earlier position replaces it and
+  discards the later ones. `Marmotte.Cpu` allocates the whole capacity up front.
+- [ ] Further cache encodings offered by llama.cpp: Q4_1, Q5_0, Q5_1 and IQ4_NL,
+  once `TensorEncoding` and `RowDecoder` represent them, after measuring the
+  target model's sensitivity to Q8_0 and Q4_0 keys and values.
 - [ ] Grouped-query attention: each of the 32 query heads reads the cached keys
-  and values of its key-value head, shared by 4 query heads. Scores are scaled
+  and values of its key-value head, shared by 4 query heads, decoded from the
+  cache's encoding one head at a time. Scores are scaled
   by 1/√128, masked causally, normalized with a numerically stable softmax
   (subtracting the maximum) and used to weight the cached values, with F32
   accumulation.
