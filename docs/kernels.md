@@ -4,7 +4,48 @@
 and `Marmotte.Metal` each reference Core; Core references none of the backends.
 The implemented operations are element-wise F32 addition, the SwiGLU
 activation of the feed-forward layer, RMS normalization, embedding lookup from
-stored weights, and the matrix-vector product with stored weights.
+stored weights, and matrix-vector and matrix-matrix products with stored weights.
+
+## Reading the Formulas
+
+A **kernel** is a focused numerical operation on tensors. For these examples,
+think of a tensor as an array with a shape: `[3]` holds three values, and
+`[2; 3]` holds two rows of three values. F32 means a 32-bit floating-point value.
+**Activations** are intermediate values computed for the current input;
+**weights** are the model's learned parameters, reused across inputs.
+
+Each kernel below has an illustrated walkthrough with small, invented inputs.
+Read the input shapes first, follow one output value, then repeat the operation
+over the remaining positions or rows. Indexes start at zero. Approximate values
+in the pictures are rounded to four decimal places for display; calculations
+use unrounded intermediates.
+
+| Notation | Meaning |
+| --- | --- |
+| `x[i]` | Value at position `i` in a vector |
+| `X[t, c]` | Feature `c` of token row `t` |
+| `W[r, c]` | Weight in output row `r`, input column `c` |
+| `X[t, *]` or `X[t, :]` | All columns of row `t` |
+| `C`, `R`, `T` | Input feature count, output feature count, token count |
+| `Σ_c` | Add the terms for every column `c`, from `0` to `C - 1` |
+| `mean(...)` | Sum the values, then divide by their count |
+| `sqrt(...)`, `exp(z)` | Square root, and the exponential `e` raised to `z` |
+| `Wᵀ` | Transposed matrix in the mathematical expression: rows become columns |
+
+| Kernel | What one output represents | Walkthrough |
+| --- | --- | --- |
+| Add | Sum of two values at the same position | [Matching positions](#add-and-buffer-reuse) |
+| SwiGLU | One value multiplied by a smooth gate | [Three scalar steps](#swiglu) |
+| RMSNorm | One value rescaled using its row's magnitude and a learned weight | [Measure, normalize, scale](#rms-normalization) |
+| EmbeddingLookup | A feature copied or decoded from the vocabulary row selected by an ID | [Select rows](#embedding-lookup) |
+| MatVec | Sum of products between one weight row and one input vector | [One dot product](#matrix-vector-product) |
+| MatMul | The same dot product for one token in a batch | [Reuse rows across tokens](#matrix-matrix-product) |
+
+All six kernels have CPU implementations; CUDA and Metal remain placeholders.
+The six walkthrough images were generated with the built-in `image_gen` tool,
+visually reviewed, and their numerical examples checked independently. The
+[generation and correction prompts](kernel-illustrations.prompt.txt) are kept
+alongside the images. The older overview below has its own status note.
 
 ## From GGUF to Add
 
@@ -74,11 +115,12 @@ them one row at a time.
 | `IRmsNormKernel.RmsNorm` | Safe `Vector<T>` loops, sum of squares in double precision | `NotImplementedException` | `NotImplementedException` |
 | `IEmbeddingKernel.EmbeddingLookup` | Decodes selected rows with `RowDecoder` directly into F32 output | `NotImplementedException` | `NotImplementedException` |
 | `IMatVecKernel.MatVec` | One decoded row at a time, `Vector<T>` dot product in double precision | `NotImplementedException` | `NotImplementedException` |
+| `IMatMulKernel.MatMul` | Each decoded row shared by every token of the batch | `NotImplementedException` | `NotImplementedException` |
 | SDK/driver required today | None | None | None |
 
 `ITensorBackend` inherits `IAddKernel`, `ISwiGluKernel`, `IRmsNormKernel`,
-`IEmbeddingKernel` and `IMatVecKernel`, so orchestration can call each kernel
-directly on the backend.
+`IEmbeddingKernel`, `IMatVecKernel` and `IMatMulKernel`, so orchestration can
+call each kernel directly on the backend.
 A consumer needing a single operation can accept its kernel interface directly.
 No generic operation registry, graph scheduler or native interop is needed for
 this example.
@@ -87,6 +129,15 @@ without a CPU fallback. Concrete GPU tensor types will be introduced with their
 storage implementation, rather than exposing unusable device handles now.
 
 ## Add and Buffer Reuse
+
+![Add: at each of three positions, add the two input values; [1, -2, 3] plus [4, 5, -1] gives [5, 3, 2]](kernel-add.png)
+
+[Open the Add illustration](kernel-add.png).
+
+Read `i` as the position being processed. At position `1`, read `-2` from
+`left` and `5` from `right`, then write `3` to the destination. Every position
+produces its own output; the output keeps the input shape. **In-place** means
+reusing an input's storage for that destination once its values have been read.
 
 ```fsharp
 open System
@@ -134,6 +185,17 @@ upload is currently the only way to move values between instances.
 
 ## SwiGLU
 
+![SwiGLU: compute sigmoid(g), multiply by g to obtain SiLU, then multiply by up; gate 2 and up 5 give approximately 8.8080](kernel-swiglu.png)
+
+[Open the SwiGLU illustration](kernel-swiglu.png).
+
+For each position, first compute `sigmoid(g) = 1 / (1 + exp(-g))`. Multiply
+that by `g` to get `silu(g)`, then multiply by the corresponding `up` value.
+For `gate = [-2; 0; 2]` and `up = [3; 4; 5]`, the output is approximately
+`[-0.7152; 0; 8.8080]`. This smooth multiplier can be negative or greater than
+one. The caller has already computed the `gate` and `up` projections before
+invoking this kernel.
+
 The feed-forward layer of LLaMA-family models, including `mistral3`, gates one
 projection with another. `SwiGlu(gate, up, destination)` writes
 `destination[i] = silu(gate[i]) × up[i]`, with `silu(x) = x / (1 + e^-x)`; see
@@ -157,6 +219,20 @@ On an Apple M4 Max, single-threaded in Release, the vectorized kernel takes abou
 feed-forward layer of 9,216 values takes about 5.8 µs instead of 13.3 µs.
 
 ## RMS Normalization
+
+![RMSNorm: square [3, 4], average to 12.5, divide the original row by sqrt(12.5 + 0.01), then multiply by [2, 0.5] to obtain approximately [1.6964, 0.5655]](kernel-rmsnorm.png)
+
+[Open the RMSNorm illustration](kernel-rmsnorm.png).
+
+For the example row `[3; 4]`, the mean square is `(9 + 16) / 2 = 12.5`.
+With the teaching value `epsilon = 0.01`, divide both original values by
+`sqrt(12.51)`, giving approximately `[0.8482; 1.1309]`. Multiply by the learned
+column weights `[2; 0.5]` to obtain approximately `[1.6964; 0.5655]`.
+
+**RMS** means *root mean square*. Each row gets its own magnitude, while the
+learned weight vector is shared across rows. RMSNorm does not subtract the row
+mean. The positive `epsilon`, inside the square root, prevents division by zero
+for an all-zero row; the model supplies its actual value.
 
 Each block normalizes the hidden state before attention and before the
 feed-forward layer, and the model normalizes it once more before the LM head.
@@ -195,6 +271,18 @@ limited by its single chain of additions. The 53 normalizations of one token
 take about 39 µs.
 
 ## Embedding Lookup
+
+![Embedding lookup: IDs [2, 0, 2] select vocabulary rows 2, 0 and 2 in order, producing three rows of F32 activations](kernel-embedding.png)
+
+[Open the embedding illustration](kernel-embedding.png).
+
+Think of the vocabulary matrix as a table whose row number is a token ID.
+With IDs `[2; 0; 2]`, copy or decode row `2`, then row `0`, then row `2` again.
+The example produces rows `[2; 2; 2]`, `[1; 0; 2]`, `[2; 2; 2]`. The token's
+**position** chooses the destination row; its **ID** chooses the weight row.
+Repeated IDs therefore produce repeated embeddings, and no summation occurs.
+The picture uses F32 weights so that every value is directly visible; quantized
+weights require decoding the selected rows to recover their F32 values.
 
 `EmbeddingLookup(weights, tokenIds, destination)` selects vocabulary rows:
 `destination[i, column] = weights[tokenIds[i], column]`. It applies no scaling,
@@ -252,6 +340,18 @@ before returning and follow the same ordering rules as the other kernels.
 
 ## Matrix-Vector Product
 
+![MatVec: multiply each row of [[1, 2, -1], [0, 3, 2]] by the vector [2, 1, 4] and sum the products, producing [0, 11]](kernel-matvec.png)
+
+[Open the MatVec illustration](kernel-matvec.png).
+
+A **dot product** multiplies corresponding values and adds those products.
+For the first weight row, `1 × 2 + 2 × 1 + (-1) × 4 = 0`; for the second,
+`0 × 2 + 3 × 1 + 2 × 4 = 11`. Thus a `[2; 3]` weight matrix transforms a
+three-value vector into two outputs, `[0; 11]`. Each output needs the whole
+input vector, so the destination must use different storage from the input.
+The CPU decodes and processes one weight row at a time, reusing its temporary
+row buffer.
+
 Every projection of a block and the LM head multiply a stored weight matrix by
 one F32 vector. `MatVec(weights, input, destination)` computes
 
@@ -289,6 +389,56 @@ about 0.5 ns per weight and a `Q6_K` product about 0.83 ns: 7 ms for `attn_q`,
 336 ms for the LM head, and about 2.1 s for all matrix products of one token.
 Parallelizing across rows and vectorizing the decoders are the next
 optimizations.
+
+## Matrix-Matrix Product
+
+![MatMul: apply the same two weight rows to token inputs [2, 1, 4] and [1, 0, -1], producing rows [0, 11] and [2, -2]; decode each weight row once for both tokens](kernel-matmul.png)
+
+[Open the MatMul illustration](kernel-matmul.png).
+
+Reuse the `MatVec` weights, but provide two token rows: `[2; 1; 4]` and
+`[1; 0; -1]`. Their outputs are `[0; 11]` and `[2; -2]`. Tokens remain
+independent: the kernel sums across feature columns, not across tokens.
+
+The CPU's outer loop selects a weight row and decodes it once; its inner loop
+uses that row for every token. Weight row `0` therefore fills output column `0`
+with `[0; 2]`. Weight row `1` fills column `1` with `[11; -2]`. This is why
+`Y = X × Wᵀ` has shape `[tokens; output features]`. The transpose describes
+the mathematical relationship; the implementation reads stored rows directly
+without creating a transposed copy.
+
+Prompt processing runs the same projections for every token of the prompt.
+`MatMul(weights, input, destination)` multiplies a batch of token rows by the
+same stored weights:
+
+```text
+destination[t, r] = Σ weights[r, c] × input[t, c]
+```
+
+`input` has shape `[tokens; Columns]` and `destination` `[tokens; Rows]`: each
+token's row of `input` gives its row of `destination`, as `MatVec` would for that
+token alone. In matrix terms, this multiplies `input` by the transposed weight
+matrix, because weight rows are the outputs. A batch of zero tokens is a valid
+no-op. `destination` must differ from `input`. Ownership, validation, ordering
+and tolerances follow `MatVec`.
+
+The decoding cost is what a batch saves. The CPU backend decodes each weight row
+once into its pooled buffer, then sums its products with the input row of every
+token. Each output is computed exactly as `MatVec` computes it, so batched and
+token-by-token results are identical on the CPU; a test checks this. `MatVec`
+itself is the one-token case of the same kernel.
+
+On the local Ministral file, single-threaded in Release on an Apple M4 Max:
+
+| Matrix | `MatVec` | 4 tokens | 16 tokens | 64 tokens |
+| --- | --- | --- | --- | --- |
+| `attn_q` (`Q4_K`, 4,096 × 3,072) | 7.4 ms | 2.8 ms per token | 2.2 ms per token | 2.05 ms per token |
+| `ffn_down` (`Q6_K`, 3,072 × 9,216) | 24.6 ms | 9.8 ms per token | 5.8 ms per token | 4.9 ms per token |
+
+With 64-token batches, all matrix products of the model take about 0.57 s per
+prompt token, against about 1.8 s one token at a time in the same run. Beyond
+about 16 tokens, the double-precision sums of products dominate, at about
+0.17 ns per weight and token.
 
 ## Ordering, Completion and Lifetime
 

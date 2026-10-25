@@ -1,0 +1,159 @@
+Marmotte kernel illustrations
+Generated with the built-in image_gen tool.
+Scope: the six kernel contracts in docs/kernels.md and src/Marmotte.Core/Compute.fs.
+Numerical examples were independently checked before generation; approximate values are rounded to four decimals.
+
+
+=== Targeted review corrections ===
+
+add (second correction, applied after the first Add correction)
+Edit ONLY the leftmost panel of this Add infographic. Keep the entire center and right panels, title, subtitle, formula, footer, dimensions and styling unchanged.
+Replace all three calculation lanes in the left panel with ordinary horizontal equations in colored boxes, with NO ARROWS in that panel.
+Required arrangement for each lane is exactly:
+i = 0: [blue 1] + [purple 4] = [green 5]
+i = 1: [blue -2] + [purple 5] = [green 3]
+i = 2: [blue 3] + [purple -1] = [green 2]
+Place a plain PLUS glyph BETWEEN the blue and purple boxes. Place a plain EQUALS glyph BETWEEN the purple and green boxes.
+Remove the old circled plus to the right of the purple boxes. Remove ALL arrowheads and arrow lines from the left panel, including arrows from a to b. The rows must read as arithmetic equations a[i] + b[i] = y[i], never a → b → + → y.
+Keep column headings a[i], b[i], y[i] above the blue, purple, green columns. Preserve the three i labels and the "All arrays have shape [3]" note. Reposition only the boxes within this panel to fit the two operators. No other changes.
+
+add
+Correct only the dataflow arrows/layout in the Add infographic. Preserve the title, exact API name, main formula, all numeric values, rightmost panel, fonts, color style, footer and full canvas.
+The current arrows incorrectly connect b directly to y. Every result must come from the PLUS operation, with a and b both inputs.
+In the LEFT panel, replace the three vertically stacked arrays and their ambiguous connectors with three horizontal calculation lanes:
+i = 0: blue box "1" + purple box "4" → green box "5"
+i = 1: blue box "-2" + purple box "5" → green box "3"
+i = 2: blue box "3" + purple box "-1" → green box "2"
+Place column headings "a[i]", "b[i]", "y[i]" over the corresponding colored boxes. Each lane's arrow runs from the complete a+b expression to its result. Keep "All arrays have shape [3]". No arrow directly connects b alone to y.
+In the CENTER panel, arrange a[1]=-2 and b[1]=5 as two separate inputs to one plus circle and draw one outgoing arrow FROM THE PLUS CIRCLE to y[1]=3. Remove the downward arrow that currently goes from the b box to y. Keep "-2 + 5 = 3" and the index progression 0 → 1 → 2 unchanged. Fit this cleanly without crossing or obscuring any boxes. Do not change the arithmetic.
+
+rmsnorm
+Make the RMSNorm diagram's square-root grouping mathematically unambiguous. Preserve all titles, API names, numeric values, panel layout, colors, footer and full canvas.
+Replace ONLY the large y formula in the top-left formula area with this exact plain mathematical text using literal sqrt notation and parentheses:
+"y[r,c] = (x[r,c] / sqrt(m[r] + epsilon)) × w[c]"
+Do NOT use a radical glyph in this replacement: the entire sum m[r] + epsilon must be inside the sqrt parentheses.
+In the amber denominator box in panel 2, replace the radical expression with this exact text:
+"sqrt(12.5 + 0.01) ≈ 3.5369"
+Again use literal sqrt and matching parentheses. Keep the mean formula and all numerical outputs unchanged.
+In panel 3, add an unambiguous readable calculation line beneath the normalized row:
+"[0.8482 × 2, 1.1309 × 0.5] ≈ [1.6964, 0.5655]"
+The normalized values are rounded displays; the outputs use full precision. If space requires, replace the existing explanatory bottom sentence in panel 3 with this calculation line. Do not create arrows that make it look as if the weight multiplies itself.
+
+embedding
+Correct the row-selection connectors in the Embedding lookup infographic. Preserve all matrix numbers, token IDs, output values, shapes, title, formula, algorithm boxes, colors, footer and full canvas.
+The current purple diagonal connector incorrectly appears to select row 2 from the middle ID 0. REMOVE that diagonal connector and all connectors running between the vocabulary matrix and the token ID array. Do not draw replacement cross-panel lookup arrows.
+Instead, in the center Token IDs panel, replace the callout "IDs are zero-based and may repeat." beneath the ID array with a compact three-line mapping table with these EXACT entries:
+"t = 0: ID 2 → W[2, :]"
+"t = 1: ID 0 → W[0, :]"
+"t = 2: ID 2 → W[2, :]"
+Use purple for the first and third lines and blue for the middle line. Keep the tokenIds array [2,0,2] unchanged and enlarge/reposition that center panel's callout only as needed to fit the three lines clearly.
+Also make the three arrows from token ID cells to the corresponding output rows single-headed RIGHT-pointing arrows, not bidirectional. They must go respectively from top ID 2 to output row [2,2,2], middle ID 0 to output row [1,0,2], bottom ID 2 to output row [2,2,2]. Do not change any other content.
+
+
+=== kernel-add.png ===
+
+Use case: infographic-diagram.
+Create a polished educational diagram for docs/kernels.md in the Marmotte F# repository. Audience: a developer who knows arrays and loops but is new to neural-network kernels. All visible text must be in English. Landscape 3:2 composition with large, crisp text, generous white space, near-white background, dark navy headings, blue input values, purple learned weights, amber operations, teal/green results. Flat technical illustration, simple outlined arrays and matrices, no photography, mascot, logos or decorative code. Use no more than three main panels with a clear numbered learning sequence. Show the formula, explain its symbols in plain words, then work through the supplied small example. A visible loop or flow should explain the algorithm. Render exact numbers and API names faithfully. Arithmetic and data shapes are the priority; never invent extra cells, formulas or APIs. Indexing is zero-based. Use real mathematical multiplication signs, clear grouping and square roots. Round approximate results to four decimals and mark approximation; do not claim the rounded numbers are exact.
+Shared footer: "Marmotte CPU: implemented • CUDA / Metal: placeholders". This is an illustration of the current kernel, not a complete inference pipeline.
+
+Title: "Add — combine matching positions"
+API subtitle: "IAddKernel.Add(left, right, destination)"
+Formula: "y[i] = a[i] + b[i]". Legend: "i = element position; y = destination".
+Panel 1: Draw three aligned horizontal arrays, each exactly 3 cells, with positions 0, 1, 2. Inputs a = [1, -2, 3] and b = [4, 5, -1], result y = [5, 3, 2]. Make a separate matching-index connector and plus symbol for each position; no connection across positions. All shapes are "[3]".
+Panel 2: Zoom on position i=1: a[1]=-2, b[1]=5, so y[1]=-2+5=3. Label "One pair produces one output". Show an index arrow advancing 0 → 1 → 2.
+Panel 3: A compact algorithm block "For each position i: read a[i] and b[i] → add → write y[i]". Context note: "Residual addition combines a hidden state with an update." Rule chips: "Same shape", "Same backend instance", "In-place output allowed". Tiny CPU note "SIMD processes several independent positions together". Do not draw a sum over all elements or change the output length. No broadcasting.
+
+=== kernel-swiglu.png ===
+
+Use case: infographic-diagram.
+Create a polished educational diagram for docs/kernels.md in the Marmotte F# repository. Audience: a developer who knows arrays and loops but is new to neural-network kernels. All visible text must be in English. Landscape 3:2 composition with large, crisp text, generous white space, near-white background, dark navy headings, blue input values, purple learned weights, amber operations, teal/green results. Flat technical illustration, simple outlined arrays and matrices, no photography, mascot, logos or decorative code. Use no more than three main panels with a clear numbered learning sequence. Show the formula, explain its symbols in plain words, then work through the supplied small example. A visible loop or flow should explain the algorithm. Render exact numbers and API names faithfully. Arithmetic and data shapes are the priority; never invent extra cells, formulas or APIs. Indexing is zero-based. Use real mathematical multiplication signs, clear grouping and square roots. Round approximate results to four decimals and mark approximation; do not claim the rounded numbers are exact.
+Shared footer: "Marmotte CPU: implemented • CUDA / Metal: placeholders". This is an illustration of the current kernel, not a complete inference pipeline.
+
+Title: "SwiGLU — a smooth gate for each value"
+API subtitle: "ISwiGluKernel.SwiGlu(gate, up, destination)"
+Display three exact definitions, readable: "sigmoid(g) = 1 / (1 + exp(-g))"; "SiLU(g) = g × sigmoid(g)"; "y[i] = SiLU(gate[i]) × up[i]".
+Clarify "exp(z) means e raised to z".
+Panel 1: The per-position flow. gate[i] splits: one branch goes through sigmoid, the other stays as gate[i]; those two branches multiply to produce SiLU(gate[i]). Multiply that by up[i] to produce y[i]. Do not accidentally use sigmoid alone as the final gate.
+Panel 2: A fully worked positive example at i=2: gate[2]=2, up[2]=5. "sigmoid(2) ≈ 0.8808" → "SiLU(2) ≈ 1.7616" → "y[2] ≈ 8.8080". Use intermediate rounded numbers only for display.
+Panel 3: A clean example table with exactly three data rows and columns "i", "gate[i]", "up[i]", "SiLU(gate[i]) ≈", "y[i] ≈":
+0 | -2 | 3 | -0.2384 | -0.7152
+1 | 0 | 4 | 0.0000 | 0.0000
+2 | 2 | 5 | 1.7616 | 8.8080
+Callouts: "Repeat independently at every position"; "SiLU can be negative or greater than 1"; "gate and up are already-computed projections". Footer rule chips: "Identical shapes • In-place output allowed". Do not draw a binary switch or imply that SiLU is a probability. This kernel does not compute the projection matrices.
+
+=== kernel-rmsnorm.png ===
+
+Use case: infographic-diagram.
+Create a polished educational diagram for docs/kernels.md in the Marmotte F# repository. Audience: a developer who knows arrays and loops but is new to neural-network kernels. All visible text must be in English. Landscape 3:2 composition with large, crisp text, generous white space, near-white background, dark navy headings, blue input values, purple learned weights, amber operations, teal/green results. Flat technical illustration, simple outlined arrays and matrices, no photography, mascot, logos or decorative code. Use no more than three main panels with a clear numbered learning sequence. Show the formula, explain its symbols in plain words, then work through the supplied small example. A visible loop or flow should explain the algorithm. Render exact numbers and API names faithfully. Arithmetic and data shapes are the priority; never invent extra cells, formulas or APIs. Indexing is zero-based. Use real mathematical multiplication signs, clear grouping and square roots. Round approximate results to four decimals and mark approximation; do not claim the rounded numbers are exact.
+Shared footer: "Marmotte CPU: implemented • CUDA / Metal: placeholders". This is an illustration of the current kernel, not a complete inference pipeline.
+
+Title: "RMSNorm — rescale each row"
+API subtitle: "IRmsNormKernel.RmsNorm(input, weight, epsilon, destination)"
+Formula shown clearly with full scope of square root: "m[r] = (1 / C) × Σ_c x[r,c]²" and "y[r,c] = (x[r,c] / sqrt(m[r] + epsilon)) × w[c]".
+Define "r = row, c = column, C = number of columns" and "w = learned weight per column".
+Use one example row x=[3,4], shape [2]; learned weight w=[2,0.5], shape [2]; epsilon=0.01. Label "Teaching example: epsilon = 0.01".
+Panel 1, labelled "1. Measure row magnitude": square each input to [9,16], sum 25, divide by C=2 to get mean m=12.5. Display "m = (9 + 16) / 2 = 12.5".
+Panel 2, labelled "2. Normalize the row": "sqrt(12.5 + 0.01) ≈ 3.5369"; divide the ORIGINAL input [3,4] by that denominator to produce approximately [0.8482,1.1309]. Do not divide the squared values.
+Panel 3, labelled "3. Apply learned weights": multiply corresponding entries by [2,0.5] to produce y≈[1.6964,0.5655]. The second output is smaller because its learned weight is 0.5.
+Bottom callouts: "Each row gets its own magnitude"; "The same weight vector is used for every row"; "Positive epsilon keeps an all-zero row finite"; "RMSNorm does not subtract the row mean". Arrows must clearly show a reduction across the row followed by per-column multiplication. Avoid calling RMSNorm mean-centering, softmax, or unit-sum normalization. Output has the same shape as input.
+
+=== kernel-embedding.png ===
+
+Use case: infographic-diagram.
+Create a polished educational diagram for docs/kernels.md in the Marmotte F# repository. Audience: a developer who knows arrays and loops but is new to neural-network kernels. All visible text must be in English. Landscape 3:2 composition with large, crisp text, generous white space, near-white background, dark navy headings, blue input values, purple learned weights, amber operations, teal/green results. Flat technical illustration, simple outlined arrays and matrices, no photography, mascot, logos or decorative code. Use no more than three main panels with a clear numbered learning sequence. Show the formula, explain its symbols in plain words, then work through the supplied small example. A visible loop or flow should explain the algorithm. Render exact numbers and API names faithfully. Arithmetic and data shapes are the priority; never invent extra cells, formulas or APIs. Indexing is zero-based. Use real mathematical multiplication signs, clear grouping and square roots. Round approximate results to four decimals and mark approximation; do not claim the rounded numbers are exact.
+Shared footer: "Marmotte CPU: implemented • CUDA / Metal: placeholders". This is an illustration of the current kernel, not a complete inference pipeline.
+
+Title: "Embedding lookup — an ID selects a row"
+API subtitle: "IEmbeddingKernel.EmbeddingLookup(weights, tokenIds, destination)"
+Formula: "Y[t,c] = W[tokenIds[t], c]".
+Legend: "t = token position; c = feature column; tokenIds[t] = vocabulary row index".
+Panel 1: A vocabulary matrix W labelled "IWeightTensor • [4; 3]". Show exactly four rows and three value columns with separate row-index labels:
+row 0: [1, 0, 2]
+row 1: [-1, 3, 0]
+row 2: [2, 2, 2]
+row 3: [0, -2, 1]
+Explicit note "F32 example values". Dim unselected rows 1 and 3.
+Panel 2: The exact token ID array [2, 0, 2], labelled "3 token positions". Match position 0 to vocabulary row 2, position 1 to row 0, position 2 to row 2. Use color-coded nonambiguous arrows or row-selection labels; repeated ID 2 selects the same vocabulary row twice.
+Panel 3: Output Y labelled "F32 ITensor • [3; 3]", with row-position labels:
+token position 0: [2, 2, 2]
+token position 1: [1, 0, 2]
+token position 2: [2, 2, 2].
+A small algorithm line: "For each token position: read ID → select weight row → decode into output row".
+Callouts: "IDs are zero-based and may repeat"; "No sum, scaling or normalization"; "With quantized weights, decode only selected rows". Important precise bottom note: "The encoded matrix is already loaded; lookup does not read rows lazily from the file." The tiny matrix uses ordinary F32 values, not a fictitious partial quantization block. Do not multiply IDs by weights or average rows.
+
+=== kernel-matvec.png ===
+
+Use case: infographic-diagram.
+Create a polished educational diagram for docs/kernels.md in the Marmotte F# repository. Audience: a developer who knows arrays and loops but is new to neural-network kernels. All visible text must be in English. Landscape 3:2 composition with large, crisp text, generous white space, near-white background, dark navy headings, blue input values, purple learned weights, amber operations, teal/green results. Flat technical illustration, simple outlined arrays and matrices, no photography, mascot, logos or decorative code. Use no more than three main panels with a clear numbered learning sequence. Show the formula, explain its symbols in plain words, then work through the supplied small example. A visible loop or flow should explain the algorithm. Render exact numbers and API names faithfully. Arithmetic and data shapes are the priority; never invent extra cells, formulas or APIs. Indexing is zero-based. Use real mathematical multiplication signs, clear grouping and square roots. Round approximate results to four decimals and mark approximation; do not claim the rounded numbers are exact.
+Shared footer: "Marmotte CPU: implemented • CUDA / Metal: placeholders". This is an illustration of the current kernel, not a complete inference pipeline.
+
+Title: "MatVec — one dot product per output"
+API subtitle: "IMatVecKernel.MatVec(weights, input, destination)"
+Formula: "y[r] = Σ_c W[r,c] × x[c]". Explain "Σ means add all column products" and "r = output row; c = input feature".
+Panel 1: Show weights W of shape [2;3] with rows [1,2,-1] and [0,3,2], input vector x of shape [3] with values [2,1,4], output y shape [2] with values [0,11]. Note "Example weights shown after decoding".
+Panel 2: Show both exact dot products with matching color pairs:
+"y[0] = 1×2 + 2×1 + (-1)×4 = 2 + 2 - 4 = 0"
+"y[1] = 0×2 + 3×1 + 2×4 = 0 + 3 + 8 = 11".
+Include a visible grouping where three products converge into a sum and produce exactly one output value. No confusion with element-wise multiplication.
+Panel 3: The CPU row loop: "Decode W row r → multiply by the entire x → sum → write y[r] → next row". Show a single reusable decoded-row buffer, labelled "One temporary row, not a decoded matrix". Inputs remain unchanged. Rule chips: "Input [Columns]", "Output [Rows]", "Output must differ from input". The encoded matrix stays stored; decoding applies row by row. This product has no bias term. Do not claim quantized weights are multiplied directly without decoding.
+
+=== kernel-matmul.png ===
+
+Use case: infographic-diagram.
+Create a polished educational diagram for docs/kernels.md in the Marmotte F# repository. Audience: a developer who knows arrays and loops but is new to neural-network kernels. All visible text must be in English. Landscape 3:2 composition with large, crisp text, generous white space, near-white background, dark navy headings, blue input values, purple learned weights, amber operations, teal/green results. Flat technical illustration, simple outlined arrays and matrices, no photography, mascot, logos or decorative code. Use no more than three main panels with a clear numbered learning sequence. Show the formula, explain its symbols in plain words, then work through the supplied small example. A visible loop or flow should explain the algorithm. Render exact numbers and API names faithfully. Arithmetic and data shapes are the priority; never invent extra cells, formulas or APIs. Indexing is zero-based. Use real mathematical multiplication signs, clear grouping and square roots. Round approximate results to four decimals and mark approximation; do not claim the rounded numbers are exact.
+Shared footer: "Marmotte CPU: implemented • CUDA / Metal: placeholders". This is an illustration of the current kernel, not a complete inference pipeline.
+
+Title: "MatMul — share weights across token rows"
+API subtitle: "IMatMulKernel.MatMul(weights, input, destination)"
+Display prominently "Y = X × Wᵀ". Directly below, dimension equation "[T; C] × [C; R] → [T; R]". Also display "Y[t,r] = Σ_c W[r,c] × X[t,c]". Define "T = token count; C = input features; R = output features".
+Panel 1: Numeric matrices side by side, labelled very clearly:
+"X • input [2;3]" rows token 0 [2,1,4], token 1 [1,0,-1].
+"W • stored weights [2;3]" rows output 0 [1,2,-1], output 1 [0,3,2].
+"Y • output [2;2]" rows token 0 [0,11], token 1 [2,-2].
+Use a symbolic connector "X × Wᵀ" rather than a plain X×W; W itself is displayed untransposed. Exact math must remain correct.
+Panel 2: Highlight W row 0 [1,2,-1] in purple and show it decoded ONCE, then split to two dot products:
+"with X[0,*]: 1×2 + 2×1 - 1×4 = 0 → Y[0,0]"
+"with X[1,*]: 1×1 + 2×0 + (-1)×(-1) = 2 → Y[1,0]".
+These results form output COLUMN 0 across two tokens; highlight cells [0,0] and [1,0], not one whole output row. Note "Then repeat for W row 1: output column [11; -2]".
+Panel 3: A nested-loop diagram "For each weight row r: decode once → for each token t: dot with X[t,*] → write Y[t,r]". Callouts "Each token gets its own MatVec result"; "Batching reuses the decoded weight row"; "Wᵀ describes the math; no physical transpose is needed"; "Output must differ from input". Do not mix or sum across tokens. MatVec and MatMul reuse the same numerical example. All these numbers are exact. No performance claims.
+
