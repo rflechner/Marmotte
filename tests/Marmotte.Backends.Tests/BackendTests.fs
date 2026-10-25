@@ -486,6 +486,8 @@ let private randomPayload (random: Random) (encoding: TensorEncoding) rows colum
         // dmin for Q4_K; d last for Q6_K.
         let scaleOffsets =
             match encoding with
+            | TensorEncoding.Q4_1
+            | TensorEncoding.Q5_1
             | TensorEncoding.Q4_K -> [ 0; 2 ]
             | TensorEncoding.Q6_K -> [ 208 ]
             | _ -> [ 0 ]
@@ -537,7 +539,11 @@ let ``MatVec matches decoded rows in double precision for every encoding`` () =
           TensorEncoding.F16, [ 5; 64 ]
           TensorEncoding.BF16, [ 7; 64 ]
           TensorEncoding.Q4_0, [ 32; 96 ]
+          TensorEncoding.Q4_1, [ 32; 96 ]
+          TensorEncoding.Q5_0, [ 32; 96 ]
+          TensorEncoding.Q5_1, [ 32; 96 ]
           TensorEncoding.Q8_0, [ 32; 96 ]
+          TensorEncoding.IQ4_NL, [ 32; 96 ]
           TensorEncoding.Q4_K, [ 256; 512 ]
           TensorEncoding.Q6_K, [ 256; 512 ] ]
 
@@ -617,7 +623,11 @@ let ``MatMul matches decoded rows in double precision for every encoding and bat
           TensorEncoding.F16, 64
           TensorEncoding.BF16, 64
           TensorEncoding.Q4_0, 96
+          TensorEncoding.Q4_1, 96
+          TensorEncoding.Q5_0, 96
+          TensorEncoding.Q5_1, 96
           TensorEncoding.Q8_0, 96
+          TensorEncoding.IQ4_NL, 96
           TensorEncoding.Q4_K, 512
           TensorEncoding.Q6_K, 512 ]
 

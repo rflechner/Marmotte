@@ -5,6 +5,10 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="CpuKernels.fs" />
+    <Compile Include="CpuStorage.fs" />
+    <Compile Include="CpuTensor.fs" />
+    <Compile Include="CpuWeightTensor.fs" />
+    <Compile Include="CpuKeyValueCache.fs" />
     <Compile Include="CpuBackend.fs" />
   </ItemGroup>
   <ItemGroup>

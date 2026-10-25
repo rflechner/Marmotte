@@ -28,6 +28,34 @@ let private q4_0Block (scale: single) (quants: int array) =
 let private q8_0Block (scale: single) (quants: int array) =
     Array.append (halfBytes scale) (quants |> Array.map (fun quant -> byte (sbyte quant)))
 
+/// The low 4 bits of 32 quants, packed as in Q4_0.
+let private lowNibbles (quants: int array) =
+    Array.init 16 (fun index -> byte ((quants[index] &&& 15) ||| ((quants[index + 16] &&& 15) <<< 4)))
+
+/// The fifth bit of quant j in bit j of a little-endian 32-bit word.
+let private fifthBits (quants: int array) =
+    let mutable word = 0u
+    for index in 0 .. 31 do
+        word <- word ||| (uint32 (quants[index] >>> 4) <<< index)
+    let bytes = Array.zeroCreate<byte> 4
+    BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(), word)
+    bytes
+
+let private q4_1Block (scale: single) (minimum: single) (quants: int array) =
+    Array.concat [ halfBytes scale; halfBytes minimum; lowNibbles quants ]
+
+let private q5_0Block (scale: single) (quants: int array) =
+    Array.concat [ halfBytes scale; fifthBits quants; lowNibbles quants ]
+
+let private q5_1Block (scale: single) (minimum: single) (quants: int array) =
+    Array.concat [ halfBytes scale; halfBytes minimum; fifthBits quants; lowNibbles quants ]
+
+/// The 16 IQ4_NL levels of the block definitions cited in docs/kernels.md.
+let private iq4Levels = [| -127; -104; -83; -65; -49; -35; -22; -10; 1; 13; 25; 38; 53; 69; 89; 113 |]
+
+let private iq4NlBlock (scale: single) (indices: int array) =
+    Array.append (halfBytes scale) (lowNibbles indices)
+
 /// Bytes 0-3 hold the low 6 bits of scales 0-3 and the high 2 bits of scales 4-7; bytes 4-7 do
 /// the same for minimums; bytes 8-11 hold the low 4 bits of scale and minimum 4-7. Each chunk of
 /// 64 quants packs quant l in the low nibble and quant l + 32 in the high nibble of byte l.
@@ -117,6 +145,55 @@ let ``decodes Q8_0 blocks as signed quants`` () =
             (second |> Array.map (fun quant -> float32 quant * 3.0f))
 
     Assert.Equal<single>(expected, decode TensorEncoding.Q8_0 row 64)
+
+[<Fact>]
+let ``decodes Q4_1 blocks as quants times the scale plus the minimum`` () =
+    let first = Array.init 32 (fun index -> (index * 7 + 3) % 16)
+    let second = Array.init 32 (fun index -> 15 - index % 16)
+    let row = Array.append (q4_1Block 0.5f -3.0f first) (q4_1Block 0.125f 2.0f second)
+    let expected =
+        Array.append
+            (first |> Array.map (fun quant -> float32 quant * 0.5f + -3.0f))
+            (second |> Array.map (fun quant -> float32 quant * 0.125f + 2.0f))
+
+    Assert.Equal<single>(expected, decode TensorEncoding.Q4_1 row 64)
+
+[<Fact>]
+let ``decodes Q5_0 blocks with fifth bits in a little-endian word and an offset of 16`` () =
+    // Quants of 16 or more in both halves of each block set fifth bits 0-15 and 16-31.
+    let first = Array.init 32 (fun index -> (index * 11 + 5) % 32)
+    let second = Array.init 32 (fun index -> 31 - index)
+    let row = Array.append (q5_0Block 0.25f first) (q5_0Block -2.0f second)
+    let expected =
+        Array.append
+            (first |> Array.map (fun quant -> float32 (quant - 16) * 0.25f))
+            (second |> Array.map (fun quant -> float32 (quant - 16) * -2.0f))
+
+    Assert.Equal<single>(expected, decode TensorEncoding.Q5_0 row 64)
+
+[<Fact>]
+let ``decodes Q5_1 blocks as 5-bit quants times the scale plus the minimum`` () =
+    let first = Array.init 32 (fun index -> (index * 13 + 1) % 32)
+    let second = Array.init 32 (fun index -> index)
+    let row = Array.append (q5_1Block 0.0625f -1.0f first) (q5_1Block 4.0f 0.5f second)
+    let expected =
+        Array.append
+            (first |> Array.map (fun quant -> float32 quant * 0.0625f + -1.0f))
+            (second |> Array.map (fun quant -> float32 quant * 4.0f + 0.5f))
+
+    Assert.Equal<single>(expected, decode TensorEncoding.Q5_1 row 64)
+
+[<Fact>]
+let ``decodes IQ4_NL blocks by looking up each index in the non-uniform levels`` () =
+    let first = Array.init 32 (fun index -> (index * 5 + 2) % 16)
+    let second = Array.init 32 (fun index -> 15 - index % 16)
+    let row = Array.append (iq4NlBlock 0.5f first) (iq4NlBlock -0.0625f second)
+    let expected =
+        Array.append
+            (first |> Array.map (fun index -> 0.5f * float32 iq4Levels[index]))
+            (second |> Array.map (fun index -> -0.0625f * float32 iq4Levels[index]))
+
+    Assert.Equal<single>(expected, decode TensorEncoding.IQ4_NL row 64)
 
 [<Fact>]
 let ``decodes Q4_K blocks with 6-bit scales and minimums of every sub-block`` () =

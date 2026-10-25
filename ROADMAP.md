@@ -43,6 +43,8 @@ local check.
   quantizer's output can run, in Core's `RowDecoder`, shared by embedding
   lookup and matrix products.
 - [x] Decode Q4_K and Q6_K rows, required by the target model.
+- [x] Decode Q4_1, Q5_0, Q5_1 and IQ4_NL rows, added for the key-value cache;
+  GGUF tensors in these encodings can also be read as weights.
 - [x] Verify block layouts against llama.cpp's reference implementation with
   independently encoded fixtures: `ggml-common.h` and `ggml-quants.c`, checked
   on 2026-10-25, with blocks packed by hand in `RowDecoderTests` and the
@@ -81,8 +83,8 @@ Contracts and element-wise operations:
   explicit allocation/transfers and a `Vector<T>` CPU implementation in
   `Marmotte.Cpu`. `Add` provides the two residual connections of each block.
 - [x] Embedding lookup: decode selected rows of `token_embd.weight` into F32,
-  without scaling, through `IEmbeddingKernel`. CPU supports all seven runtime
-  encodings, including the target model's `Q6_K` (131,072 rows of 3,072 values).
+  without scaling, through `IEmbeddingKernel`. CPU supports every runtime
+  encoding, including the target model's `Q6_K` (131,072 rows of 3,072 values).
   Tests use small independent fixtures; the full model remains an optional check.
 - [x] RMS normalization: `x / sqrt(mean(x²) + ε) × weight`, with ε from
   `attention.layer_norm_rms_epsilon` (1e-5) and F32 weights of 3,072 values.
@@ -148,9 +150,12 @@ Attention:
   4,096 tokens) or Q4_0 (117 MiB). Core's `RowEncoder` writes their rows, also
   for the GGUF quantizer. Storing at an earlier position replaces it and
   discards the later ones. `Marmotte.Cpu` allocates the whole capacity up front.
-- [ ] Further cache encodings offered by llama.cpp: Q4_1, Q5_0, Q5_1 and IQ4_NL,
-  once `TensorEncoding` and `RowDecoder` represent them, after measuring the
-  target model's sensitivity to Q8_0 and Q4_0 keys and values.
+- [x] Further cache encodings offered by llama.cpp: Q5_1 (156 MiB for 4,096
+  tokens), Q5_0 (143 MiB), Q4_1 (130 MiB) and IQ4_NL (117 MiB, like Q4_0, but
+  with levels closer together near zero). `TensorEncoding`, `RowDecoder` and
+  `RowEncoder` represent them; IQ4_NL searches its scale by weighted least
+  squares. Which pair of encodings the target model tolerates remains to be
+  measured once attention runs.
 - [ ] Grouped-query attention: each of the 32 query heads reads the cached keys
   and values of its key-value head, shared by 4 query heads, decoded from the
   cache's encoding one head at a time. Scores are scaled

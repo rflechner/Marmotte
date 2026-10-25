@@ -5,8 +5,9 @@ open System.Collections.Generic
 
 /// Tensor encodings Marmotte represents at runtime, independent of GGUF's GgmlType and
 /// Safetensors' dtypes. Deliberately narrower than both formats: the encodings of the first
-/// target models. RowDecoder decodes their rows into F32 for embedding lookup and matrix-vector
-/// products; Add, SwiGLU and RMS normalization operate on F32 execution tensors.
+/// target models, plus Q4_1, Q5_0, Q5_1 and IQ4_NL, which offer key-value caches sizes between
+/// Q4_0 and Q8_0. RowDecoder decodes rows of every encoding into F32 for embedding lookup and
+/// matrix products; Add, SwiGLU and RMS normalization operate on F32 execution tensors.
 /// Block layouts follow the reference block definitions cited in docs/gguf.md and match the
 /// GGUF reader's payload size table.
 [<RequireQualifiedAccess>]
@@ -15,7 +16,11 @@ type TensorEncoding =
     | F16
     | BF16
     | Q4_0
+    | Q4_1
+    | Q5_0
+    | Q5_1
     | Q8_0
+    | IQ4_NL
     | Q4_K
     | Q6_K
 
@@ -27,7 +32,11 @@ type TensorEncoding =
         | TensorEncoding.F16
         | TensorEncoding.BF16 -> 1
         | TensorEncoding.Q4_0
-        | TensorEncoding.Q8_0 -> 32
+        | TensorEncoding.Q4_1
+        | TensorEncoding.Q5_0
+        | TensorEncoding.Q5_1
+        | TensorEncoding.Q8_0
+        | TensorEncoding.IQ4_NL -> 32
         | TensorEncoding.Q4_K
         | TensorEncoding.Q6_K -> 256
 
@@ -38,7 +47,11 @@ type TensorEncoding =
         | TensorEncoding.F16
         | TensorEncoding.BF16 -> 2
         | TensorEncoding.Q4_0 -> 18
+        | TensorEncoding.Q4_1 -> 20
+        | TensorEncoding.Q5_0 -> 22
+        | TensorEncoding.Q5_1 -> 24
         | TensorEncoding.Q8_0 -> 34
+        | TensorEncoding.IQ4_NL -> 18
         | TensorEncoding.Q4_K -> 144
         | TensorEncoding.Q6_K -> 210
 

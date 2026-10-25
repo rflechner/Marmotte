@@ -7,7 +7,7 @@ open System.Buffers.Binary
 /// whole matrix. Block layouts and arithmetic follow the reference block definitions and
 /// reconstruction functions cited in docs/kernels.md (checked 2026-10-25). Each value uses the
 /// same F32 operations in the same order as those functions, so the results match unless a C
-/// compiler fuses their multiplications and subtractions.
+/// compiler fuses their multiplications with the following addition or subtraction.
 [<RequireQualifiedAccess>]
 module RowDecoder =
     let private readHalf (bytes: ReadOnlySpan<byte>) =
@@ -22,6 +22,58 @@ module RowDecoder =
             let packed = int quants[index]
             destination[index] <- float32 ((packed &&& 0xF) - 8) * scale
             destination[index + 16] <- float32 ((packed >>> 4) - 8) * scale
+
+    /// 32 values: a half scale d, a half minimum m, then 16 bytes of unsigned 4-bit quants packed
+    /// as in Q4_0. Value = q × d + m.
+    let private decodeQ4_1Block (block: ReadOnlySpan<byte>) (destination: Span<single>) =
+        let scale = readHalf block
+        let minimum = readHalf (block.Slice(2))
+        let quants = block.Slice(4, 16)
+        for index = 0 to 15 do
+            let packed = int quants[index]
+            destination[index] <- float32 (packed &&& 0xF) * scale + minimum
+            destination[index + 16] <- float32 (packed >>> 4) * scale + minimum
+
+    /// Unsigned 5-bit quant j of a Q5_0 or Q5_1 block, whose fifth bit is bit j of a little-endian
+    /// 32-bit word and whose low 4 bits are packed as in Q4_0.
+    let private fiveBitQuant (fifthBits: uint32) (lowBits: ReadOnlySpan<byte>) (index: int) =
+        let low = if index < 16 then int lowBits[index] &&& 0xF else int lowBits[index - 16] >>> 4
+        low ||| (int ((fifthBits >>> index) &&& 1u) <<< 4)
+
+    /// 32 values: a half scale, the 4 bytes of fifth bits, then 16 bytes of low 4 bits. Quants are
+    /// offset by 16, as Q4_0's are by 8.
+    let private decodeQ5_0Block (block: ReadOnlySpan<byte>) (destination: Span<single>) =
+        let scale = readHalf block
+        let fifthBits = BinaryPrimitives.ReadUInt32LittleEndian(block.Slice(2, 4))
+        let lowBits = block.Slice(6, 16)
+        for index = 0 to 31 do
+            destination[index] <- float32 (fiveBitQuant fifthBits lowBits index - 16) * scale
+
+    /// 32 values: a half scale d, a half minimum m, the 4 bytes of fifth bits, then 16 bytes of low
+    /// 4 bits. Value = q × d + m.
+    let private decodeQ5_1Block (block: ReadOnlySpan<byte>) (destination: Span<single>) =
+        let scale = readHalf block
+        let minimum = readHalf (block.Slice(2))
+        let fifthBits = BinaryPrimitives.ReadUInt32LittleEndian(block.Slice(4, 4))
+        let lowBits = block.Slice(8, 16)
+        for index = 0 to 31 do
+            destination[index] <- float32 (fiveBitQuant fifthBits lowBits index) * scale + minimum
+
+    /// The 16 levels of IQ4_NL in increasing order: closer together near zero, where most values
+    /// of a block lie, than the uniform levels of Q4_0. RowEncoder searches the same levels.
+    let internal iq4NonLinearLevels =
+        [| -127.0f; -104.0f; -83.0f; -65.0f; -49.0f; -35.0f; -22.0f; -10.0f
+           1.0f; 13.0f; 25.0f; 38.0f; 53.0f; 69.0f; 89.0f; 113.0f |]
+
+    /// 32 values: a half scale d, then 16 bytes of 4-bit level indices packed as in Q4_0.
+    /// Value = d × level.
+    let private decodeIq4NlBlock (block: ReadOnlySpan<byte>) (destination: Span<single>) =
+        let scale = readHalf block
+        let indices = block.Slice(2, 16)
+        for index = 0 to 15 do
+            let packed = int indices[index]
+            destination[index] <- scale * iq4NonLinearLevels[packed &&& 0xF]
+            destination[index + 16] <- scale * iq4NonLinearLevels[packed >>> 4]
 
     /// 32 values: a half scale, then 32 signed 8-bit quants.
     let private decodeQ8_0Block (block: ReadOnlySpan<byte>) (destination: Span<single>) =
@@ -117,9 +169,21 @@ module RowDecoder =
         | TensorEncoding.Q4_0 ->
             for block = 0 to blockCount - 1 do
                 decodeQ4_0Block (row.Slice(18 * block, 18)) (destination.Slice(32 * block, 32))
+        | TensorEncoding.Q4_1 ->
+            for block = 0 to blockCount - 1 do
+                decodeQ4_1Block (row.Slice(20 * block, 20)) (destination.Slice(32 * block, 32))
+        | TensorEncoding.Q5_0 ->
+            for block = 0 to blockCount - 1 do
+                decodeQ5_0Block (row.Slice(22 * block, 22)) (destination.Slice(32 * block, 32))
+        | TensorEncoding.Q5_1 ->
+            for block = 0 to blockCount - 1 do
+                decodeQ5_1Block (row.Slice(24 * block, 24)) (destination.Slice(32 * block, 32))
         | TensorEncoding.Q8_0 ->
             for block = 0 to blockCount - 1 do
                 decodeQ8_0Block (row.Slice(34 * block, 34)) (destination.Slice(32 * block, 32))
+        | TensorEncoding.IQ4_NL ->
+            for block = 0 to blockCount - 1 do
+                decodeIq4NlBlock (row.Slice(18 * block, 18)) (destination.Slice(32 * block, 32))
         | TensorEncoding.Q4_K ->
             for block = 0 to blockCount - 1 do
                 decodeQ4KBlock (row.Slice(144 * block, 144)) (destination.Slice(256 * block, 256))

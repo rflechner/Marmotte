@@ -163,9 +163,9 @@ finished answers, and must match the exact processed prefix and positions.
 | Safetensors tensor index | Implemented for single files, including `info`; shards planned |
 | Runtime tensor access | Format-neutral tensor source for both formats, copying payloads, weight matrix rows and row decoding; memory mapping planned |
 | Execution tensors and kernels | Contiguous F32 contracts with CPU Add, SwiGLU, RMS normalization, MatVec, MatMul, RoPE and attention temperature, plus YaRN parameter preparation in Core; CUDA/Metal placeholders. See [kernel contracts](kernels.md) |
-| Token embeddings | CPU lookup decodes selected rows in all seven runtime encodings into F32, without scaling; CUDA/Metal placeholders |
+| Token embeddings | CPU lookup decodes selected rows in every runtime encoding into F32, without scaling; CUDA/Metal placeholders |
 | Tokenizer | Planned |
-| KV cache | CPU cache storing keys and values in F32, F16, BF16, Q8_0 or Q4_0, chosen separately; CUDA/Metal placeholders. See the [key-value cache](kernels.md#key-value-cache) |
+| KV cache | CPU cache storing keys and values in F32, F16, BF16, Q8_0, Q5_1, Q5_0, Q4_1, IQ4_NL or Q4_0, chosen separately; CUDA/Metal placeholders. See the [key-value cache](kernels.md#key-value-cache) |
 | Attention and response generation | Planned; CPU first, then CUDA/Metal |
 
 The illustration simplifies a text-only generation path. It does not specify

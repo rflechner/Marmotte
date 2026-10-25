@@ -48,14 +48,18 @@ let private stored name encoding shape (payload: byte array) =
 
 let private sourceOf tensors = new InMemoryTensorSource(tensors)
 
-// Block sizes from the Q4_0, Q8_0, Q4_K and Q6_K block layouts cited in docs/gguf.md.
+// Block sizes from the quantized block layouts cited in docs/gguf.md.
 let private encodingNamed name =
     match name with
     | "F32" -> TensorEncoding.F32
     | "F16" -> TensorEncoding.F16
     | "BF16" -> TensorEncoding.BF16
     | "Q4_0" -> TensorEncoding.Q4_0
+    | "Q4_1" -> TensorEncoding.Q4_1
+    | "Q5_0" -> TensorEncoding.Q5_0
+    | "Q5_1" -> TensorEncoding.Q5_1
     | "Q8_0" -> TensorEncoding.Q8_0
+    | "IQ4_NL" -> TensorEncoding.IQ4_NL
     | "Q4_K" -> TensorEncoding.Q4_K
     | "Q6_K" -> TensorEncoding.Q6_K
     | _ -> failwith $"Unknown test encoding {name}"
@@ -79,7 +83,11 @@ let ``reads matrix rows in row-major order`` () =
 [<InlineData("F16", 3, 6)>]
 [<InlineData("BF16", 5, 10)>]
 [<InlineData("Q4_0", 64, 36)>]
+[<InlineData("Q4_1", 64, 40)>]
+[<InlineData("Q5_0", 32, 22)>]
+[<InlineData("Q5_1", 64, 48)>]
 [<InlineData("Q8_0", 32, 34)>]
+[<InlineData("IQ4_NL", 96, 54)>]
 [<InlineData("Q4_K", 256, 144)>]
 [<InlineData("Q6_K", 512, 420)>]
 let ``rows hold whole quantization blocks`` encodingName columns rowBytes =

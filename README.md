@@ -152,8 +152,8 @@ names and model configuration are not implemented yet.
 `IEmbeddingKernel`, `IMatVecKernel`, `IMatMulKernel`, `IRopeKernel`,
 `IAttentionTemperatureKernel`, `IKeyValueCacheKernel` and `ITensorBackend`, plus
 `RotaryEmbedding`, `YarnParameters`, `AttentionTemperature` and
-`KeyValueCacheLayout`. `RowEncoder` writes F32, F16, BF16, Q8_0 and Q4_0 rows,
-the inverse of `RowDecoder`.
+`KeyValueCacheLayout`. `RowEncoder` writes rows of every encoding except Q4_K
+and Q6_K, the inverse of `RowDecoder`.
 The three backend projects share these contracts:
 
 - `Marmotte.Cpu`: owned F32 arrays, explicit upload/download, weight tensors that
@@ -195,14 +195,16 @@ V cache quantization. `StoreKeyValues(cache, layer, position, keys, values)`
 appends positions to a layer, or replaces them and discards the later ones;
 `ReadKeyValues` decodes them back into F32 tensors. For the target model and a
 4,096-token context, the cache takes 832 MiB in F32, 416 MiB in F16 or BF16,
-221 MiB in Q8_0 and 117 MiB in Q4_0. Q8_0 and Q4_0 are lossy: see the
+221 MiB in Q8_0, 156 MiB in Q5_1, 143 MiB in Q5_0, 130 MiB in Q4_1, and 117 MiB
+in IQ4_NL or Q4_0. Quantized encodings are lossy: see the
 [precision notes](docs/kernels.md#key-value-cache). Attention does not read the
 cache yet.
 
 `EmbeddingLookup(weights, tokenIds, destination)` decodes selected vocabulary
 rows into a preallocated F32 tensor of shape `[tokenIds.Length; weights.Columns]`,
-without scaling. It supports F32, F16, BF16, Q4_0, Q8_0, Q4_K and Q6_K weights,
-including the target model's `token_embd.weight`. IDs may repeat; an empty batch
+without scaling. It supports every runtime encoding: F32, F16, BF16, Q4_0, Q4_1,
+Q5_0, Q5_1, Q8_0, IQ4_NL, Q4_K and Q6_K, including the target model's
+`token_embd.weight`. IDs may repeat; an empty batch
 is valid. All IDs and tensor arguments are validated before writing, so invalid
 input leaves the destination unchanged. The caller may reuse the ID buffer when
 the call returns. Keep the weights' tensor source alive while they are in use.

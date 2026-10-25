@@ -150,7 +150,7 @@ type IEmbeddingKernel =
     /// including [1; Columns] for one token and [0; Columns] for an empty, no-op lookup.
     /// IDs are zero-based, must be in [0, weights.Rows), and may repeat or arrive in any order.
     /// Weights and destination must belong to this backend instance. Only selected rows are decoded;
-    /// weights stay unchanged. CPU supports F32, F16, BF16, Q4_0, Q8_0, Q4_K and Q6_K.
+    /// weights stay unchanged. CPU supports every TensorEncoding.
     /// Floating-point special values follow ordinary F32 conversion and arithmetic.
     ///
     /// All arguments, including every ID, are validated before submission or any destination write:

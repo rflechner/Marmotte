@@ -323,7 +323,7 @@ output is written, including for an empty batch.
 
 The CPU lookup decodes each selected row with Core's `RowDecoder`, through
 `WeightMatrix.DecodeRow`, which supports every current `TensorEncoding`: F32,
-F16, BF16, Q4_0, Q8_0, Q4_K and Q6_K. It uses safe spans and explicit
+F16, BF16, Q4_0, Q4_1, Q5_0, Q5_1, Q8_0, IQ4_NL, Q4_K and Q6_K. It uses safe spans and explicit
 little-endian reads, writing only requested rows directly into the destination,
 with no temporary decoded matrix, row or block buffers. Stored weights remain unchanged. `WeightMatrix`
 validates the payload length and whole blocks per row before upload; the source
@@ -338,7 +338,11 @@ and [GGML reconstruction formulas](https://github.com/ggml-org/llama.cpp/blob/ma
 | Encoding | Stored block | Reconstruction |
 | --- | --- | --- |
 | Q4_0 | 32 values, 18 bytes | `scale × (q − 8)` with an F16 scale and four-bit `q`; low nibbles precede high nibbles |
+| Q4_1 | 32 values, 20 bytes | `q × scale + minimum` with an F16 scale and minimum and four-bit `q` packed as in Q4_0 |
+| Q5_0 | 32 values, 22 bytes | `scale × (q − 16)` with five-bit `q`: fifth bits in a little-endian 32-bit word, bit `j` for value `j`, then low bits as in Q4_0 |
+| Q5_1 | 32 values, 24 bytes | `q × scale + minimum` with five-bit `q` stored as in Q5_0 |
 | Q8_0 | 32 values, 34 bytes | F16 scale times a signed byte |
+| IQ4_NL | 32 values, 18 bytes | `scale × level[q]` with four-bit indices into 16 non-uniform levels from −127 to 113 (`kvalues_iq4nl`) |
 | Q4_K | 256 values, 144 bytes | Eight groups of 32, each with six-bit scale and minimum factors; `d × scale × q − dmin × minimum` |
 | Q6_K | 256 values, 210 bytes | Sixteen groups of 16; signed group scales and six-bit values centered at 32; `d × scale × (q − 32)` |
 
@@ -384,11 +388,12 @@ input. Validation and ordering otherwise follow `Add`.
 
 The weights stay in their stored encoding. Core's `RowDecoder` decodes one row
 of any `TensorEncoding` into F32, and `WeightMatrix.DecodeRow` applies it to a
-row of a matrix. Block layouts and arithmetic follow `block_q4_0`, `block_q8_0`,
-`block_q4_K` and `block_q6_K` in llama.cpp's `ggml-common.h`, and its reference
-`dequantize_row_*` functions in `ggml-quants.c`. Tests pack Q4_K and Q6_K blocks
-by hand from chosen scales, minimums and quants, and check every decoded value
-exactly. Embedding lookup uses the same decoder.
+row of a matrix. Block layouts and arithmetic follow `block_q4_0`, `block_q4_1`,
+`block_q5_0`, `block_q5_1`, `block_q8_0`, `block_iq4_nl`, `block_q4_K` and
+`block_q6_K` in llama.cpp's `ggml-common.h`, with the IQ4_NL levels of
+`kvalues_iq4nl`, and its reference `dequantize_row_*` functions in
+`ggml-quants.c`. Tests pack blocks of every quantized encoding by hand from
+chosen scales, minimums and quants, and check every decoded value exactly. Embedding lookup uses the same decoder.
 
 The CPU backend decodes one row at a time into a pooled buffer, so its memory
 use is one row, not a decoded matrix. It then computes the dot product with
@@ -720,7 +725,10 @@ values for the target model:
 | F32 | 128 | 208 KiB | 832 MiB | 6,656 MiB |
 | F16, BF16 | 64 | 104 KiB | 416 MiB | 3,328 MiB |
 | Q8_0 | 34 | 55.25 KiB | 221 MiB | 1,768 MiB |
-| Q4_0 | 18 | 29.25 KiB | 117 MiB | 936 MiB |
+| Q5_1 | 24 | 39 KiB | 156 MiB | 1,248 MiB |
+| Q5_0 | 22 | 35.75 KiB | 143 MiB | 1,144 MiB |
+| Q4_1 | 20 | 32.5 KiB | 130 MiB | 1,040 MiB |
+| IQ4_NL, Q4_0 | 18 | 29.25 KiB | 117 MiB | 936 MiB |
 
 ```fsharp
 let layout =
@@ -742,10 +750,9 @@ backend.StoreKeyValues(cache, layer, firstPosition, keys, values)
 `BytesPerPosition` and `TotalBytes` give these sizes before allocating anything.
 Keys and values have separate encodings, like llama.cpp's `--cache-type-k` and
 `--cache-type-v` options, which LM Studio exposes as K and V cache quantization.
-Marmotte supports the encodings it can both write and read: F32, F16, BF16,
-Q8_0 and Q4_0. llama.cpp's default is F16. llama.cpp also offers Q4_1, Q5_0,
-Q5_1 and IQ4_NL, which `TensorEncoding` does not represent yet. K-quants such as
-Q4_K are rejected: their reference quantizers search for sub-block scales, which
+Marmotte supports the same encodings as llama.cpp: F32, F16, BF16, Q8_0, Q5_1,
+Q5_0, Q4_1, IQ4_NL and Q4_0. llama.cpp's default is F16. K-quants such as Q4_K
+are rejected: their reference quantizers search for sub-block scales, which
 Marmotte does not implement. A head dimension must hold whole blocks, so a
 32-value block never spans two heads and attention can decode one head at a
 time.
@@ -758,9 +765,17 @@ position as a row of whole blocks, for values as for keys.
 `RowEncoder` in Core writes the rows; it is the inverse of `RowDecoder` and also
 encodes the GGUF quantizer's blocks. F16 and BF16 round to nearest, ties to
 even. Q8_0 rounds each value to half a step of `max / 127`, where `max` is the
-largest magnitude of its block of 32. Q4_0 uses 16 steps of `max / 8` and can
-clip the end opposite to its scale by a whole step. Both store their scale in
-F16. Quantization is lossy, and the precision attention needs is a measurement
+largest magnitude of its block of 32. Q5_0 and Q4_0 use 32 and 16 steps of
+`max / 16` and `max / 8`, and can clip the end opposite to their scale by a
+whole step. Q5_1 and Q4_1 also store the block's minimum and divide its range
+into 31 and 15 steps, which suits blocks whose values are not centered on zero.
+IQ4_NL has the size of Q4_0 but 16 levels closer together near zero, where most
+values lie: its encoder tries 16 scales and keeps the one with the smallest
+error weighted by `x²`, as llama.cpp's `quantize_iq4_nl` does without an
+importance matrix, then picks each index against the F16 scale actually stored
+rather than the F32 one. On normally distributed values, its squared error is
+about 20% below Q4_0's. Every encoding stores its scale and minimum in F16.
+Quantization is lossy, and the precision attention needs is a measurement
 to make on the model, not a property of the cache: keys have outlier channels,
 which inflate the scale of every block that contains one
 ([KIVI](https://arxiv.org/abs/2402.02750)), so they usually tolerate
@@ -785,8 +800,8 @@ directly.
 
 Values that an encoding cannot hold are never replaced by plausible numbers.
 F16 and BF16 turn values beyond their range into infinities, and NaN stays NaN.
-A Q8_0 or Q4_0 block that contains NaN or an infinity, or whose scale exceeds
-the F16 range, is stored with a NaN scale: its 32 values read back as NaN, and
+A quantized block that contains NaN or an infinity, or whose scale or minimum
+exceeds the F16 range, is stored with a NaN scale: its 32 values read back as NaN, and
 the other blocks are unaffected. The GGUF quantizer is stricter and rejects
 such weights.
 
@@ -794,8 +809,8 @@ The CPU backend allocates the whole capacity up front, as llama.cpp does: one
 byte array of `Capacity` rows per layer for keys and one for values. Blocks
 never span rows, so a batch of positions is encoded or decoded in one call. A
 layer's keys or values must fit in a managed array: 524,287 F32 positions for
-the target model, twice its 262,144-position context. Tests check hand-computed F16, BF16, Q8_0
-and Q4_0 bytes, rounding errors, non-finite blocks, the target model's sizes,
+the target model, twice its 262,144-position context. Tests check
+hand-computed bytes of every encoding, rounding errors, non-finite blocks, the target model's sizes,
 appending, replacing and truncating positions, validation before any write,
 ownership and disposal. Run
 [`examples/KeyValueCache.fsx`](../examples/KeyValueCache.fsx) to print the sizes
@@ -842,5 +857,6 @@ prints the CPU result, and reports the GPU placeholders' exceptions at the first
 upload. The embedding script uses a tiny in-memory F32 vocabulary and prints
 the rows for IDs `[1; 0; 1]`. The key-value cache script prints the target
 model's cache size for each encoding, then stores random keys in a small CPU
-cache and prints the largest error after reading them back. Tests also call GPU allocation, download and each
+cache and prints the root mean square and largest errors after reading them
+back. Tests also call GPU allocation, download and each
 kernel directly to verify that all unfinished operations fail explicitly.
