@@ -148,14 +148,15 @@ names and model configuration are not implemented yet.
 ## Execution tensors and kernels
 
 `Marmotte.Core` defines `TensorShape`, `ITensor`, `IWeightTensor`, `IAddKernel`,
-`ISwiGluKernel`, `IRmsNormKernel`, `IEmbeddingKernel`, `IMatVecKernel` and
-`ITensorBackend`.
+`ISwiGluKernel`, `IRmsNormKernel`, `IEmbeddingKernel`, `IMatVecKernel`,
+`IMatMulKernel` and `ITensorBackend`.
 The three backend projects share these contracts:
 
 - `Marmotte.Cpu`: owned F32 arrays, explicit upload/download, weight tensors that
   retain the stored payload, `Add`, SwiGLU and RMS normalization kernels
-  vectorized with `Vector<T>`, embedding lookup, and a matrix-vector product over
-  stored weights; both decode rows with Core's `RowDecoder`.
+  vectorized with `Vector<T>`, embedding lookup, and matrix-vector and
+  matrix-matrix products over stored weights; all decode rows with Core's
+  `RowDecoder`.
 - `Marmotte.Cuda` and `Marmotte.Metal`: buildable placeholders whose allocation,
   transfers and kernels raise `NotImplementedException`, without requiring a GPU SDK.
 
@@ -166,7 +167,8 @@ effect in submission order and may return before they complete; `Download` and
 them, transfers are explicit, and disposing a backend releases the tensors it
 still owns. `UploadWeights` places a `WeightMatrix` on a backend in its stored
 encoding, without decoding it, and `MatVec(weights, input, destination)` multiplies
-those weights by an F32 vector, decoding one row at a time.
+those weights by an F32 vector, decoding one row at a time. `MatMul` does the same
+for a `[tokens; columns]` batch, decoding each weight row once for all tokens.
 `SwiGlu(gate, up, destination)` computes `silu(gate) × up` under the same tensor
 rules; its exponential makes results differ from other implementations by a few
 units in the last place. `RmsNorm(input, weight, epsilon, destination)`

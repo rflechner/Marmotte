@@ -132,22 +132,29 @@ module private CpuKernels =
             sum <- sum + float left[index] * float right[index]
         sum
 
-    /// destination[r] = Σ weights[r, c] × input[c]. Decodes one weight row at a time into a pooled
-    /// F32 buffer of Columns values, then sums its products with input. Destination must not
-    /// overlap input, which every row reads in full.
-    let matVec (weights: WeightMatrix, input: ReadOnlySpan<single>, destination: Span<single>) =
-        if input.Length <> weights.Columns || destination.Length <> weights.Rows then
-            invalidArg (nameof destination) "MatVec spans must match the weight matrix columns and rows."
-
+    /// destination[t, r] = Σ weights[r, c] × input[t, c], for consecutive token rows of Columns input
+    /// values and Rows output values. Decodes each weight row once into a pooled F32 buffer, then
+    /// sums its products with the input row of every token, so the whole batch shares the decoding
+    /// cost; one token is a matrix-vector product, and an empty batch decodes nothing. Destination
+    /// must not overlap input, which every weight row reads in full.
+    let matMul (weights: WeightMatrix, input: ReadOnlySpan<single>, destination: Span<single>) =
         let columns = weights.Columns
-        let buffer = ArrayPool<single>.Shared.Rent(columns)
-        try
-            for row = 0 to weights.Rows - 1 do
-                weights.DecodeRow(row, Span<single>(buffer, 0, columns))
-                let decodedRow = ReadOnlySpan<single>(buffer, 0, columns)
-                destination[row] <- float32 (sumOfProducts decodedRow input)
-        finally
-            ArrayPool<single>.Shared.Return(buffer)
+        let rows = weights.Rows
+        let tokens = input.Length / columns
+        if input.Length % columns <> 0 || int64 destination.Length <> int64 tokens * int64 rows then
+            invalidArg (nameof destination) "Matrix product spans must hold whole token rows of the weight matrix."
+
+        if tokens > 0 then
+            let buffer = ArrayPool<single>.Shared.Rent(columns)
+            try
+                for row = 0 to rows - 1 do
+                    weights.DecodeRow(row, Span<single>(buffer, 0, columns))
+                    let decodedRow = ReadOnlySpan<single>(buffer, 0, columns)
+                    for token = 0 to tokens - 1 do
+                        let tokenInput = input.Slice(token * columns, columns)
+                        destination[token * rows + row] <- float32 (sumOfProducts decodedRow tokenInput)
+            finally
+                ArrayPool<single>.Shared.Return(buffer)
 
 /// Storage that its backend releases when the backend itself is disposed.
 type private ICpuStorage =
@@ -362,7 +369,28 @@ type CpuBackend() =
             if Object.ReferenceEquals(input, destination) then
                 invalidArg (nameof destination) "MatVec destination must differ from its input, which every output reads in full."
 
-            CpuKernels.matVec (matrix, ReadOnlySpan<single>(inputValues), Span<single>(destinationValues))
+            CpuKernels.matMul (matrix, ReadOnlySpan<single>(inputValues), Span<single>(destinationValues))
+
+    interface IMatMulKernel with
+        member this.MatMul(weights, input, destination) =
+            ObjectDisposedException.ThrowIf(disposed, this)
+            let matrix = weightsOf (nameof weights) weights
+            let inputValues = valuesOf (nameof input) input
+            let destinationValues = valuesOf (nameof destination) destination
+
+            let operation = $"MatMul with {matrix.Rows} × {matrix.Columns} weights"
+            let inputDimensions = input.Shape.Dimensions
+            if inputDimensions.Count <> 2 || inputDimensions[1] <> matrix.Columns then
+                invalidArg (nameof input) $"{operation} requires input of shape [tokens; {matrix.Columns}], not {input.Shape}."
+
+            let tokens = inputDimensions[0]
+            let destinationDimensions = destination.Shape.Dimensions
+            if destinationDimensions.Count <> 2 || destinationDimensions[0] <> tokens || destinationDimensions[1] <> matrix.Rows then
+                invalidArg (nameof destination) $"{operation} requires destination of shape [{tokens}; {matrix.Rows}], not {destination.Shape}."
+            if Object.ReferenceEquals(input, destination) then
+                invalidArg (nameof destination) "MatMul destination must differ from its input, which every weight row reads in full."
+
+            CpuKernels.matMul (matrix, ReadOnlySpan<single>(inputValues), Span<single>(destinationValues))
 
     interface IDisposable with
         member _.Dispose() =

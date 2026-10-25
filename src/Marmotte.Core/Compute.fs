@@ -158,6 +158,17 @@ type IMatVecKernel =
     /// encoding this backend cannot multiply.
     abstract MatVec: weights: IWeightTensor * input: ITensor * destination: ITensor -> unit
 
+/// Matrix product of several tokens with the same stored weights, for prompt processing:
+/// destination[t, r] = Σ weights[r, c] × input[t, c], which multiplies every input row by the
+/// transposed weight matrix. Each token's output is what MatVec gives for its input row, but an
+/// implementation can decode each weight row once for the whole batch instead of once per token.
+type IMatMulKernel =
+    /// Input has shape [Tokens; Columns] and destination [Tokens; Rows], both F32, with Tokens
+    /// zero for an empty, no-op batch. Every tensor must belong to the executing backend
+    /// instance, and destination must not be input, because each output row reads its whole input
+    /// row. Ownership, validation, ordering and tolerances otherwise follow IMatVecKernel.MatVec.
+    abstract MatMul: weights: IWeightTensor * input: ITensor * destination: ITensor -> unit
+
 /// Creates and operates on its own tensors. Separate instances are separate ownership domains,
 /// even when their Backend values match.
 ///
@@ -182,6 +193,7 @@ type ITensorBackend =
     inherit IRmsNormKernel
     inherit IEmbeddingKernel
     inherit IMatVecKernel
+    inherit IMatMulKernel
 
     abstract Backend: BackendKind
 

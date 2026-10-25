@@ -211,6 +211,9 @@ let ``null shapes and tensors are rejected`` () =
     use weights = backend.UploadWeights(matrixOf TensorEncoding.F32 1 1 (Array.zeroCreate 4))
     Assert.Throws<ArgumentNullException>(fun () -> backend.MatVec(weights, nullTensor, tensor)) |> ignore
     Assert.Throws<ArgumentNullException>(fun () -> backend.MatVec(weights, tensor, nullTensor)) |> ignore
+    Assert.Throws<ArgumentNullException>(fun () -> backend.MatMul(Unchecked.defaultof<IWeightTensor>, tensor, tensor)) |> ignore
+    Assert.Throws<ArgumentNullException>(fun () -> backend.MatMul(weights, nullTensor, tensor)) |> ignore
+    Assert.Throws<ArgumentNullException>(fun () -> backend.MatMul(weights, tensor, nullTensor)) |> ignore
     for left, right, destination in [ nullTensor, tensor, tensor; tensor, nullTensor, tensor; tensor, tensor, nullTensor ] do
         Assert.Throws<ArgumentNullException>(fun () -> backend.Add(left, right, destination)) |> ignore
         Assert.Throws<ArgumentNullException>(fun () -> backend.SwiGlu(left, right, destination)) |> ignore
@@ -579,6 +582,110 @@ let ``MatVec validates shapes aliasing ownership and disposal before writing`` (
     Assert.Throws<ObjectDisposedException>(fun () -> backend.MatVec(weights, disposedInput, destination)) |> ignore
     Assert.Equal<single>(Array.create 4 42.0f, download backend destination)
 
+/// Checks MatMul token by token against decoded rows multiplied in double precision, with the
+/// same tolerance as MatVec: relative to the sum of absolute products of each output.
+let private assertMatMul (backend: ITensorBackend) (matrix: WeightMatrix) tokens (inputValues: single array) =
+    use weights = backend.UploadWeights(matrix)
+    use input = backend.Upload(TensorShape.Create [| tokens; matrix.Columns |], ReadOnlyMemory<single>(inputValues))
+    use destination = backend.Allocate(TensorShape.Create [| tokens; matrix.Rows |])
+
+    backend.MatMul(weights, input, destination)
+
+    let result = download backend destination
+    let decoded = Array.zeroCreate<single> matrix.Columns
+    for row in 0 .. matrix.Rows - 1 do
+        matrix.DecodeRow(row, Span<single>(decoded))
+        for token in 0 .. tokens - 1 do
+            let tokenInput = inputValues[token * matrix.Columns .. (token + 1) * matrix.Columns - 1]
+            let products = Array.map2 (fun (weight: single) (value: single) -> float weight * float value) decoded tokenInput
+            let expected = Array.sum products
+            let actual = result[token * matrix.Rows + row]
+            let tolerance = 1e-6 * (products |> Array.sumBy abs) + 1e-30
+            Assert.True(abs (float actual - expected) <= tolerance, $"Token {token}, row {row}: expected {expected}, got {actual}.")
+    Assert.Equal<single>(inputValues, download backend input)
+
+[<Fact>]
+let ``MatMul matches decoded rows in double precision for every encoding and batch size`` () =
+    use backend = cpu ()
+    let random = Random(1819)
+    let cases =
+        [ TensorEncoding.F32, 67
+          TensorEncoding.F16, 64
+          TensorEncoding.BF16, 64
+          TensorEncoding.Q4_0, 96
+          TensorEncoding.Q8_0, 96
+          TensorEncoding.Q4_K, 512
+          TensorEncoding.Q6_K, 512 ]
+
+    for encoding, columns in cases do
+        let matrix = matrixOf encoding 7 columns (randomPayload random encoding 7 columns)
+        for tokens in [ 1; 2; 5 ] do
+            let inputValues = Array.init (tokens * columns) (fun _ -> float32 (random.NextDouble() * 2.0 - 1.0))
+            assertMatMul backend matrix tokens inputValues
+
+[<Fact>]
+let ``MatMul gives each token exactly its MatVec result`` () =
+    use backend = cpu ()
+    let random = Random(2021)
+    let matrix = matrixOf TensorEncoding.Q4_K 16 3072 (randomPayload random TensorEncoding.Q4_K 16 3072)
+    let inputValues = Array.init (4 * 3072) (fun _ -> float32 (random.NextDouble() * 2.0 - 1.0))
+    use weights = backend.UploadWeights(matrix)
+    use input = backend.Upload(TensorShape.Create [| 4; 3072 |], ReadOnlyMemory<single>(inputValues))
+    use destination = backend.Allocate(TensorShape.Create [| 4; 16 |])
+
+    backend.MatMul(weights, input, destination)
+
+    let batched = download backend destination
+    for token in 0 .. 3 do
+        use vector = backend.Upload(TensorShape.Create [| 3072 |], ReadOnlyMemory<single>(inputValues, token * 3072, 3072))
+        use output = backend.Allocate(TensorShape.Create [| 16 |])
+        backend.MatVec(weights, vector, output)
+        Assert.Equal<single>(download backend output, batched[token * 16 .. token * 16 + 15])
+
+[<Fact>]
+let ``MatMul accepts an empty batch as a no-op`` () =
+    use backend = cpu ()
+    use weights = backend.UploadWeights(matrixOf TensorEncoding.F32 2 3 (Array.zeroCreate 24))
+    use input = backend.Allocate(TensorShape.Create [| 0; 3 |])
+    use destination = backend.Allocate(TensorShape.Create [| 0; 2 |])
+
+    backend.MatMul(weights, input, destination)
+
+    Assert.Empty(download backend destination)
+
+[<Fact>]
+let ``MatMul validates shapes aliasing ownership and disposal before writing`` () =
+    use backend = cpu ()
+    use otherBackend = cpu ()
+    let matrix = matrixOf TensorEncoding.F32 4 4 (Array.zeroCreate 64)
+    use weights = backend.UploadWeights(matrix)
+    use foreignWeights = otherBackend.UploadWeights(matrix)
+    let disposedWeights = backend.UploadWeights(matrix)
+    disposedWeights.Dispose()
+    let batch () = backend.Upload(TensorShape.Create [| 2; 4 |], ReadOnlyMemory<single>(Array.create 8 1.0f))
+    use input = batch ()
+    use destination = backend.Upload(TensorShape.Create [| 2; 4 |], ReadOnlyMemory<single>(Array.create 8 42.0f))
+    use vector = backend.Allocate(TensorShape.Create [| 4 |])
+    use narrowInput = backend.Allocate(TensorShape.Create [| 2; 3 |])
+    use otherTokenCount = backend.Allocate(TensorShape.Create [| 3; 4 |])
+    use wideDestination = backend.Allocate(TensorShape.Create [| 2; 5 |])
+    use foreignInput = otherBackend.Allocate(TensorShape.Create [| 2; 4 |])
+    let disposedInput = batch ()
+    disposedInput.Dispose()
+
+    let shapeError = Assert.Throws<ArgumentException>(fun () -> backend.MatMul(weights, narrowInput, destination))
+    Assert.Contains("[tokens; 4]", shapeError.Message)
+    Assert.Contains("[2; 3]", shapeError.Message)
+    Assert.Throws<ArgumentException>(fun () -> backend.MatMul(weights, vector, destination)) |> ignore
+    Assert.Throws<ArgumentException>(fun () -> backend.MatMul(weights, input, otherTokenCount)) |> ignore
+    Assert.Throws<ArgumentException>(fun () -> backend.MatMul(weights, input, wideDestination)) |> ignore
+    Assert.Throws<ArgumentException>(fun () -> backend.MatMul(weights, input, input)) |> ignore
+    Assert.Throws<ArgumentException>(fun () -> backend.MatMul(foreignWeights, input, destination)) |> ignore
+    Assert.Throws<ArgumentException>(fun () -> backend.MatMul(weights, foreignInput, destination)) |> ignore
+    Assert.Throws<ObjectDisposedException>(fun () -> backend.MatMul(disposedWeights, input, destination)) |> ignore
+    Assert.Throws<ObjectDisposedException>(fun () -> backend.MatMul(weights, disposedInput, destination)) |> ignore
+    Assert.Equal<single>(Array.create 8 42.0f, download backend destination)
+
 let private createBackend name =
     match name with
     | "CPU" -> cpu ()
@@ -605,7 +712,8 @@ let ``GPU operations explicitly fail without requiring GPU hardware`` name =
           (fun () -> backend.SwiGlu(tensor, tensor, tensor))
           (fun () -> backend.RmsNorm(tensor, tensor, 1e-5f, tensor))
           (fun () -> backend.EmbeddingLookup(weights, ReadOnlyMemory<int>([| 0 |]), tensor))
-          (fun () -> backend.MatVec(weights, tensor, tensor)) ]
+          (fun () -> backend.MatVec(weights, tensor, tensor))
+          (fun () -> backend.MatMul(weights, tensor, tensor)) ]
 
     let expectedKind = if name = "CUDA" then BackendKind.Cuda else BackendKind.Metal
     Assert.Equal(expectedKind, backend.Backend)
@@ -636,3 +744,4 @@ let ``disposed backends reject all operations and allow repeated disposal`` name
     Assert.Throws<ObjectDisposedException>(fun () -> backend.RmsNorm(tensor, tensor, 1e-5f, tensor)) |> ignore
     Assert.Throws<ObjectDisposedException>(fun () -> backend.EmbeddingLookup(weights, ReadOnlyMemory<int>([| 0 |]), tensor)) |> ignore
     Assert.Throws<ObjectDisposedException>(fun () -> backend.MatVec(weights, tensor, tensor)) |> ignore
+    Assert.Throws<ObjectDisposedException>(fun () -> backend.MatMul(weights, tensor, tensor)) |> ignore

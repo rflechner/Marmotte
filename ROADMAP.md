@@ -111,8 +111,10 @@ Matrix products:
   embeddings are tied and the LM head reuses the embedding matrix. Checked on
   the local file: each of 10 sample tokens gets the highest logit for its own
   normalized embedding.
-- [ ] Matrix-matrix products over the same weights, so that prompt processing
-  handles several tokens per pass.
+- [x] Matrix-matrix products over the same weights, so that prompt processing
+  handles several tokens per pass. `IMatMulKernel` takes `[tokens; columns]`
+  inputs; `Marmotte.Cpu` decodes each weight row once for the whole batch,
+  which makes 64-token batches about 3× faster per token than `MatVec`.
 
 Attention:
 

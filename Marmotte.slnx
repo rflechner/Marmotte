@@ -15,6 +15,13 @@
     <File Path="docs\inference-pipeline.md" />
     <File Path="docs\inference-pipeline.png" />
     <File Path="docs\kernels.md" />
+    <File Path="docs\kernel-add.png" />
+    <File Path="docs\kernel-swiglu.png" />
+    <File Path="docs\kernel-rmsnorm.png" />
+    <File Path="docs\kernel-embedding.png" />
+    <File Path="docs\kernel-matvec.png" />
+    <File Path="docs\kernel-matmul.png" />
+    <File Path="docs\kernel-illustrations.prompt.txt" />
     <File Path="docs\safetensors-format.png" />
     <File Path="docs\safetensors.md" />
     <File Path="docs\tensor-storage-modes.png" />
