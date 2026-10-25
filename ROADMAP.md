@@ -118,15 +118,17 @@ Matrix products:
 
 Attention:
 
-- [ ] RoPE on Q (32 heads) and K (8 heads), not V, over the full 128-value head.
+- [x] RoPE on Q (32 heads) and K (8 heads), not V, over the full 128-value head.
   `mistral3` uses llama.cpp's "normal" variant, which rotates consecutive pairs
   of values (`LLAMA_ROPE_TYPE_NORM`), with base frequency 1,000,000 and the
-  token's absolute position.
+  token's absolute position. `IRopeKernel` and `RotaryEmbedding` in Core support
+  both pairings; `Marmotte.Cpu` computes the angles in double precision.
 - [ ] YaRN frequency correction: scaling factor 16, original context 16,384,
   `beta_fast` 32 and `beta_slow` 1. With `yarn_log_multiplier` = 1, the
   attention magnitude correction computed in llama.cpp's `src/llama-context.cpp`
   should cancel out for this model. Implement the general formula, and check
-  this case against ggml's RoPE implementation.
+  this case against ggml's RoPE implementation. `RotaryEmbedding.Create`
+  accepts the corrected frequencies and magnitude.
 - [ ] Attention temperature: after RoPE, multiply Q by
   `1 + β × ln(floor(p / L) + 1)`, where `p` is the token position,
   β = `attention.temperature_scale` (0.1) and

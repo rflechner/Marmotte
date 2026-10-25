@@ -713,7 +713,8 @@ let ``GPU operations explicitly fail without requiring GPU hardware`` name =
           (fun () -> backend.RmsNorm(tensor, tensor, 1e-5f, tensor))
           (fun () -> backend.EmbeddingLookup(weights, ReadOnlyMemory<int>([| 0 |]), tensor))
           (fun () -> backend.MatVec(weights, tensor, tensor))
-          (fun () -> backend.MatMul(weights, tensor, tensor)) ]
+          (fun () -> backend.MatMul(weights, tensor, tensor))
+          (fun () -> backend.Rope(tensor, ReadOnlyMemory<int>([| 0 |]), RotaryEmbedding.Standard(2, 10000.0, RopePairing.AdjacentPairs), tensor)) ]
 
     let expectedKind = if name = "CUDA" then BackendKind.Cuda else BackendKind.Metal
     Assert.Equal(expectedKind, backend.Backend)
@@ -745,3 +746,4 @@ let ``disposed backends reject all operations and allow repeated disposal`` name
     Assert.Throws<ObjectDisposedException>(fun () -> backend.EmbeddingLookup(weights, ReadOnlyMemory<int>([| 0 |]), tensor)) |> ignore
     Assert.Throws<ObjectDisposedException>(fun () -> backend.MatVec(weights, tensor, tensor)) |> ignore
     Assert.Throws<ObjectDisposedException>(fun () -> backend.MatMul(weights, tensor, tensor)) |> ignore
+    Assert.Throws<ObjectDisposedException>(fun () -> backend.Rope(tensor, ReadOnlyMemory<int>([| 0 |]), RotaryEmbedding.Standard(2, 10000.0, RopePairing.AdjacentPairs), tensor)) |> ignore

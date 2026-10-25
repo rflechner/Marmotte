@@ -21,6 +21,9 @@
     <File Path="docs\kernel-embedding.png" />
     <File Path="docs\kernel-matvec.png" />
     <File Path="docs\kernel-matmul.png" />
+    <File Path="docs\kernel-rope.png" />
+    <File Path="docs\kernel-yarn.png" />
+    <File Path="docs\rope-yarn-illustrations.prompt.txt" />
     <File Path="docs\kernel-illustrations.prompt.txt" />
     <File Path="docs\safetensors-format.png" />
     <File Path="docs\safetensors.md" />
@@ -30,6 +33,7 @@
   </Folder>
   <Folder Name="/examples/">
     <File Path="examples/Add.fsx" />
+    <File Path="examples\Embedding.fsx" />
   </Folder>
   <Folder Name="/src/">
     <Project Path="src/Marmotte.Cli/Marmotte.Cli.fsproj" />

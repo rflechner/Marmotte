@@ -4,6 +4,7 @@
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="CpuKernels.fs" />
     <Compile Include="CpuBackend.fs" />
   </ItemGroup>
   <ItemGroup>

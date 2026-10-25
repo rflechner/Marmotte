@@ -169,6 +169,21 @@ type IMatMulKernel =
     /// row. Ownership, validation, ordering and tolerances otherwise follow IMatVecKernel.MatVec.
     abstract MatMul: weights: IWeightTensor * input: ITensor * destination: ITensor -> unit
 
+/// Rotary position embedding (RoPE): rotates pairs of values in every head of a token by angles
+/// proportional to its position, so that attention scores between queries and keys depend on their
+/// relative positions. Models apply it to queries and keys, not values.
+type IRopeKernel =
+    /// Input and destination have the same shape, of rank 2 or more. The first dimension counts
+    /// tokens, and each token's values are consecutive heads of embedding.HeadDimension values, so
+    /// both [tokens; heads × HeadDimension] and [tokens; heads; HeadDimension] are accepted.
+    /// positions holds each token's absolute position, at least 0, and is read before the call
+    /// returns. A pair (a, b) at angle θ becomes (m × (a cos θ - b sin θ), m × (a sin θ + b cos θ)),
+    /// with m = embedding.Magnitude and the pairing of the embedding. Destination may be input.
+    /// Ownership, validation and ordering follow IAddKernel.Add; positions.Length must equal the
+    /// token count, and a negative position raises ArgumentOutOfRangeException. Implementations
+    /// approximate sines and cosines differently, so compare results with a tolerance.
+    abstract Rope: input: ITensor * positions: ReadOnlyMemory<int> * embedding: RotaryEmbedding * destination: ITensor -> unit
+
 /// Creates and operates on its own tensors. Separate instances are separate ownership domains,
 /// even when their Backend values match.
 ///
@@ -194,6 +209,7 @@ type ITensorBackend =
     inherit IEmbeddingKernel
     inherit IMatVecKernel
     inherit IMatMulKernel
+    inherit IRopeKernel
 
     abstract Backend: BackendKind
 

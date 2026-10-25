@@ -42,5 +42,8 @@ type MetalBackend() =
     interface IMatMulKernel with
         member _.MatMul(_, _, _) = notImplemented "matrix-matrix product"
 
+    interface IRopeKernel with
+        member _.Rope(_, _, _, _) = notImplemented "RoPE kernel"
+
     interface IDisposable with
         member _.Dispose() = disposed <- true

@@ -149,14 +149,14 @@ names and model configuration are not implemented yet.
 
 `Marmotte.Core` defines `TensorShape`, `ITensor`, `IWeightTensor`, `IAddKernel`,
 `ISwiGluKernel`, `IRmsNormKernel`, `IEmbeddingKernel`, `IMatVecKernel`,
-`IMatMulKernel` and `ITensorBackend`.
+`IMatMulKernel`, `IRopeKernel` and `ITensorBackend`, plus `RotaryEmbedding`.
 The three backend projects share these contracts:
 
 - `Marmotte.Cpu`: owned F32 arrays, explicit upload/download, weight tensors that
   retain the stored payload, `Add`, SwiGLU and RMS normalization kernels
   vectorized with `Vector<T>`, embedding lookup, and matrix-vector and
-  matrix-matrix products over stored weights; all decode rows with Core's
-  `RowDecoder`.
+  matrix-matrix products over stored weights, which all decode rows with Core's
+  `RowDecoder`, and rotary position embedding.
 - `Marmotte.Cuda` and `Marmotte.Metal`: buildable placeholders whose allocation,
   transfers and kernels raise `NotImplementedException`, without requiring a GPU SDK.
 
@@ -174,6 +174,9 @@ rules; its exponential makes results differ from other implementations by a few
 units in the last place. `RmsNorm(input, weight, epsilon, destination)`
 normalizes each row along the last dimension and multiplies it by an F32 weight
 vector; its CPU implementation sums the squares in double precision.
+`Rope(input, positions, embedding, destination)` rotates pairs of values in every
+head by angles proportional to each token's position, with the frequencies and
+pairing of a `RotaryEmbedding`.
 
 `EmbeddingLookup(weights, tokenIds, destination)` decodes selected vocabulary
 rows into a preallocated F32 tensor of shape `[tokenIds.Length; weights.Columns]`,

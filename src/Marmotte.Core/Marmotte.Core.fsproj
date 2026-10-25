@@ -11,6 +11,7 @@
         <Compile Include="RowDecoder.fs" />
         <Compile Include="FileTensorSource.fs" />
         <Compile Include="WeightMatrix.fs" />
+        <Compile Include="RotaryEmbedding.fs" />
         <Compile Include="Compute.fs" />
     </ItemGroup>
 
