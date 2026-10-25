@@ -39,10 +39,14 @@ local check.
 
 ### Tensor decoding
 
-- [x] Decode F32, F16, BF16, Q4_0 and Q8_0 rows in the CPU embedding kernel.
+- [x] Decode F32, F16, BF16, Q4_0 and Q8_0 rows, so that synthetic models and the
+  quantizer's output can run, in Core's `RowDecoder`, shared by embedding
+  lookup and matrix products.
 - [x] Decode Q4_K and Q6_K rows, required by the target model.
 - [x] Verify block layouts against llama.cpp's reference implementation with
-  independently encoded fixtures.
+  independently encoded fixtures: `ggml-common.h` and `ggml-quants.c`, checked
+  on 2026-10-25, with blocks packed by hand in `RowDecoderTests` and the
+  embedding fixtures of `EmbeddingTests`.
 
 ### Model configuration
 
@@ -92,17 +96,21 @@ Contracts and element-wise operations:
 
 Matrix products:
 
-- [ ] Matrix-vector product over `Q4_K` and `Q6_K` rows, with F32 input and
-  output: one dot product per weight row. Each block uses seven:
+- [x] Matrix-vector product over `Q4_K` and `Q6_K` rows, with F32 input and
+  output: one dot product per weight row. `IMatVecKernel` in Core accepts every
+  `TensorEncoding`; `Marmotte.Cpu` decodes one row at a time and sums in double
+  precision. Each block uses seven:
   - `attn_q`: 4,096 × 3,072, `Q4_K`;
   - `attn_k` and `attn_v`: 1,024 × 3,072, `Q4_K`, except `attn_v` in `Q6_K` in
     half of the blocks;
   - `attn_output`: 3,072 × 4,096, `Q4_K`;
   - `ffn_gate` and `ffn_up`: 9,216 × 3,072, `Q4_K`;
   - `ffn_down`: 3,072 × 9,216, `Q4_K`, or `Q6_K` in half of the blocks.
-- [ ] LM head: the same product with `token_embd.weight` (`Q6_K`,
+- [x] LM head: the same product with `token_embd.weight` (`Q6_K`,
   131,072 × 3,072). The file has no `output.weight`: as in llama.cpp, the
-  embeddings are tied and the LM head reuses the embedding matrix.
+  embeddings are tied and the LM head reuses the embedding matrix. Checked on
+  the local file: each of 10 sample tokens gets the highest logit for its own
+  normalized embedding.
 - [ ] Matrix-matrix products over the same weights, so that prompt processing
   handles several tokens per pass.
 

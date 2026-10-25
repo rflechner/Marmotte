@@ -11,7 +11,7 @@ work. Illustrations are conceptual aids, not executable format specifications.
 | [GGUF](gguf.md) | Binary layout, parser and native quantization contracts | Index reading, tensor source and F32/F16/BF16 to Q4_0/Q8_0 conversion implemented |
 | [Safetensors](safetensors.md) | JSON header, packed data, and index reader | Index reader and tensor source implemented, including `info` |
 | [From model files to a response](inference-pipeline.md) | Illustrated loading, embeddings, attention, KV cache and generation pipeline | Conceptual guide; inference is planned |
-| [Execution tensors and kernels](kernels.md) | GGUF-to-kernel diagram, compute contracts, transfers, ownership and backend examples | CPU Add, SwiGLU, RMS normalization and embedding lookup implemented; CUDA/Metal placeholders |
+| [Execution tensors and kernels](kernels.md) | GGUF-to-kernel diagram, compute contracts, transfers, ownership and backend examples | CPU Add, SwiGLU, RMS normalization, embedding lookup and MatVec implemented; CUDA/Metal placeholders |
 | Storage and strides below | Concepts for tensor access and execution | Copying tensor source and weight matrix rows implemented; no mapped storage or strided views |
 
 `Marmotte.Core` contains shared helpers and
@@ -24,7 +24,8 @@ sources copy validated payloads on request, and the separate quantizer streams
 weight blocks. Nothing exposes mapped tensors or runs inference yet. Future
 storage types should follow actual consumers rather than being inferred from
 these pictures. Separately, execution tensors now support contiguous F32 `Add`,
-SwiGLU and RMS normalization on CPU, plus embedding lookup from stored weights,
+SwiGLU and RMS normalization on CPU, plus embedding lookup and matrix-vector
+products over stored weights,
 through shared contracts; CUDA and Metal expose explicit placeholders.
 
 ## From Model Files to Text

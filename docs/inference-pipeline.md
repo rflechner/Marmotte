@@ -155,8 +155,8 @@ finished answers, and must match the exact processed prefix and positions.
 | GGUF metadata and tensor index | Implemented, including `info` |
 | F32/F16/BF16 to Q4_0/Q8_0 file conversion | Implemented through `quantize`; an offline conversion operation |
 | Safetensors tensor index | Implemented for single files, including `info`; shards planned |
-| Runtime tensor access | Format-neutral tensor source for both formats, copying payloads, and weight matrix rows; memory mapping planned |
-| Execution tensors and kernels | Contiguous F32 contracts with CPU Add, SwiGLU and RMS normalization; CUDA/Metal placeholders. See [kernel contracts](kernels.md) |
+| Runtime tensor access | Format-neutral tensor source for both formats, copying payloads, weight matrix rows and row decoding; memory mapping planned |
+| Execution tensors and kernels | Contiguous F32 contracts with CPU Add, SwiGLU, RMS normalization and MatVec; CUDA/Metal placeholders. See [kernel contracts](kernels.md) |
 | Token embeddings | CPU lookup decodes selected rows in all seven runtime encodings into F32, without scaling; CUDA/Metal placeholders |
 | Tokenizer | Planned |
 | Transformer kernels, KV cache and response generation | Planned; CPU first, then CUDA/Metal |

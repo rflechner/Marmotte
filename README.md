@@ -140,19 +140,22 @@ split GGUF file raises it too.
 The source keeps its file open until it is disposed. Each payload request copies
 the tensor's validated byte range into a managed array with positional reads,
 which can run concurrently. A payload must therefore fit in one array, and
-loaded weights occupy as much memory as in the file. CPU embedding lookup decodes
-selected rows on demand. Memory mapping, architecture-specific tensor names and
-model configuration are not implemented yet.
+loaded weights occupy as much memory as in the file. `matrix.DecodeRow(row, span)`
+decodes one row of any `TensorEncoding` into F32 values, and CPU embedding lookup
+decodes selected rows on demand. Memory mapping, architecture-specific tensor
+names and model configuration are not implemented yet.
 
 ## Execution tensors and kernels
 
 `Marmotte.Core` defines `TensorShape`, `ITensor`, `IWeightTensor`, `IAddKernel`,
-`ISwiGluKernel`, `IRmsNormKernel`, `IEmbeddingKernel` and `ITensorBackend`.
+`ISwiGluKernel`, `IRmsNormKernel`, `IEmbeddingKernel`, `IMatVecKernel` and
+`ITensorBackend`.
 The three backend projects share these contracts:
 
 - `Marmotte.Cpu`: owned F32 arrays, explicit upload/download, weight tensors that
-  retain the stored payload, and `Add`, SwiGLU and RMS normalization kernels
-  vectorized with `Vector<T>`, plus embedding lookup with scalar row decoding.
+  retain the stored payload, `Add`, SwiGLU and RMS normalization kernels
+  vectorized with `Vector<T>`, embedding lookup, and a matrix-vector product over
+  stored weights; both decode rows with Core's `RowDecoder`.
 - `Marmotte.Cuda` and `Marmotte.Metal`: buildable placeholders whose allocation,
   transfers and kernels raise `NotImplementedException`, without requiring a GPU SDK.
 
@@ -162,7 +165,8 @@ effect in submission order and may return before they complete; `Download` and
 `Synchronize` wait for them. Tensors belong to the backend instance that created
 them, transfers are explicit, and disposing a backend releases the tensors it
 still owns. `UploadWeights` places a `WeightMatrix` on a backend in its stored
-encoding, without decoding it.
+encoding, without decoding it, and `MatVec(weights, input, destination)` multiplies
+those weights by an F32 vector, decoding one row at a time.
 `SwiGlu(gate, up, destination)` computes `silu(gate) × up` under the same tensor
 rules; its exponential makes results differ from other implementations by a few
 units in the last place. `RmsNorm(input, weight, epsilon, destination)`
@@ -372,8 +376,9 @@ and output protection. Safetensors tests encode JSON headers and data buffers
 directly. CLI tests run the application against temporary GGUF and Safetensors
 fixtures and check both commands, argument handling, and errors. Core tests
 check tensor sources and weight matrices with an in-memory source and temporary
-files. Backend tests check F32 addition, SwiGLU and RMS normalization against
-scalar and double-precision references, embedding lookup against independently
+files, and row decoding against blocks packed by hand. Backend tests check F32
+addition, SwiGLU, RMS normalization and matrix-vector products against scalar
+and double-precision references, embedding lookup against independently
 specified floating-point and quantized bytes, shape and ID validation, buffer
 ownership, transfers and disposal, plus explicit CUDA/Metal placeholder failures.
 No model or weight download is required.

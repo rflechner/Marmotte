@@ -1,6 +1,7 @@
 namespace Marmotte.Cpu
 
 open System
+open System.Buffers
 open System.Collections.Generic
 open System.Numerics
 open System.Runtime.InteropServices
@@ -108,6 +109,46 @@ module private CpuKernels =
                 let scale = float32 (1.0 / Math.Sqrt(mean + float epsilon))
                 scaleRow inputRow scale weight (destination.Slice(row * columns, columns))
 
+    /// Multiplies left[i] by right[i] at every position of two equal-length spans and returns the
+    /// sum of those products (their dot product). Products are formed and summed in double
+    /// precision, in two vector accumulators, so long rows keep F32 accuracy even when terms cancel.
+    let private sumOfProducts (left: ReadOnlySpan<single>) (right: ReadOnlySpan<single>) =
+        let mutable sum = 0.0
+        let mutable firstScalar = 0
+        if Vector.IsHardwareAccelerated then
+            let leftVectors = MemoryMarshal.Cast<single, Vector<single>>(left)
+            let rightVectors = MemoryMarshal.Cast<single, Vector<single>>(right)
+            let mutable lowSum = Vector<double>.Zero
+            let mutable highSum = Vector<double>.Zero
+            for index = 0 to leftVectors.Length - 1 do
+                let leftVector = leftVectors[index]
+                let rightVector = rightVectors[index]
+                lowSum <- lowSum + Vector.WidenLower(leftVector) * Vector.WidenLower(rightVector)
+                highSum <- highSum + Vector.WidenUpper(leftVector) * Vector.WidenUpper(rightVector)
+            sum <- Vector.Sum(lowSum + highSum)
+            firstScalar <- leftVectors.Length * Vector<single>.Count
+
+        for index = firstScalar to left.Length - 1 do
+            sum <- sum + float left[index] * float right[index]
+        sum
+
+    /// destination[r] = Σ weights[r, c] × input[c]. Decodes one weight row at a time into a pooled
+    /// F32 buffer of Columns values, then sums its products with input. Destination must not
+    /// overlap input, which every row reads in full.
+    let matVec (weights: WeightMatrix, input: ReadOnlySpan<single>, destination: Span<single>) =
+        if input.Length <> weights.Columns || destination.Length <> weights.Rows then
+            invalidArg (nameof destination) "MatVec spans must match the weight matrix columns and rows."
+
+        let columns = weights.Columns
+        let buffer = ArrayPool<single>.Shared.Rent(columns)
+        try
+            for row = 0 to weights.Rows - 1 do
+                weights.DecodeRow(row, Span<single>(buffer, 0, columns))
+                let decodedRow = ReadOnlySpan<single>(buffer, 0, columns)
+                destination[row] <- float32 (sumOfProducts decodedRow input)
+        finally
+            ArrayPool<single>.Shared.Return(buffer)
+
 /// Storage that its backend releases when the backend itself is disposed.
 type private ICpuStorage =
     /// Marks the storage disposed and drops its buffer, without notifying the backend.
@@ -203,6 +244,11 @@ type CpuBackend() =
         if reference.Shape <> tensor.Shape then
             invalidArg argumentName $"{operation} requires identical shapes, not {reference.Shape} and {tensor.Shape}; broadcasting is not supported."
 
+    /// Requires a vector of the given length, such as a weight per column or a matrix product operand.
+    let requireVector (operation: string) argumentName (tensor: ITensor) (length: int) =
+        if tensor.Shape.Rank <> 1 || tensor.Shape.Dimensions[0] <> length then
+            invalidArg argumentName $"{operation} requires {argumentName} of shape [{length}], not {tensor.Shape}."
+
     let createTensor shape values =
         let tensor = new CpuTensor(owner, shape, values, forget)
         track tensor
@@ -277,9 +323,7 @@ type CpuBackend() =
             if shape.Rank = 0 then
                 invalidArg (nameof input) "RMS normalization requires a rank of at least 1; a scalar has no row to normalize."
 
-            let columns = shape.Dimensions[shape.Rank - 1]
-            if weight.Shape.Rank <> 1 || weight.Shape.Dimensions[0] <> columns then
-                invalidArg (nameof weight) $"RMS normalization of {shape} requires a weight of shape [{columns}], not {weight.Shape}."
+            requireVector $"RMS normalization of {shape}" (nameof weight) weight shape.Dimensions[shape.Rank - 1]
             requireSameShape "RMS normalization" input (nameof destination) destination
             if not (Single.IsFinite epsilon) || epsilon <= 0.0f then
                 raise (ArgumentOutOfRangeException(nameof epsilon, box epsilon, "Epsilon must be finite and positive."))
@@ -303,7 +347,22 @@ type CpuBackend() =
 
             for index = 0 to ids.Length - 1 do
                 let output = destinationValues.AsSpan(index * matrix.Columns, matrix.Columns)
-                WeightRowDecoder.decode matrix ids[index] output
+                matrix.DecodeRow(ids[index], output)
+
+    interface IMatVecKernel with
+        member this.MatVec(weights, input, destination) =
+            ObjectDisposedException.ThrowIf(disposed, this)
+            let matrix = weightsOf (nameof weights) weights
+            let inputValues = valuesOf (nameof input) input
+            let destinationValues = valuesOf (nameof destination) destination
+
+            let operation = $"MatVec with {matrix.Rows} × {matrix.Columns} weights"
+            requireVector operation (nameof input) input matrix.Columns
+            requireVector operation (nameof destination) destination matrix.Rows
+            if Object.ReferenceEquals(input, destination) then
+                invalidArg (nameof destination) "MatVec destination must differ from its input, which every output reads in full."
+
+            CpuKernels.matVec (matrix, ReadOnlySpan<single>(inputValues), Span<single>(destinationValues))
 
     interface IDisposable with
         member _.Dispose() =

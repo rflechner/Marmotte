@@ -1,6 +1,7 @@
 module Marmotte.Backends.Tests
 
 open System
+open System.Buffers.Binary
 open System.Collections.Generic
 open Marmotte.Core
 open Marmotte.Cpu
@@ -15,27 +16,30 @@ let private download (backend: ITensorBackend) (tensor: ITensor) =
     backend.Download(tensor, values.AsMemory())
     values
 
-/// Serves one Q4_0 matrix of two rows from memory: two 18-byte blocks per 64-value row.
-type private MatrixSource() =
+/// Serves one matrix from memory, to build a WeightMatrix without a file format.
+type private MatrixSource(encoding: TensorEncoding, rows: int, columns: int, payload: byte array) =
     let descriptor =
         { Name = "blk.0.attn_q.weight"
-          Encoding = Some TensorEncoding.Q4_0
-          SourceEncoding = "Q4_0"
-          Shape = [| 2UL; 64UL |]
-          ElementCount = 128UL
-          ByteSize = Some 72UL }
+          Encoding = Some encoding
+          SourceEncoding = string encoding
+          Shape = [| uint64 rows; uint64 columns |]
+          ElementCount = uint64 rows * uint64 columns
+          ByteSize = Some(uint64 payload.Length) }
 
     interface ITensorSource with
         member _.Tensors = [| descriptor |] :> IReadOnlyList<TensorDescriptor>
         member _.TryFindTensor(name) = if name = descriptor.Name then Some descriptor else None
-        member _.ReadPayload(_) = ReadOnlyMemory<byte>(Array.zeroCreate 72)
+        member _.ReadPayload(_) = ReadOnlyMemory<byte>(payload)
 
     interface IDisposable with
         member _.Dispose() = ()
 
-let private weightMatrix () =
-    use source = new MatrixSource()
+let private matrixOf encoding rows columns payload =
+    use source = new MatrixSource(encoding, rows, columns, payload)
     WeightMatrix.Read(source, "blk.0.attn_q.weight")
+
+/// A Q4_0 matrix of two rows: two 18-byte blocks per 64-value row.
+let private weightMatrix () = matrixOf TensorEncoding.Q4_0 2 64 (Array.zeroCreate 72)
 
 [<Fact>]
 let ``Add computes matrices scalars and empty tensors without modifying separate inputs`` () =
@@ -203,6 +207,10 @@ let ``null shapes and tensors are rejected`` () =
     Assert.Throws<ArgumentNullException>(fun () -> backend.Upload(nullShape, ReadOnlyMemory<single>.Empty) |> ignore) |> ignore
     Assert.Throws<ArgumentNullException>(fun () -> backend.Download(nullTensor, Memory<single>.Empty)) |> ignore
     Assert.Throws<ArgumentNullException>(fun () -> backend.UploadWeights(Unchecked.defaultof<WeightMatrix>) |> ignore) |> ignore
+    Assert.Throws<ArgumentNullException>(fun () -> backend.MatVec(Unchecked.defaultof<IWeightTensor>, tensor, tensor)) |> ignore
+    use weights = backend.UploadWeights(matrixOf TensorEncoding.F32 1 1 (Array.zeroCreate 4))
+    Assert.Throws<ArgumentNullException>(fun () -> backend.MatVec(weights, nullTensor, tensor)) |> ignore
+    Assert.Throws<ArgumentNullException>(fun () -> backend.MatVec(weights, tensor, nullTensor)) |> ignore
     for left, right, destination in [ nullTensor, tensor, tensor; tensor, nullTensor, tensor; tensor, tensor, nullTensor ] do
         Assert.Throws<ArgumentNullException>(fun () -> backend.Add(left, right, destination)) |> ignore
         Assert.Throws<ArgumentNullException>(fun () -> backend.SwiGlu(left, right, destination)) |> ignore
@@ -441,6 +449,136 @@ let ``RmsNorm accepts empty tensors as no-ops`` () =
         backend.RmsNorm(input, weight, 1e-5f, destination)
         Assert.Empty(download backend destination)
 
+/// Random weights in any encoding: floating-point values in [-1, 1], or random quant bytes whose
+/// half-precision super-block scales are replaced by finite values between 1/256 and 1/16.
+let private randomPayload (random: Random) (encoding: TensorEncoding) rows columns =
+    let valueCount = rows * columns
+    let randomFloats () = Array.init valueCount (fun _ -> float32 (random.NextDouble() * 2.0 - 1.0))
+    let writeHalf (bytes: byte array) offset (value: single) =
+        BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(offset, 2), BitConverter.HalfToUInt16Bits(Half.op_Explicit value))
+
+    match encoding with
+    | TensorEncoding.F32 ->
+        let bytes = Array.zeroCreate<byte> (4 * valueCount)
+        randomFloats () |> Array.iteri (fun index value -> BinaryPrimitives.WriteSingleLittleEndian(bytes.AsSpan(4 * index, 4), value))
+        bytes
+    | TensorEncoding.F16 ->
+        let bytes = Array.zeroCreate<byte> (2 * valueCount)
+        randomFloats () |> Array.iteri (fun index value -> writeHalf bytes (2 * index) value)
+        bytes
+    | TensorEncoding.BF16 ->
+        let bytes = Array.zeroCreate<byte> (2 * valueCount)
+        randomFloats ()
+        |> Array.iteri (fun index value ->
+            BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(2 * index, 2), uint16 (BitConverter.SingleToUInt32Bits value >>> 16)))
+        bytes
+    | _ ->
+        let blockBytes = encoding.BlockBytes
+        let bytes = Array.zeroCreate<byte> (valueCount / encoding.BlockElements * blockBytes)
+        random.NextBytes(bytes)
+        // Super-block scale offsets from ggml-common.h: d first, plus dmin for Q4_K; d last for Q6_K.
+        let scaleOffsets =
+            match encoding with
+            | TensorEncoding.Q4_K -> [ 0; 2 ]
+            | TensorEncoding.Q6_K -> [ 208 ]
+            | _ -> [ 0 ]
+        for block in 0 .. bytes.Length / blockBytes - 1 do
+            for offset in scaleOffsets do
+                writeHalf bytes (block * blockBytes + offset) (float32 (1.0 / 256.0 + random.NextDouble() / 16.0))
+        bytes
+
+/// Checks MatVec against decoded rows multiplied in double precision, with a tolerance relative
+/// to the sum of absolute products, since cancellation can make an output much smaller than its terms.
+let private assertMatVec (backend: ITensorBackend) (matrix: WeightMatrix) (inputValues: single array) =
+    use weights = backend.UploadWeights(matrix)
+    use input = backend.Upload(TensorShape.Create [| matrix.Columns |], ReadOnlyMemory<single>(inputValues))
+    use destination = backend.Allocate(TensorShape.Create [| matrix.Rows |])
+
+    backend.MatVec(weights, input, destination)
+
+    let result = download backend destination
+    let decoded = Array.zeroCreate<single> matrix.Columns
+    for row in 0 .. matrix.Rows - 1 do
+        matrix.DecodeRow(row, Span<single>(decoded))
+        let products = Array.map2 (fun (weight: single) (value: single) -> float weight * float value) decoded inputValues
+        let expected = Array.sum products
+        let magnitude = products |> Array.sumBy abs
+        let difference = abs (float result[row] - expected)
+        Assert.True(difference <= 1e-6 * magnitude + 1e-30, $"Row {row}: expected {expected}, got {result[row]}.")
+    Assert.Equal<single>(inputValues, download backend input)
+
+[<Fact>]
+let ``MatVec multiplies small F32 weights row by row`` () =
+    use backend = cpu ()
+    let weightValues = [| 1.0f; 2.0f; 3.0f; 4.0f; 5.0f; 6.0f |]
+    let payload = weightValues |> Array.collect BitConverter.GetBytes
+    use weights = backend.UploadWeights(matrixOf TensorEncoding.F32 2 3 payload)
+    use input = backend.Upload(TensorShape.Create [| 3 |], ReadOnlyMemory<single>([| 1.0f; 0.5f; -1.0f |]))
+    use destination = backend.Allocate(TensorShape.Create [| 2 |])
+
+    backend.MatVec(weights, input, destination)
+
+    Assert.Equal<single>([| -1.0f; 0.5f |], download backend destination)
+
+[<Fact>]
+let ``MatVec matches decoded rows in double precision for every encoding`` () =
+    use backend = cpu ()
+    let random = Random(1415)
+    // Widths cover several blocks, and for floating-point weights the scalar tail of the dot product.
+    let cases =
+        [ TensorEncoding.F32, [ 1; 3; 67 ]
+          TensorEncoding.F16, [ 5; 64 ]
+          TensorEncoding.BF16, [ 7; 64 ]
+          TensorEncoding.Q4_0, [ 32; 96 ]
+          TensorEncoding.Q8_0, [ 32; 96 ]
+          TensorEncoding.Q4_K, [ 256; 512 ]
+          TensorEncoding.Q6_K, [ 256; 512 ] ]
+
+    for encoding, widths in cases do
+        for columns in widths do
+            let matrix = matrixOf encoding 7 columns (randomPayload random encoding 7 columns)
+            let inputValues = Array.init columns (fun _ -> float32 (random.NextDouble() * 2.0 - 1.0))
+            assertMatVec backend matrix inputValues
+
+[<Fact>]
+let ``MatVec handles Ministral-sized Q4_K and Q6_K rows`` () =
+    use backend = cpu ()
+    let random = Random(1617)
+    let inputValues = Array.init 3072 (fun _ -> float32 (random.NextDouble() * 2.0 - 1.0))
+    for encoding in [ TensorEncoding.Q4_K; TensorEncoding.Q6_K ] do
+        assertMatVec backend (matrixOf encoding 16 3072 (randomPayload random encoding 16 3072)) inputValues
+
+[<Fact>]
+let ``MatVec validates shapes aliasing ownership and disposal before writing`` () =
+    use backend = cpu ()
+    use otherBackend = cpu ()
+    let matrix = matrixOf TensorEncoding.F32 4 4 (Array.zeroCreate 64)
+    use weights = backend.UploadWeights(matrix)
+    use foreignWeights = otherBackend.UploadWeights(matrix)
+    let disposedWeights = backend.UploadWeights(matrix)
+    disposedWeights.Dispose()
+    let vector () = backend.Upload(TensorShape.Create [| 4 |], ReadOnlyMemory<single>(Array.create 4 1.0f))
+    use input = vector ()
+    use destination = backend.Upload(TensorShape.Create [| 4 |], ReadOnlyMemory<single>(Array.create 4 42.0f))
+    use shortInput = backend.Allocate(TensorShape.Create [| 3 |])
+    use longDestination = backend.Allocate(TensorShape.Create [| 5 |])
+    use matrixInput = backend.Allocate(TensorShape.Create [| 1; 4 |])
+    use foreignInput = otherBackend.Allocate(TensorShape.Create [| 4 |])
+    let disposedInput = vector ()
+    disposedInput.Dispose()
+
+    let shapeError = Assert.Throws<ArgumentException>(fun () -> backend.MatVec(weights, shortInput, destination))
+    Assert.Contains("[4]", shapeError.Message)
+    Assert.Contains("[3]", shapeError.Message)
+    Assert.Throws<ArgumentException>(fun () -> backend.MatVec(weights, input, longDestination)) |> ignore
+    Assert.Throws<ArgumentException>(fun () -> backend.MatVec(weights, matrixInput, destination)) |> ignore
+    Assert.Throws<ArgumentException>(fun () -> backend.MatVec(weights, input, input)) |> ignore
+    Assert.Throws<ArgumentException>(fun () -> backend.MatVec(foreignWeights, input, destination)) |> ignore
+    Assert.Throws<ArgumentException>(fun () -> backend.MatVec(weights, foreignInput, destination)) |> ignore
+    Assert.Throws<ObjectDisposedException>(fun () -> backend.MatVec(disposedWeights, input, destination)) |> ignore
+    Assert.Throws<ObjectDisposedException>(fun () -> backend.MatVec(weights, disposedInput, destination)) |> ignore
+    Assert.Equal<single>(Array.create 4 42.0f, download backend destination)
+
 let private createBackend name =
     match name with
     | "CPU" -> cpu ()
@@ -466,7 +604,8 @@ let ``GPU operations explicitly fail without requiring GPU hardware`` name =
           (fun () -> backend.Add(tensor, tensor, tensor))
           (fun () -> backend.SwiGlu(tensor, tensor, tensor))
           (fun () -> backend.RmsNorm(tensor, tensor, 1e-5f, tensor))
-          (fun () -> backend.EmbeddingLookup(weights, ReadOnlyMemory<int>([| 0 |]), tensor)) ]
+          (fun () -> backend.EmbeddingLookup(weights, ReadOnlyMemory<int>([| 0 |]), tensor))
+          (fun () -> backend.MatVec(weights, tensor, tensor)) ]
 
     let expectedKind = if name = "CUDA" then BackendKind.Cuda else BackendKind.Metal
     Assert.Equal(expectedKind, backend.Backend)
@@ -496,3 +635,4 @@ let ``disposed backends reject all operations and allow repeated disposal`` name
     Assert.Throws<ObjectDisposedException>(fun () -> backend.SwiGlu(tensor, tensor, tensor)) |> ignore
     Assert.Throws<ObjectDisposedException>(fun () -> backend.RmsNorm(tensor, tensor, 1e-5f, tensor)) |> ignore
     Assert.Throws<ObjectDisposedException>(fun () -> backend.EmbeddingLookup(weights, ReadOnlyMemory<int>([| 0 |]), tensor)) |> ignore
+    Assert.Throws<ObjectDisposedException>(fun () -> backend.MatVec(weights, tensor, tensor)) |> ignore

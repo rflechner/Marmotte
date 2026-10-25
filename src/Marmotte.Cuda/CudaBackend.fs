@@ -36,5 +36,8 @@ type CudaBackend() =
     interface IEmbeddingKernel with
         member _.EmbeddingLookup(_, _, _) = notImplemented "embedding lookup kernel"
 
+    interface IMatVecKernel with
+        member _.MatVec(_, _, _) = notImplemented "matrix-vector product"
+
     interface IDisposable with
         member _.Dispose() = disposed <- true

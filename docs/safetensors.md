@@ -8,8 +8,8 @@ formats, loading a Safetensors file does not execute code.
 validates the header and tensor descriptors of one `.safetensors` file without
 reading the weights, and the CLI's `info` command displays them.
 `SafetensorsTensorSource` copies `F32`, `F16` and `BF16` payloads on request for
-[format-neutral tensor access](../README.md#format-neutral-tensor-access). Sharded
-models and decoding are not implemented; see
+[format-neutral tensor access](../README.md#format-neutral-tensor-access), where
+`RowDecoder` can decode their rows. Sharded models are not implemented; see
 [Marmotte implementation](#marmotte-implementation).
 
 The [upstream format definition](https://github.com/huggingface/safetensors#format)
@@ -270,8 +270,8 @@ Not implemented yet:
 
 - Sharded models described by `model.safetensors.index.json`, and companion files
   such as `config.json` and tokenizer files.
-- Memory-mapped payloads, shared tensor storage, decoding and inference, which
-  belong to later milestones.
+- Memory-mapped payloads, shared tensor storage and inference, which belong to
+  later milestones.
 - An exploration `.fsx` script; the `info` command covers inspection.
 
 ## References

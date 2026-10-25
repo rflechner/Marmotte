@@ -134,6 +134,20 @@ let ``rejects unknown tensors and rows out of range`` () =
     Assert.Throws<ArgumentOutOfRangeException>(fun () -> matrix.Row(-1).Length |> ignore) |> ignore
     Assert.Throws<ArgumentOutOfRangeException>(fun () -> matrix.Row(2).Length |> ignore) |> ignore
 
+[<Fact>]
+let ``decodes one matrix row into exactly Columns values`` () =
+    let values = [| 1.0f; 2.0f; 3.0f; 4.0f; 5.0f; 6.0f |]
+    let payload = values |> Array.collect BitConverter.GetBytes
+    use source = sourceOf [ stored "matrix" (Some TensorEncoding.F32) [ 2UL; 3UL ] payload ]
+    let matrix = WeightMatrix.Read(source, "matrix")
+    let decoded = Array.zeroCreate<single> 3
+
+    matrix.DecodeRow(1, Span<single>(decoded))
+
+    Assert.Equal<single>(values[3..], decoded)
+    Assert.Throws<ArgumentException>(fun () -> matrix.DecodeRow(0, Span<single>(Array.zeroCreate 2))) |> ignore
+    Assert.Throws<ArgumentOutOfRangeException>(fun () -> matrix.DecodeRow(2, Span<single>(decoded))) |> ignore
+
 let private withFile (bytes: byte array) action =
     let path = Path.GetTempFileName()
     try

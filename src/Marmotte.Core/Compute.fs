@@ -146,6 +146,18 @@ type IEmbeddingKernel =
     /// keep the weights' tensor source alive while they are in use.
     abstract EmbeddingLookup: weights: IWeightTensor * tokenIds: ReadOnlyMemory<int> * destination: ITensor -> unit
 
+/// Matrix-vector product with weights kept in their stored encoding:
+/// destination[r] = Σ weights[r, c] × input[c] over the Columns values c of row r.
+type IMatVecKernel =
+    /// Input has shape [Columns] and destination [Rows], both F32. Every tensor must belong to the
+    /// executing backend instance, and destination must not be input, because each output reads
+    /// the whole input. Ownership, validation and ordering otherwise follow IAddKernel.Add.
+    /// Each output sums Columns products, and implementations decode blocks and sum in different
+    /// orders: compare results with a tolerance relative to Σ |weights[r, c] × input[c]|, not to
+    /// the result, which cancellation can make small. Raises NotSupportedException for a weight
+    /// encoding this backend cannot multiply.
+    abstract MatVec: weights: IWeightTensor * input: ITensor * destination: ITensor -> unit
+
 /// Creates and operates on its own tensors. Separate instances are separate ownership domains,
 /// even when their Backend values match.
 ///
@@ -169,6 +181,7 @@ type ITensorBackend =
     inherit ISwiGluKernel
     inherit IRmsNormKernel
     inherit IEmbeddingKernel
+    inherit IMatVecKernel
 
     abstract Backend: BackendKind
 

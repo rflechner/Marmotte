@@ -46,6 +46,13 @@ type WeightMatrix private (name: string, encoding: TensorEncoding, rows: int, co
             raise (ArgumentOutOfRangeException(nameof index, $"Row index must be in [0, {rows})."))
         payload.Span.Slice(index * rowBytes, rowBytes)
 
+    /// Decodes one row into exactly Columns F32 values; see RowDecoder.decode. Raises
+    /// ArgumentOutOfRangeException outside [0, Rows) and ArgumentException for another length.
+    member this.DecodeRow(index: int, destination: Span<single>) =
+        if destination.Length <> columns then
+            invalidArg (nameof destination) $"Row {index} of '{name}' decodes into {columns} values, not {destination.Length}."
+        RowDecoder.decode (encoding, this.Row(index), destination)
+
     /// Reads a rank-2 tensor from a source, checking its shape before reading the payload.
     /// Raises KeyNotFoundException for an unknown name. Raises InvalidDataException for a tensor
     /// without a runtime encoding, another rank, an empty dimension, rows that do not hold whole

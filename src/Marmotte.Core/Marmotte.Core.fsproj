@@ -8,6 +8,7 @@
     <ItemGroup>
         <Compile Include="Helpers.fs" />
         <Compile Include="Tensors.fs" />
+        <Compile Include="RowDecoder.fs" />
         <Compile Include="FileTensorSource.fs" />
         <Compile Include="WeightMatrix.fs" />
         <Compile Include="Compute.fs" />

@@ -4,7 +4,6 @@
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Include="WeightRowDecoder.fs" />
     <Compile Include="CpuBackend.fs" />
   </ItemGroup>
   <ItemGroup>

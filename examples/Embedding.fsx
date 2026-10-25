@@ -1,7 +1,7 @@
 #load "../src/Marmotte.Core/Tensors.fs"
+#load "../src/Marmotte.Core/RowDecoder.fs"
 #load "../src/Marmotte.Core/WeightMatrix.fs"
 #load "../src/Marmotte.Core/Compute.fs"
-#load "../src/Marmotte.Cpu/WeightRowDecoder.fs"
 #load "../src/Marmotte.Cpu/CpuBackend.fs"
 
 open System

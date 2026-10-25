@@ -5,8 +5,9 @@ descriptors, and tensor data in a single file. Marmotte's `Marmotte.Gguf`
 library reads the metadata and tensor index without loading the weights.
 
 This document describes the format and the current F# implementation, including
-native quantization from floating-point weights. General tensor views,
-dequantization, and inference remain future work.
+native quantization from floating-point weights. Rows of supported encodings
+can be dequantized through `Marmotte.Core`; memory-mapped tensor views and
+inference remain future work.
 
 > The imported diagram is a conceptual overview. Its little-endian note omits
 > GGUF v3 big-endian support, its bitwise alignment formula only applies to
@@ -260,7 +261,9 @@ Later steps could:
 
 - Memory-map the file instead of copying payloads.
 - Represent tensor payloads as bounded slices of the mapped storage.
-- Decode or dequantize values only when an execution backend needs them.
+
+`RowDecoder` in `Marmotte.Core` dequantizes one row at a time, only when a kernel
+needs it; see the [matrix-vector product](kernels.md#matrix-vector-product).
 
 ## Native Quantization
 
@@ -374,6 +377,8 @@ Implemented:
 - A format-neutral tensor source through `GgufTensorSource`, copying validated
   payload ranges of `F32`, `F16`, `BF16`, `Q4_0`, `Q8_0`, `Q4_K` and `Q6_K`
   tensors on request
+- Row dequantization of those encodings through `Marmotte.Core`'s `RowDecoder`,
+  verified against blocks packed by hand from `ggml-common.h` layouts
 - Tests for valid files, malformed input, partial reads, and stream ownership
 - A Spectre.Console [`info` command](../README.md#command-line) that accepts a
   local GGUF path and displays a summary, encoding counts, and bounded tensor and
@@ -385,7 +390,7 @@ Implemented:
 Not implemented:
 
 - Memory-mapped storage
-- Quantized-weight decoding or model execution
+- Model execution
 - Requantization, K-quant/IQ encoders and architecture-specific quantization policies
 
 ## References
