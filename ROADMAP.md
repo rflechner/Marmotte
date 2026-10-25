@@ -205,6 +205,8 @@ the reference for results.
 - [x] CUDA F32 device storage, copying transfers, synchronization and native Add
   through P/Invoke, with optional GPU tests against the CPU and a
   [beginner's build guide](docs/cuda.md).
+- [x] F16 execution storage, bit-preserving Half transfers and Add on CPU and CUDA,
+  with explicit format validation, two-byte payloads and precision-specific tests.
 - [x] Define backend contracts for weights kept in their stored encoding,
   submission-ordered execution with explicit synchronization, and tensor
   lifetimes owned by the backend.

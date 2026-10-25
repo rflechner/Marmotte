@@ -21,4 +21,17 @@ let run () =
     backend.Download(destination, result.AsMemory())
     printfn "CUDA Add, then in-place Add: %A" result
 
+    let leftHalf = [| 1.0f; 2.0f; 3.0f; 4.0f; 5.0f; 6.0f |] |> Array.map Half.op_Explicit
+    let rightHalf = [| 10.0f; 20.0f; 30.0f; 40.0f; 50.0f; 60.0f |] |> Array.map Half.op_Explicit
+    use halfLeft = backend.Upload(shape, ReadOnlyMemory<Half>(leftHalf))
+    use halfRight = backend.Upload(shape, ReadOnlyMemory<Half>(rightHalf))
+    use halfDestination = backend.Allocate(shape, TensorEncoding.F16)
+    backend.Add(halfLeft, halfRight, halfDestination)
+    backend.Add(halfDestination, halfLeft, halfDestination)
+
+    // F16 tensors and their transfer buffers use two bytes per element, with no F32 shadow copy.
+    let halfResult = Array.zeroCreate<Half> shape.ElementCount
+    backend.Download(halfDestination, halfResult.AsMemory())
+    printfn "CUDA Half Add, then in-place Add: %A" halfResult
+
 run ()

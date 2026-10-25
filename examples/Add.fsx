@@ -28,6 +28,21 @@ let runAdd (backend: ITensorBackend) =
     backend.Download(destination, result.AsMemory())
     result
 
+// Half buffers stay at two bytes per element. Converting these small literals is explicit.
+let runHalfAdd (backend: ITensorBackend) =
+    let shape = TensorShape.Create [| 2; 3 |]
+    let leftValues = [| 1.0f; 2.0f; 3.0f; 4.0f; 5.0f; 6.0f |] |> Array.map Half.op_Explicit
+    let rightValues = [| 10.0f; 20.0f; 30.0f; 40.0f; 50.0f; 60.0f |] |> Array.map Half.op_Explicit
+    use left = backend.Upload(shape, ReadOnlyMemory<Half>(leftValues))
+    use right = backend.Upload(shape, ReadOnlyMemory<Half>(rightValues))
+    use destination = backend.Allocate(shape, TensorEncoding.F16)
+
+    backend.Add(left, right, destination)
+
+    let result = Array.zeroCreate<Half> shape.ElementCount
+    backend.Download(destination, result.AsMemory())
+    result
+
 // For CUDA, examples/CudaAdd.fsx loads the compiled assembly and its native library.
 let backends =
     [ "CPU", (fun () -> new CpuBackend() :> ITensorBackend)
@@ -37,6 +52,7 @@ for name, createBackend in backends do
     use backend = createBackend ()
     try
         printfn "%s Add: %A" name (runAdd backend)
+        printfn "%s Half Add: %A" name (runHalfAdd backend)
     with :? NotImplementedException as error ->
         // The Metal placeholder fails before a tensor or kernel is created.
         printfn "%s: %s" name error.Message

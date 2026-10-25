@@ -7,6 +7,7 @@
   <ItemGroup>
     <Compile Include="BackendTests.fs" />
     <Compile Include="CudaTests.fs" />
+    <Compile Include="HalfTests.fs" />
     <Compile Include="EmbeddingTests.fs" />
     <Compile Include="RopeTests.fs" />
     <Compile Include="AttentionTemperatureTests.fs" />

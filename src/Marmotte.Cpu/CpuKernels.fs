@@ -6,7 +6,7 @@ open System.Numerics
 open System.Runtime.InteropServices
 open Marmotte.Core
 
-/// The numerical part of the CPU backend: F32 kernels over host spans, with no tensors, ownership
+/// The numerical part of the CPU backend: F32 kernels and F16 Add over host spans, with no tensors, ownership
 /// or lifetime. CpuBackend validates tensors, then calls these functions on the arrays it owns;
 /// each function still checks the span lengths it relies on. Safe and vectorized with Vector<T>,
 /// most kernels process Vector<single>.Count lanes at a time (4 with ARM64 NEON, 8 with AVX2),
@@ -32,6 +32,15 @@ module internal CpuKernels =
             firstScalar <- destinationVectors.Length * Vector<single>.Count
 
         for index = firstScalar to destination.Length - 1 do
+            destination[index] <- left[index] + right[index]
+
+    /// F16 storage throughout. Half addition may promote individual operands to scalar F32,
+    /// then rounds the result to F16; it never materializes an F32 buffer. No SIMD speedup is assumed.
+    let addHalf (left: ReadOnlySpan<Half>, right: ReadOnlySpan<Half>, destination: Span<Half>) =
+        if left.Length <> destination.Length || right.Length <> destination.Length then
+            invalidArg (nameof destination) "Element-wise kernel spans must have the same length."
+
+        for index = 0 to destination.Length - 1 do
             destination[index] <- left[index] + right[index]
 
     /// destination[i] = silu(gate[i]) × up[i], with silu(x) = x / (1 + e^-x). Vector lanes use

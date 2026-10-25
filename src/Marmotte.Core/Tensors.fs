@@ -6,7 +6,7 @@ open System.Collections.Generic
 /// Tensor encodings Marmotte represents at runtime, independent of GGUF's GgmlType and
 /// Safetensors' dtypes. Deliberately narrower than both formats: the encodings of the first
 /// target models. RowDecoder decodes their rows into F32 for embedding lookup and matrix-vector
-/// products; Add, SwiGLU and RMS normalization operate on F32 execution tensors.
+/// products. Add operates on F32 or F16 execution tensors; other kernels currently require F32.
 /// Block layouts follow the reference block definitions cited in docs/gguf.md and match the
 /// GGUF reader's payload size table.
 [<RequireQualifiedAccess>]

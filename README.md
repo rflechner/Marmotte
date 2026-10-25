@@ -156,22 +156,28 @@ names and model configuration are not implemented yet.
 the inverse of `RowDecoder`.
 The three backend projects share these contracts:
 
-- `Marmotte.Cpu`: owned F32 arrays, explicit upload/download, weight tensors that
-  retain the stored payload, `Add`, SwiGLU and RMS normalization kernels
-  vectorized with `Vector<T>`, embedding lookup, and matrix-vector and
+- `Marmotte.Cpu`: owned F32 or F16 arrays, explicit upload/download, weight tensors that
+  retain the stored payload, F32 `Add`, SwiGLU and RMS normalization kernels
+  vectorized with `Vector<T>`, scalar Half `Add`, embedding lookup, and matrix-vector and
   matrix-matrix products over stored weights, which all decode rows with Core's
   `RowDecoder`, rotary position embedding, attention temperature and a
   key-value cache.
-- `Marmotte.Cuda`: owned F32 device tensors, transfers and Add through a native
+- `Marmotte.Cuda`: owned F32 or F16 device tensors, transfers and Add through a native
   CUDA library. Build it automatically with `dotnet build Marmotte.slnx -p:MarmotteBuildCuda=true`.
   Native compilation and GPU tests are optional; see the
   [CUDA guide](docs/cuda.md) for prerequisites, builds and how the backend works.
+  Add has separate [F32 and F16 implementations](docs/cuda.md#kernel-formats-and-file-layout).
   Weight upload, caches and other kernels still raise `NotImplementedException`.
 - `Marmotte.Metal`: a buildable placeholder whose operations raise
   `NotImplementedException`, without requiring a GPU SDK.
 
 `Add` writes into a preallocated destination and requires identical contiguous,
-row-major shapes. In-place addition is supported. Operations on one backend take
+row-major shapes and encodings (all F32 or all F16). `Allocate(shape)` remains F32;
+use `Allocate(shape, TensorEncoding.F16)` and the `Half` overloads of `Upload` and
+`Download` for two-byte F16 storage on CPU or CUDA. Transfers preserve the stored
+bits; no implicit conversion is performed. Other CPU kernels still require F32.
+See [Half Add and memory use](docs/kernels.md#half-add-and-memory-use).
+In-place addition is supported. Operations on one backend take
 effect in submission order and may return before they complete; `Download` and
 `Synchronize` wait for them. Tensors belong to the backend instance that created
 them, transfers are explicit, and disposing a backend releases the tensors it
@@ -410,7 +416,7 @@ and output protection. Safetensors tests encode JSON headers and data buffers
 directly. CLI tests run the application against temporary GGUF and Safetensors
 fixtures and check both commands, argument handling, and errors. Core tests
 check tensor sources and weight matrices with an in-memory source and temporary
-files, and row decoding against blocks packed by hand. Backend tests check F32
+files, and row decoding against blocks packed by hand. Backend tests check F32/F16
 addition, SwiGLU, RMS normalization and matrix-vector products against scalar
 and double-precision references, embedding lookup against independently
 specified floating-point and quantized bytes, shape and ID validation, buffer

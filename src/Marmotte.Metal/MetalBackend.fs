@@ -19,10 +19,13 @@ type MetalBackend() =
     interface ITensorBackend with
         member _.Backend = BackendKind.Metal
         member _.Allocate(_) = notImplemented "tensor allocation"
-        member _.Upload(_, _) = notImplemented "tensor upload"
+        member _.Allocate(_, _) = notImplemented "tensor allocation"
+        member _.Upload(_: TensorShape, _: ReadOnlyMemory<single>) : ITensor = notImplemented "tensor upload"
+        member _.Upload(_: TensorShape, _: ReadOnlyMemory<Half>) : ITensor = notImplemented "tensor upload"
         member _.UploadWeights(_) = notImplemented "weight upload"
         member _.AllocateKeyValueCache(_) = notImplemented "key-value cache allocation"
-        member _.Download(_, _) = notImplemented "tensor download"
+        member _.Download(_: ITensor, _: Memory<single>) : unit = notImplemented "tensor download"
+        member _.Download(_: ITensor, _: Memory<Half>) : unit = notImplemented "tensor download"
         member _.Synchronize() = notImplemented "synchronization"
 
     interface IAddKernel with

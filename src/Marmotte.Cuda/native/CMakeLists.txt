@@ -5,7 +5,10 @@ if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
     message(FATAL_ERROR "Marmotte CUDA requires a 64-bit toolchain.")
 endif()
 
-add_library(marmotte_cuda SHARED CudaRuntime.cu kernels/Add.cu)
+add_library(marmotte_cuda SHARED
+    CudaRuntime.cu
+    kernels/Add.cu
+)
 set_target_properties(marmotte_cuda PROPERTIES
     CUDA_STANDARD 17
     CUDA_STANDARD_REQUIRED YES

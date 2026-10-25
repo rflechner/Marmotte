@@ -2,6 +2,7 @@ namespace Marmotte.Cuda
 
 open System
 open System.Runtime.InteropServices
+open Marmotte.Core
 
 /// Private C ABI. SafeHandle keeps the context alive throughout each native call.
 module private CudaApi =
@@ -25,6 +26,9 @@ module private CudaApi =
     extern int marmotte_cuda_allocate(SafeHandle context, int count, nativeint& buffer)
 
     [<DllImport(library, CallingConvention = CallingConvention.Cdecl)>]
+    extern int marmotte_cuda_allocate_f16(SafeHandle context, int count, nativeint& buffer)
+
+    [<DllImport(library, CallingConvention = CallingConvention.Cdecl)>]
     extern int marmotte_cuda_free(SafeHandle context, nativeint buffer)
 
     [<DllImport(library, CallingConvention = CallingConvention.Cdecl)>]
@@ -32,6 +36,12 @@ module private CudaApi =
 
     [<DllImport(library, CallingConvention = CallingConvention.Cdecl)>]
     extern int marmotte_cuda_download(SafeHandle context, nativeint buffer, [<Out>] single[] values, int count)
+
+    [<DllImport(library, CallingConvention = CallingConvention.Cdecl)>]
+    extern int marmotte_cuda_upload_f16(SafeHandle context, nativeint buffer, [<In>] uint16[] values, int count)
+
+    [<DllImport(library, CallingConvention = CallingConvention.Cdecl)>]
+    extern int marmotte_cuda_download_f16(SafeHandle context, nativeint buffer, [<Out>] uint16[] values, int count)
 
     [<DllImport(library, CallingConvention = CallingConvention.Cdecl)>]
     extern int marmotte_cuda_add(SafeHandle context, nativeint left, nativeint right, nativeint destination, int count)
@@ -70,9 +80,14 @@ type internal CudaSession(deviceIndex: int) =
             raise (DllNotFoundException("The Marmotte CUDA native library could not be loaded. Build and deploy marmotte_cuda as described in docs/cuda.md.", error))
         new CudaContextHandle(pointer)
 
-    member _.Allocate(count) =
+    member _.Allocate(count, encoding) =
         let mutable buffer = 0n
-        CudaApi.marmotte_cuda_allocate(context, count, &buffer) |> CudaApi.check "allocation"
+        let status =
+            match encoding with
+            | TensorEncoding.F32 -> CudaApi.marmotte_cuda_allocate(context, count, &buffer)
+            | TensorEncoding.F16 -> CudaApi.marmotte_cuda_allocate_f16(context, count, &buffer)
+            | _ -> raise (NotSupportedException($"CUDA execution tensors do not support {encoding}."))
+        status |> CudaApi.check "allocation"
         buffer
 
     member _.Free(buffer) = CudaApi.marmotte_cuda_free(context, buffer) |> CudaApi.check "release"
@@ -82,6 +97,17 @@ type internal CudaSession(deviceIndex: int) =
 
     member _.Download(buffer, values: single array) =
         CudaApi.marmotte_cuda_download(context, buffer, values, values.Length) |> CudaApi.check "download"
+
+    /// Copy raw F16 bits through a two-byte primitive type supported by the P/Invoke marshaller.
+    /// This safe span cast preserves NaN payloads and creates no F32 staging buffer.
+    member _.UploadHalf(buffer, values: ReadOnlyMemory<Half>) =
+        let bits = MemoryMarshal.Cast<Half, uint16>(values.Span).ToArray()
+        CudaApi.marmotte_cuda_upload_f16(context, buffer, bits, bits.Length) |> CudaApi.check "F16 upload"
+
+    member _.DownloadHalf(buffer, destination: Memory<Half>) =
+        let bits = Array.zeroCreate<uint16> destination.Length
+        CudaApi.marmotte_cuda_download_f16(context, buffer, bits, bits.Length) |> CudaApi.check "F16 download"
+        MemoryMarshal.Cast<uint16, Half>(bits.AsSpan()).CopyTo(destination.Span)
 
     member _.Add(left, right, destination, count) =
         CudaApi.marmotte_cuda_add(context, left, right, destination, count) |> CudaApi.check "Add launch"

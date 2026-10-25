@@ -9,30 +9,40 @@ type private ICpuStorage =
     /// Marks the storage disposed and drops its buffer, without notifying the backend.
     abstract Release: unit -> unit
 
+/// Execution storage retains its actual element width; F16 never owns an F32 shadow buffer.
+[<RequireQualifiedAccess>]
+type private CpuValues =
+    | F32 of single array
+    | F16 of Half array
+
+    member this.Encoding =
+        match this with
+        | CpuValues.F32 _ -> TensorEncoding.F32
+        | CpuValues.F16 _ -> TensorEncoding.F16
+
 /// The owned buffer is private to this backend assembly; every public transfer makes a copy.
-type private CpuTensor(owner: obj, shape: TensorShape, values: single array, onDispose: ICpuStorage -> unit) =
-    let mutable values = values
-    let mutable disposed = false
+type private CpuTensor(owner: obj, shape: TensorShape, values: CpuValues, onDispose: ICpuStorage -> unit) =
+    let encoding = values.Encoding
+    let mutable retained = Some values
 
     member _.Owner = owner
 
     member this.Values =
-        ObjectDisposedException.ThrowIf(disposed, this)
-        values
+        match retained with
+        | Some values -> values
+        | None -> raise (ObjectDisposedException(this.GetType().FullName))
 
     interface ICpuStorage with
-        member _.Release() =
-            disposed <- true
-            values <- Array.empty
+        member _.Release() = retained <- None
 
     interface ITensor with
         member _.Shape = shape
-        member _.Encoding = TensorEncoding.F32
+        member _.Encoding = encoding
         member _.Backend = BackendKind.Cpu
 
     interface IDisposable with
         member this.Dispose() =
-            if not disposed then
+            if retained.IsSome then
                 (this :> ICpuStorage).Release()
                 onDispose this
 
@@ -132,11 +142,17 @@ type CpuBackend() =
 
     let track (storage: ICpuStorage) = liveStorage.Add(storage) |> ignore
 
-    let valuesOf argumentName (tensor: ITensor) =
+    let storageOf argumentName (tensor: ITensor) =
         ArgumentNullException.ThrowIfNull(tensor, argumentName)
         match tensor with
         | :? CpuTensor as tensor when Object.ReferenceEquals(tensor.Owner, owner) -> tensor.Values
         | _ -> invalidArg argumentName "The tensor must belong to this CPU backend instance."
+
+    /// Kernels not yet implemented for F16 reject it before writing any output.
+    let valuesOf argumentName tensor =
+        match storageOf argumentName tensor with
+        | CpuValues.F32 values -> values
+        | CpuValues.F16 _ -> raise (NotSupportedException($"This operation requires F32 {argumentName}; F16 is supported by Add and transfers only."))
 
     let weightsOf argumentName (tensor: IWeightTensor) =
         ArgumentNullException.ThrowIfNull(tensor, argumentName)
@@ -194,17 +210,33 @@ type CpuBackend() =
         member _.Backend = BackendKind.Cpu
 
         member this.Allocate(shape) =
+            (this :> ITensorBackend).Allocate(shape, TensorEncoding.F32)
+
+        member this.Allocate(shape, encoding) =
             ObjectDisposedException.ThrowIf(disposed, this)
             ArgumentNullException.ThrowIfNull(shape)
-            createTensor shape (Array.zeroCreate shape.ElementCount)
+            let values =
+                match encoding with
+                | TensorEncoding.F32 -> CpuValues.F32(Array.zeroCreate shape.ElementCount)
+                | TensorEncoding.F16 -> CpuValues.F16(Array.zeroCreate shape.ElementCount)
+                | _ -> raise (NotSupportedException($"CPU execution tensors do not support {encoding}."))
+            createTensor shape values
 
-        member this.Upload(shape, values) =
+        member this.Upload(shape: TensorShape, values: ReadOnlyMemory<single>) =
             ObjectDisposedException.ThrowIf(disposed, this)
             ArgumentNullException.ThrowIfNull(shape)
             if values.Length <> shape.ElementCount then
                 invalidArg (nameof values) "Host value count must match the tensor shape."
 
-            createTensor shape (values.ToArray())
+            createTensor shape (CpuValues.F32(values.ToArray()))
+
+        member this.Upload(shape: TensorShape, values: ReadOnlyMemory<Half>) =
+            ObjectDisposedException.ThrowIf(disposed, this)
+            ArgumentNullException.ThrowIfNull(shape)
+            if values.Length <> shape.ElementCount then
+                invalidArg (nameof values) "Host value count must match the tensor shape."
+
+            createTensor shape (CpuValues.F16(values.ToArray()))
 
         member this.UploadWeights(weights) =
             ObjectDisposedException.ThrowIf(disposed, this)
@@ -220,9 +252,23 @@ type CpuBackend() =
             track cache
             cache :> IKeyValueCache
 
-        member this.Download(tensor, destination) =
+        member this.Download(tensor, destination: Memory<single>) =
             ObjectDisposedException.ThrowIf(disposed, this)
-            let values = valuesOf (nameof tensor) tensor
+            let values =
+                match storageOf (nameof tensor) tensor with
+                | CpuValues.F32 values -> values
+                | CpuValues.F16 _ -> invalidArg (nameof tensor) "Download to Single requires an F32 tensor."
+            if destination.Length <> values.Length then
+                invalidArg (nameof destination) "Host buffer length must match the tensor element count."
+
+            values.AsMemory().CopyTo(destination)
+
+        member this.Download(tensor, destination: Memory<Half>) =
+            ObjectDisposedException.ThrowIf(disposed, this)
+            let values =
+                match storageOf (nameof tensor) tensor with
+                | CpuValues.F16 values -> values
+                | CpuValues.F32 _ -> invalidArg (nameof tensor) "Download to Half requires an F16 tensor."
             if destination.Length <> values.Length then
                 invalidArg (nameof destination) "Host buffer length must match the tensor element count."
 
@@ -234,14 +280,19 @@ type CpuBackend() =
     interface IAddKernel with
         member this.Add(left, right, destination) =
             ObjectDisposedException.ThrowIf(disposed, this)
-            let leftValues = valuesOf (nameof left) left
-            let rightValues = valuesOf (nameof right) right
-            let destinationValues = valuesOf (nameof destination) destination
+            let leftValues = storageOf (nameof left) left
+            let rightValues = storageOf (nameof right) right
+            let destinationValues = storageOf (nameof destination) destination
 
             requireSameShape "Add" left (nameof right) right
             requireSameShape "Add" left (nameof destination) destination
 
-            CpuKernels.add (ReadOnlySpan<single>(leftValues), ReadOnlySpan<single>(rightValues), Span<single>(destinationValues))
+            match leftValues, rightValues, destinationValues with
+            | CpuValues.F32 left, CpuValues.F32 right, CpuValues.F32 destination ->
+                CpuKernels.add (ReadOnlySpan<single>(left), ReadOnlySpan<single>(right), Span<single>(destination))
+            | CpuValues.F16 left, CpuValues.F16 right, CpuValues.F16 destination ->
+                CpuKernels.addHalf (ReadOnlySpan<Half>(left), ReadOnlySpan<Half>(right), Span<Half>(destination))
+            | _ -> invalidArg (nameof destination) "Add requires identical encodings for both inputs and destination."
 
     interface ISwiGluKernel with
         member this.SwiGlu(gate, up, destination) =
