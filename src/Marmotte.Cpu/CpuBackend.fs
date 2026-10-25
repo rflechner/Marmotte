@@ -6,15 +6,19 @@ open System.Numerics
 open System.Runtime.InteropServices
 open Marmotte.Core
 
-/// Element-wise F32 kernels over host spans, safe and vectorized with Vector<T>.
+/// Element-wise F32 kernels over equal-length host spans, safe and vectorized with Vector<T>.
+/// Each processes Vector<single>.Count lanes at a time (4 with ARM64 NEON, 8 with AVX2), then the
+/// remaining elements one by one. Destination may be exactly an input, but must not partially
+/// overlap one: each vector is read before the same positions are written.
 module private CpuKernels =
-    /// destination[i] = left[i] + right[i] over equal-length spans. Destination may be exactly
-    /// left or right, but must not partially overlap them. Processes Vector<single>.Count lanes at
-    /// a time (4 with ARM64 NEON, 8 with AVX2), then the remaining elements one by one. Each lane
-    /// performs the same IEEE single-precision addition as a scalar loop, so results are identical.
+    let private requireSameLength (first: ReadOnlySpan<single>) (second: ReadOnlySpan<single>) (destination: Span<single>) =
+        if first.Length <> destination.Length || second.Length <> destination.Length then
+            invalidArg (nameof destination) "Element-wise kernel spans must have the same length."
+
+    /// destination[i] = left[i] + right[i]. Each lane performs the same IEEE single-precision
+    /// addition as a scalar loop, so vector lanes and the tail give identical results.
     let add (left: ReadOnlySpan<single>, right: ReadOnlySpan<single>, destination: Span<single>) =
-        if left.Length <> destination.Length || right.Length <> destination.Length then
-            invalidArg (nameof destination) "Add spans must have the same length."
+        requireSameLength left right destination
 
         let mutable firstScalar = 0
         if Vector.IsHardwareAccelerated then
@@ -27,6 +31,29 @@ module private CpuKernels =
 
         for index = firstScalar to destination.Length - 1 do
             destination[index] <- left[index] + right[index]
+
+    /// destination[i] = silu(gate[i]) × up[i], with silu(x) = x / (1 + e^-x). Vector lanes use
+    /// Vector.Exp and the tail uses MathF.Exp; measured on ARM64, both stay within 2.2e-7 relative
+    /// error of a double-precision SiLU above x = -87, and they differ by at most 4 units in the
+    /// last place.
+    let swiGlu (gate: ReadOnlySpan<single>, up: ReadOnlySpan<single>, destination: Span<single>) =
+        requireSameLength gate up destination
+
+        let mutable firstScalar = 0
+        if Vector.IsHardwareAccelerated then
+            let gateVectors = MemoryMarshal.Cast<single, Vector<single>>(gate)
+            let upVectors = MemoryMarshal.Cast<single, Vector<single>>(up)
+            let destinationVectors = MemoryMarshal.Cast<single, Vector<single>>(destination)
+            for index = 0 to destinationVectors.Length - 1 do
+                let x = gateVectors[index]
+                let silu = x / (Vector<single>.One + Vector.Exp(-x))
+                destinationVectors[index] <- silu * upVectors[index]
+            firstScalar <- destinationVectors.Length * Vector<single>.Count
+
+        for index = firstScalar to destination.Length - 1 do
+            let x = gate[index]
+            let silu = x / (1.0f + MathF.Exp(-x))
+            destination[index] <- silu * up[index]
 
 /// Storage that its backend releases when the backend itself is disposed.
 type private ICpuStorage =
@@ -92,7 +119,7 @@ type private CpuWeightTensor(owner: obj, weights: WeightMatrix, onDispose: ICpuS
                 (this :> ICpuStorage).Release()
                 onDispose this
 
-/// Safe CPU reference implementation of the tensor and Add contracts, vectorized with Vector<T>.
+/// Safe CPU reference implementation of the tensor, Add and SwiGLU contracts, vectorized with Vector<T>.
 /// Owns no native resources. Each instance accepts only tensors that it created, and tracks
 /// the live ones so that disposing the backend releases them. Operations complete before
 /// returning, which satisfies the ordering contract; Synchronize has nothing to wait for.
@@ -111,6 +138,11 @@ type CpuBackend() =
         match tensor with
         | :? CpuTensor as tensor when Object.ReferenceEquals(tensor.Owner, owner) -> tensor.Values
         | _ -> invalidArg argumentName "The tensor must belong to this CPU backend instance."
+
+    /// Element-wise kernels reject broadcasting: every tensor must have the reference's shape.
+    let requireSameShape (operation: string) (reference: ITensor) argumentName (tensor: ITensor) =
+        if reference.Shape <> tensor.Shape then
+            invalidArg argumentName $"{operation} requires identical shapes, not {reference.Shape} and {tensor.Shape}; broadcasting is not supported."
 
     let createTensor shape values =
         let tensor = new CpuTensor(owner, shape, values, forget)
@@ -158,12 +190,22 @@ type CpuBackend() =
             let rightValues = valuesOf (nameof right) right
             let destinationValues = valuesOf (nameof destination) destination
 
-            if left.Shape <> right.Shape then
-                invalidArg (nameof right) "Add requires identical input shapes; broadcasting is not supported."
-            if left.Shape <> destination.Shape then
-                invalidArg (nameof destination) "Add destination must have the same shape as its inputs."
+            requireSameShape "Add" left (nameof right) right
+            requireSameShape "Add" left (nameof destination) destination
 
             CpuKernels.add (ReadOnlySpan<single>(leftValues), ReadOnlySpan<single>(rightValues), Span<single>(destinationValues))
+
+    interface ISwiGluKernel with
+        member this.SwiGlu(gate, up, destination) =
+            ObjectDisposedException.ThrowIf(disposed, this)
+            let gateValues = valuesOf (nameof gate) gate
+            let upValues = valuesOf (nameof up) up
+            let destinationValues = valuesOf (nameof destination) destination
+
+            requireSameShape "SwiGLU" gate (nameof up) up
+            requireSameShape "SwiGLU" gate (nameof destination) destination
+
+            CpuKernels.swiGlu (ReadOnlySpan<single>(gateValues), ReadOnlySpan<single>(upValues), Span<single>(destinationValues))
 
     interface IDisposable with
         member _.Dispose() =

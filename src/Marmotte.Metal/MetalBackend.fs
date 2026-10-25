@@ -4,7 +4,7 @@ open System
 open Marmotte.Core
 
 /// Metal contract placeholder. Construction and disposal need no driver or device.
-/// Allocation, transfers, weight upload, synchronization and Add raise NotImplementedException;
+/// Allocation, transfers, weight upload, synchronization, Add and SwiGLU raise NotImplementedException;
 /// there is no CPU fallback.
 /// Operations after disposal raise ObjectDisposedException.
 [<Sealed>]
@@ -26,6 +26,9 @@ type MetalBackend() =
 
     interface IAddKernel with
         member _.Add(_, _, _) = notImplemented "Add kernel"
+
+    interface ISwiGluKernel with
+        member _.SwiGlu(_, _, _) = notImplemented "SwiGLU kernel"
 
     interface IDisposable with
         member _.Dispose() = disposed <- true

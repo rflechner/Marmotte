@@ -145,14 +145,15 @@ architecture-specific tensor names and model configuration are not implemented y
 
 ## Execution tensors and kernels
 
-`Marmotte.Core` defines `TensorShape`, `ITensor`, `IWeightTensor`, `IAddKernel` and
-`ITensorBackend`.
+`Marmotte.Core` defines `TensorShape`, `ITensor`, `IWeightTensor`, `IAddKernel`,
+`ISwiGluKernel` and `ITensorBackend`.
 The three backend projects share these contracts:
 
 - `Marmotte.Cpu`: owned F32 arrays, explicit upload/download, weight tensors that
-  retain the stored payload, and an `Add` kernel vectorized with `Vector<T>`.
+  retain the stored payload, and `Add` and SwiGLU kernels vectorized with
+  `Vector<T>`.
 - `Marmotte.Cuda` and `Marmotte.Metal`: buildable placeholders whose allocation,
-  transfers and `Add` raise `NotImplementedException`, without requiring a GPU SDK.
+  transfers and kernels raise `NotImplementedException`, without requiring a GPU SDK.
 
 `Add` writes into a preallocated destination and requires identical contiguous,
 row-major shapes. In-place addition is supported. Operations on one backend take
@@ -161,6 +162,9 @@ effect in submission order and may return before they complete; `Download` and
 them, transfers are explicit, and disposing a backend releases the tensors it
 still owns. `UploadWeights` places a `WeightMatrix` on a backend in its stored
 encoding, without decoding it; no kernel consumes weight tensors yet.
+`SwiGlu(gate, up, destination)` computes `silu(gate) × up` under the same tensor
+rules; its exponential makes results differ from other implementations by a few
+units in the last place.
 
 See [execution tensor contracts and the Add walkthrough](docs/kernels.md), or run
 the example without a local model:
@@ -332,7 +336,7 @@ block layouts, numerical limits and tensor selection policy.
 - [Illustrated inference pipeline: model files, embeddings, KV cache and generation](docs/inference-pipeline.md)
 - [GGUF format and current implementation](docs/gguf.md)
 - [Safetensors format and current implementation](docs/safetensors.md)
-- [Execution tensors and Add on CPU, CUDA and Metal](docs/kernels.md)
+- [Execution tensors, Add and SwiGLU on CPU, CUDA and Metal](docs/kernels.md)
 - [Roadmap](ROADMAP.md): CPU inference first, then CUDA and Metal backends
 
 ## Build and tests
@@ -356,8 +360,9 @@ and output protection. Safetensors tests encode JSON headers and data buffers
 directly. CLI tests run the application against temporary GGUF and Safetensors
 fixtures and check both commands, argument handling, and errors. Core tests
 check tensor sources and weight matrices with an in-memory source and temporary
-files. Backend tests check F32 addition, shape validation, buffer ownership,
-transfers and disposal, plus explicit CUDA/Metal placeholder failures.
+files. Backend tests check F32 addition and SwiGLU against scalar and
+double-precision references, shape validation, buffer ownership, transfers and
+disposal, plus explicit CUDA/Metal placeholder failures.
 No model or weight download is required.
 
 ## Coding guidelines

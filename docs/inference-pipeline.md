@@ -156,7 +156,7 @@ finished answers, and must match the exact processed prefix and positions.
 | F32/F16/BF16 to Q4_0/Q8_0 file conversion | Implemented through `quantize`; an offline conversion operation |
 | Safetensors tensor index | Implemented for single files, including `info`; shards planned |
 | Runtime tensor access | Format-neutral tensor source for both formats, copying payloads, and weight matrix rows; memory mapping and decoding planned |
-| Execution tensors and Add | Contiguous F32 contracts with CPU implementation; CUDA/Metal placeholders. See [kernel contracts](kernels.md) |
+| Execution tensors, Add and SwiGLU | Contiguous F32 contracts with CPU implementation; CUDA/Metal placeholders. See [kernel contracts](kernels.md) |
 | Tokenizer and embeddings | Planned |
 | Transformer kernels, KV cache and response generation | Planned; CPU first, then CUDA/Metal |
 

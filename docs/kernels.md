@@ -1,8 +1,9 @@
-# Execution Tensors and the Add Kernel
+# Execution Tensors and Kernels
 
 `Marmotte.Core` defines the compute contracts. `Marmotte.Cpu`, `Marmotte.Cuda`
 and `Marmotte.Metal` each reference Core; Core references none of the backends.
-The first implemented operation is element-wise F32 addition.
+The implemented operations are element-wise F32 addition and the SwiGLU
+activation of the feed-forward layer.
 
 ## From GGUF to Add
 
@@ -65,11 +66,14 @@ decodes them automatically.
 | `UploadWeights` | Retains the payload without copying | `NotImplementedException` | `NotImplementedException` |
 | `Synchronize` | Nothing to wait for | `NotImplementedException` | `NotImplementedException` |
 | `IAddKernel.Add` | Safe `Vector<T>` loop with a scalar tail | `NotImplementedException` | `NotImplementedException` |
+| `ISwiGluKernel.SwiGlu` | Safe `Vector<T>` loop with `Vector.Exp`, scalar tail with `MathF.Exp` | `NotImplementedException` | `NotImplementedException` |
 | SDK/driver required today | None | None | None |
 
-`ITensorBackend` inherits `IAddKernel` so orchestration can call `backend.Add`.
-A consumer needing only addition can accept `IAddKernel` directly. No generic
-operation registry, graph scheduler or native interop is needed for this example.
+`ITensorBackend` inherits the kernel interfaces, `IAddKernel` and
+`ISwiGluKernel`, so orchestration can call `backend.Add` and `backend.SwiGlu`.
+A consumer needing a single operation can accept its kernel interface directly.
+No generic operation registry, graph scheduler or native interop is needed for
+this example.
 GPU factories and disposal work on any host; all other operations fail explicitly,
 without a CPU fallback. Concrete GPU tensor types will be introduced with their
 storage implementation, rather than exposing unusable device handles now.
@@ -120,6 +124,30 @@ different ownership domain. This leaves room for distinct devices and contexts
 without treating their allocations as interchangeable. An explicit download and
 upload is currently the only way to move values between instances.
 
+## SwiGLU
+
+The feed-forward layer of LLaMA-family models, including `mistral3`, gates one
+projection with another. `SwiGlu(gate, up, destination)` writes
+`destination[i] = silu(gate[i]) × up[i]`, with `silu(x) = x / (1 + e^-x)`; see
+[GLU Variants Improve Transformer](https://arxiv.org/abs/2002.05202). In the
+target model, `gate` and `up` are the 9,216-value outputs of `ffn_gate` and
+`ffn_up`, and the result feeds `ffn_down`. The tensor rules are those of `Add`:
+identical shapes, the same backend instance, exact aliasing such as
+`backend.SwiGlu(gate, up, up)`, and validation before any write.
+
+Unlike addition, the result depends on how the exponential is approximated. The
+CPU backend uses `Vector.Exp` in vector lanes and `MathF.Exp` for the remaining
+values. Measured on ARM64 for gates from -87 to 90, both stay within 2.2e-7
+relative error of a double-precision SiLU, and they differ from each other by
+at most four units in the last place. Tests therefore compare with a relative
+tolerance of 1e-6. Below about -88.7, `e^-x` overflows in F32 and the result is
+a signed zero instead of a value smaller than 1e-36. NaN gates stay NaN, and
+`silu(-∞)` is NaN, as the formula gives.
+
+On an Apple M4 Max, single-threaded in Release, the vectorized kernel takes about
+0.63 ns per value, against 1.43 ns for a scalar loop with the same formula. One
+feed-forward layer of 9,216 values takes about 5.8 µs instead of 13.3 µs.
+
 ## Ordering, Completion and Lifetime
 
 Operations submitted to one backend instance take effect in submission order: a
@@ -156,5 +184,5 @@ dotnet fsi examples/Add.fsx
 
 The script loads the library sources, runs the same function with each backend,
 prints the CPU result, and reports the GPU placeholders' exceptions at the first
-upload. Tests also call GPU allocation, download and `Add` directly to verify
-that all unfinished operations fail explicitly.
+upload. Tests also call GPU allocation, download, `Add` and `SwiGlu` directly
+to verify that all unfinished operations fail explicitly.

@@ -205,6 +205,7 @@ let ``null shapes and tensors are rejected`` () =
     Assert.Throws<ArgumentNullException>(fun () -> backend.UploadWeights(Unchecked.defaultof<WeightMatrix>) |> ignore) |> ignore
     for left, right, destination in [ nullTensor, tensor, tensor; tensor, nullTensor, tensor; tensor, tensor, nullTensor ] do
         Assert.Throws<ArgumentNullException>(fun () -> backend.Add(left, right, destination)) |> ignore
+        Assert.Throws<ArgumentNullException>(fun () -> backend.SwiGlu(left, right, destination)) |> ignore
 
 [<Fact>]
 let ``Add matches a scalar reference for every vector tail length`` () =
@@ -246,6 +247,87 @@ let ``Add preserves ordinary floating point special values in vector lanes and t
         | 1 -> Assert.Equal(Single.PositiveInfinity, result[index])
         | _ -> Assert.True(Single.IsNaN(result[index]), $"Index {index} should be NaN.")
 
+/// SwiGLU in double precision, independent of both Vector.Exp and MathF.Exp.
+let private swiGluReference (gate: single) (up: single) =
+    let x = float gate
+    x / (1.0 + Math.Exp(-x)) * float up
+
+/// About 8 units in the last place, plus an absolute floor for results that the F32 formula
+/// flushes to zero when e^-x overflows.
+let private assertClose (expected: float) (actual: single) =
+    let tolerance = 1e-6 * abs expected + 1e-30
+    Assert.True(abs (float actual - expected) <= tolerance, $"Expected {expected}, got {actual}.")
+
+[<Fact>]
+let ``SwiGlu matches a double-precision reference for every vector tail length`` () =
+    use backend = cpu ()
+    let random = Random(5678)
+    let randomValues length range = Array.init length (fun _ -> float32 ((random.NextDouble() * 2.0 - 1.0) * range))
+
+    // Lengths below, at and between multiples of 4, 8 and 16 lanes exercise vector blocks and tails.
+    for length in 0 .. 67 do
+        let shape = TensorShape.Create [| length |]
+        let gateValues = randomValues length 30.0
+        let upValues = randomValues length 5.0
+        let expected = Array.map2 swiGluReference gateValues upValues
+        use gate = backend.Upload(shape, ReadOnlyMemory<single>(gateValues))
+        use up = backend.Upload(shape, ReadOnlyMemory<single>(upValues))
+        use destination = backend.Allocate(shape)
+
+        backend.SwiGlu(gate, up, destination)
+        Array.iter2 assertClose expected (download backend destination)
+        Assert.Equal<single>(gateValues, download backend gate)
+        Assert.Equal<single>(upValues, download backend up)
+
+        backend.SwiGlu(gate, up, up)
+        Array.iter2 assertClose expected (download backend up)
+
+        use upAgain = backend.Upload(shape, ReadOnlyMemory<single>(upValues))
+        backend.SwiGlu(gate, upAgain, gate)
+        Array.iter2 assertClose expected (download backend gate)
+
+[<Fact>]
+let ``SwiGlu handles extreme gates in vector lanes and the tail`` () =
+    use backend = cpu ()
+    // 21 values cycle through each case in full vectors and in the scalar tail for 4, 8 or 16 lanes.
+    let cases = [| -100.0f; 100.0f; 0.0f; Single.NaN; Single.PositiveInfinity; Single.NegativeInfinity; -0.001f |]
+    let gateValues = Array.init 21 (fun index -> cases[index % cases.Length])
+    let shape = TensorShape.Create [| 21 |]
+    use gate = backend.Upload(shape, ReadOnlyMemory<single>(gateValues))
+    use up = backend.Upload(shape, ReadOnlyMemory<single>(Array.create 21 2.0f))
+
+    backend.SwiGlu(gate, up, up)
+
+    let result = download backend up
+    for index in 0 .. 20 do
+        let value = result[index]
+        match gateValues[index] with
+        | gateValue when Single.IsNaN gateValue -> Assert.True(Single.IsNaN value)
+        | gateValue when Single.IsNegativeInfinity gateValue -> Assert.True(Single.IsNaN value)
+        | gateValue when Single.IsPositiveInfinity gateValue -> Assert.Equal(Single.PositiveInfinity, value)
+        | gateValue -> assertClose (swiGluReference gateValue 2.0f) value
+
+[<Fact>]
+let ``SwiGlu validates shapes ownership and disposal before writing`` () =
+    use backend = cpu ()
+    use otherBackend = cpu ()
+    let shape = TensorShape.Create [| 2; 3 |]
+    use gate = backend.Upload(shape, ReadOnlyMemory<single>(Array.create 6 1.0f))
+    use up = backend.Upload(shape, ReadOnlyMemory<single>(Array.create 6 1.0f))
+    use destination = backend.Upload(shape, ReadOnlyMemory<single>(Array.create 6 42.0f))
+    use transposed = backend.Allocate(TensorShape.Create [| 3; 2 |])
+    use foreign = otherBackend.Allocate(shape)
+    let disposed = backend.Allocate(shape)
+    disposed.Dispose()
+
+    let shapeError = Assert.Throws<ArgumentException>(fun () -> backend.SwiGlu(gate, transposed, destination))
+    Assert.Contains("[2; 3]", shapeError.Message)
+    Assert.Contains("[3; 2]", shapeError.Message)
+    Assert.Throws<ArgumentException>(fun () -> backend.SwiGlu(gate, up, transposed)) |> ignore
+    Assert.Throws<ArgumentException>(fun () -> backend.SwiGlu(foreign, up, destination)) |> ignore
+    Assert.Throws<ObjectDisposedException>(fun () -> backend.SwiGlu(gate, disposed, destination)) |> ignore
+    Assert.Equal<single>(Array.create 6 42.0f, download backend destination)
+
 let private createBackend name =
     match name with
     | "CPU" -> cpu ()
@@ -267,7 +349,8 @@ let ``GPU operations explicitly fail without requiring GPU hardware`` name =
           (fun () -> backend.UploadWeights(weightMatrix ()) |> ignore)
           (fun () -> backend.Download(tensor, Memory<single>([| 0.0f |])))
           (fun () -> backend.Synchronize())
-          (fun () -> backend.Add(tensor, tensor, tensor)) ]
+          (fun () -> backend.Add(tensor, tensor, tensor))
+          (fun () -> backend.SwiGlu(tensor, tensor, tensor)) ]
 
     let expectedKind = if name = "CUDA" then BackendKind.Cuda else BackendKind.Metal
     Assert.Equal(expectedKind, backend.Backend)
@@ -293,3 +376,4 @@ let ``disposed backends reject all operations and allow repeated disposal`` name
     Assert.Throws<ObjectDisposedException>(fun () -> backend.Download(tensor, Memory<single>.Empty)) |> ignore
     Assert.Throws<ObjectDisposedException>(fun () -> backend.Synchronize()) |> ignore
     Assert.Throws<ObjectDisposedException>(fun () -> backend.Add(tensor, tensor, tensor)) |> ignore
+    Assert.Throws<ObjectDisposedException>(fun () -> backend.SwiGlu(tensor, tensor, tensor)) |> ignore

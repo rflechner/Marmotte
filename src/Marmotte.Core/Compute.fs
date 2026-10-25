@@ -101,6 +101,17 @@ type IAddKernel =
     /// The result follows ITensorBackend's ordering rules and may be computed after the call returns.
     abstract Add: left: ITensor * right: ITensor * destination: ITensor -> unit
 
+/// Element-wise SwiGLU activation of a gated feed-forward layer:
+/// destination[i] = silu(gate[i]) × up[i], with silu(x) = x / (1 + e^-x).
+/// See "GLU Variants Improve Transformer", https://arxiv.org/abs/2002.05202.
+type ISwiGluKernel =
+    /// Tensor rules, validation and ordering are those of IAddKernel.Add, with gate and up as the
+    /// inputs. Implementations approximate the exponential differently, so results may differ by a
+    /// few units in the last place: compare them with a relative tolerance. Where e^-x overflows
+    /// (x below about -88.7), the result is a signed zero instead of a value below 1e-36 in
+    /// magnitude, and silu(-∞) is NaN, as the formula gives.
+    abstract SwiGlu: gate: ITensor * up: ITensor * destination: ITensor -> unit
+
 /// Creates and operates on its own tensors. Separate instances are separate ownership domains,
 /// even when their Backend values match.
 ///
@@ -121,6 +132,7 @@ type IAddKernel =
 type ITensorBackend =
     inherit IDisposable
     inherit IAddKernel
+    inherit ISwiGluKernel
 
     abstract Backend: BackendKind
 
