@@ -29,6 +29,11 @@ to F#, .NET, and local model inference.
 - `tests/Marmotte.Backends.Tests` covers CPU Add, transfers, shape compatibility, ownership and disposal, plus GPU placeholder failures. Keep these tests independent of GPU hardware and drivers. `examples/Add.fsx` demonstrates the shared backend contracts without a model file.
 - Keep dependencies directed toward reusable libraries. Do not make libraries depend on the CLI or scripts, or introduce architectural layers without a concrete need.
 
+## Write original code
+
+- Never copy code from another project, especially well-known ones such as llama.cpp, ggml, Hugging Face Transformers, or the Safetensors reference implementation. This applies to library code, kernels, shaders, tests, and scripts, and also to translating such code line by line into F#.
+- Use other projects only as references. Read their specifications, documentation, and implementations to understand and verify behavior, such as binary layouts, constants, formulas, and expected values. Then write Marmotte's implementation with its own structure and idioms, and cite the source as described in [Document contracts and intent](#document-contracts-and-intent).
+
 ## Document contracts and intent
 
 - Use F# `///` documentation for public APIs, important contracts, and non-obvious behavior.
