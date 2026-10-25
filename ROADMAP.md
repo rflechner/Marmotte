@@ -18,7 +18,8 @@ first implementation needs:
 - Architecture `mistral3`: 26 blocks, embedding length 3072, feed-forward length
   9216, 32 attention heads and 8 key-value heads of 128 dimensions.
 - RoPE with YaRN scaling, and an `attention.temperature_scale` parameter.
-- 156 `Q4_K`, 27 `Q6_K` and 53 `F32` tensors, 2.00 GiB in total.
+- 156 `Q4_K`, 27 `Q6_K` and 53 `F32` tensors, 2.00 GiB in total, with no
+  `output.weight`: the LM head reuses the token embeddings.
 - A `gpt2` BPE tokenizer with the `tekken` pre-tokenizer, 131,072 tokens and
   269,443 merges.
 
@@ -62,14 +63,86 @@ local check.
 
 ### CPU kernels
 
-- [x] Define contiguous F32 execution tensors and an `Add` contract in Core, with
-  explicit allocation/transfers and a `Vector<T>` CPU implementation in `Marmotte.Cpu`.
-- [ ] Matrix-vector and matrix-matrix products over quantized weights.
-- [ ] RMS normalization, RoPE with YaRN scaling, softmax, SwiGLU and embedding
-  lookup.
-- [ ] Grouped-query attention with a key-value cache.
-- [ ] Vectorize with `System.Runtime.Intrinsics` and parallelize across rows,
-  once a straightforward reference implementation exists to compare against.
+The list follows llama.cpp's `mistral3` graph in
+[`src/models/mistral3.cpp`](https://github.com/ggml-org/llama.cpp/blob/master/src/models/mistral3.cpp),
+read on 2026-10-25, and the target model's metadata. For one token, the forward
+pass looks up an embedding, runs 26 blocks of attention and feed-forward layers,
+each followed by a residual connection, and ends with a final normalization and
+the LM head. Sizes are rows × columns for one token; prompt processing runs the
+same kernels over several tokens. Each generated token reads every weight once,
+about 2 GiB, so the matrix products dominate the cost.
+
+Contracts and element-wise operations:
+
+- [x] Contiguous F32 execution tensors and an `Add` contract in Core, with
+  explicit allocation/transfers and a `Vector<T>` CPU implementation in
+  `Marmotte.Cpu`. `Add` provides the two residual connections of each block.
+- [ ] Embedding lookup: decode the token's row of `token_embd.weight` (`Q6_K`,
+  131,072 rows of 3,072 values) into F32, without scaling.
+- [ ] RMS normalization: `x / sqrt(mean(x²) + ε) × weight`, with ε from
+  `attention.layer_norm_rms_epsilon` (1e-5) and F32 weights of 3,072 values.
+  It runs before attention (`attn_norm`), before the feed-forward layer
+  (`ffn_norm`) and before the LM head (`output_norm`): 53 times per token.
+- [ ] SwiGLU: `silu(gate) × up` over 9,216 values, with
+  `silu(x) = x / (1 + e^-x)`.
+
+Matrix products:
+
+- [ ] Matrix-vector product over `Q4_K` and `Q6_K` rows, with F32 input and
+  output: one dot product per weight row. Each block uses seven:
+  - `attn_q`: 4,096 × 3,072, `Q4_K`;
+  - `attn_k` and `attn_v`: 1,024 × 3,072, `Q4_K`, except `attn_v` in `Q6_K` in
+    half of the blocks;
+  - `attn_output`: 3,072 × 4,096, `Q4_K`;
+  - `ffn_gate` and `ffn_up`: 9,216 × 3,072, `Q4_K`;
+  - `ffn_down`: 3,072 × 9,216, `Q4_K`, or `Q6_K` in half of the blocks.
+- [ ] LM head: the same product with `token_embd.weight` (`Q6_K`,
+  131,072 × 3,072). The file has no `output.weight`: as in llama.cpp, the
+  embeddings are tied and the LM head reuses the embedding matrix.
+- [ ] Matrix-matrix products over the same weights, so that prompt processing
+  handles several tokens per pass.
+
+Attention:
+
+- [ ] RoPE on Q (32 heads) and K (8 heads), not V, over the full 128-value head.
+  `mistral3` uses llama.cpp's "normal" variant, which rotates consecutive pairs
+  of values (`LLAMA_ROPE_TYPE_NORM`), with base frequency 1,000,000 and the
+  token's absolute position.
+- [ ] YaRN frequency correction: scaling factor 16, original context 16,384,
+  `beta_fast` 32 and `beta_slow` 1. With `yarn_log_multiplier` = 1, the
+  attention magnitude correction computed in llama.cpp's `src/llama-context.cpp`
+  should cancel out for this model. Implement the general formula, and check
+  this case against ggml's RoPE implementation.
+- [ ] Attention temperature: after RoPE, multiply Q by
+  `1 + β × ln(floor(p / L) + 1)`, where `p` is the token position,
+  β = `attention.temperature_scale` (0.1) and
+  L = `rope.scaling.original_context_length` (16,384). The factor is exactly 1
+  for the first 16,384 positions. Source: `llm_graph_input_attn_temp` in
+  llama.cpp's `src/llama-graph.cpp`.
+- [ ] Key-value cache: append K, after RoPE, and V for each position and block,
+  8 heads of 128 values each. That is 208 KiB per token in F32, or 832 MiB for
+  a 4,096-token context; F16 halves it.
+- [ ] Grouped-query attention: each of the 32 query heads reads the cached keys
+  and values of its key-value head, shared by 4 query heads. Scores are scaled
+  by 1/√128, masked causally, normalized with a numerically stable softmax
+  (subtracting the maximum) and used to weight the cached values, with F32
+  accumulation.
+
+Not needed for the target model: the `mistral3` graph also handles biases and
+mixture-of-experts layers, but the file has neither, and the architecture has
+no Q/K normalization, sliding window, attention sinks, ALiBi or logit
+soft-capping.
+
+Optimizations, once reference implementations exist to compare against:
+
+- [ ] Vectorize the matrix products with `System.Runtime.Intrinsics` and
+  parallelize them across rows.
+- [ ] Quantize the input vector once per product, as ggml's CPU backend does
+  with `Q8_K` for K-quant dot products, instead of converting each weight block
+  to F32.
+- [ ] Compute the last block's feed-forward layer and the LM head only for the
+  tokens whose logits are needed, and fuse attention into a single pass (flash
+  attention).
 
 ### Inference and generation
 
