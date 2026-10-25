@@ -1,0 +1,104 @@
+Primary references reviewed:
+https://arxiv.org/html/2104.09864v5
+https://arxiv.org/html/2309.00071v2 (frequency blend and magnitude correction)
+https://github.com/jquesnelle/yarn/blob/master/scaled_rope/LlamaYaRNScaledRotaryEmbedding.py
+Local contracts: src/Marmotte.Core/RotaryEmbedding.fs and src/Marmotte.Core/Compute.fs
+Status snapshot: CPU RoPE is implemented; YaRN preparation remains planned.
+Generated with the built-in image_gen tool. Numerical examples independently checked.
+
+=== User-requested correction to kernel-yarn.png ===
+Edit this YaRN infographic to remove implementation planning status, as requested by its author. Preserve all formulas, numbers, examples, diagram arrows, layout, typography and colors except the specified status labels.
+1. Remove the entire upper-right amber dashed badge that says "Marmotte: YaRN preparation is PLANNED". Fill that area naturally with the existing plain white background. Do not replace the badge with another status.
+2. In the bottom "Marmotte connection" pipeline, remove the word "PLANNED" from the first box. Keep the text "Corrected frequencies + magnitude + pairing" and "(YaRN preparation)" centered clearly. Change this box's dashed border to a normal solid amber border so it does not denote planned work.
+There must be no occurrence of "planned", "PLANNED" or "not implemented" anywhere on this image.
+Do not change the formulas, numeric example, caution about the model-dependent magnitude, the existing RotaryEmbedding.Create(...) and IRopeKernel.Rope(...) labels, or any other content. Preserve the full canvas without cropping.
+
+=== kernel-rope.png ===
+
+Use case: infographic-diagram.
+Create an original technical teaching infographic for the Marmotte F# repository, aimed at a developer new to neural-network position encodings. All visible text must be in English. Landscape 3:2 format, ideally 1536x1024 or higher. Match a clean educational series: near-white background, navy title, blue input values, purple parameters, amber transformations, teal outputs, large readable text, generous space. Three clear numbered panels, with formulas, a small numerical example and an intuitive explanation. Exact identifiers and arithmetic matter more than decoration. No photos, logos, mascots, dense paragraphs or unlabeled plots. Scientific content must be correct. Draw new diagrams; do not reproduce any paper's figure. Use approximately signs for rounded values. Radians are not degrees.
+Title: "RoPE — turn pairs to encode position"
+Subtitle: "IRopeKernel.Rope(input, positions, embedding, destination)"
+Small subtitle: "Rotary Position Embedding • plain RoPE: magnitude m = 1"
+
+Panel 1 "1. Position sets each angle".
+Formula "ω[j] = B^(-2j / D)" and "θ = p × ω[j]".
+Explain "p: token position; D: values per head; B: frequency base; j: pair index". Frequencies are radians per position.
+Toy example "D = 4, B = 10000, p = 1".
+Draw input head [1, 0, 0, 1] with adjacent pair 0 highlighted as [1,0] and pair 1 as [0,1].
+A small two-row table:
+pair j | indices | ω[j] | θ at p=1
+0 | (0,1) | 1 | 1 rad
+1 | (2,3) | 0.01 | 0.01 rad
+Caption "Each pair has its own rotation speed."
+
+Panel 2 "2. Rotate, preserving length".
+Show the exact formulas clearly:
+"a′ = a cos(θ) − b sin(θ)"
+"b′ = a sin(θ) + b cos(θ)"
+Draw a clear 2D unit circle with horizontal a-axis and vertical b-axis. The original blue arrow is from origin to (1,0). The rotated teal arrow must point to (0.5403,0.8415), about 57.3 degrees COUNTERCLOCKWISE from the positive horizontal axis. Both arrows have exactly the same length. An amber counterclockwise arc is labelled "1 rad ≈ 57.3°".
+Below it show "Pair 0: [1,0] → [cos(1), sin(1)] ≈ [0.5403, 0.8415]".
+Also show "Pair 1: [0,1] → [-sin(0.01), cos(0.01)] ≈ [-0.0100, 1.0000]".
+Do not draw 1 rad as 90 degrees, and do not change vector length.
+
+Panel 3 "3. Apply to Q and K".
+Output head "≈ [0.5403, 0.8415, -0.0100, 1.0000]".
+Three clean labelled paths:
+"Q (queries) → RoPE at query position"
+"K (keys) → RoPE at key position"
+"V (values) → unchanged by RoPE"
+Explain "The positional part of Q·K depends on the relative offset; the vectors' content still matters." Include a tiny distance illustration showing positions 2 and 5 have offset 3, and positions 12 and 15 also have offset 3, labelled "Same q and k, same relative offset → same dot product". Do not claim attention is solely a function of distance or promise monotonic decay.
+Algorithm line "For each token → each head → each pair: rotate".
+Notes "At p = 0, plain RoPE is unchanged" and "In-place output allowed".
+Footer strip: "Pairing follows the model: adjacent (0,1),(2,3) or split halves (0,2),(1,3)." These are different layouts, not freely interchangeable on the same weights.
+Status footer: "Marmotte CPU RoPE: implemented • CUDA / Metal: placeholders".
+No YaRN amplitude adjustment in this image. Preserve all exact numbers and signs.
+
+=== kernel-yarn.png ===
+
+Use case: infographic-diagram.
+Create an original technical teaching infographic for the Marmotte F# repository, aimed at a developer new to neural-network position encodings. All visible text must be in English. Landscape 3:2 format, ideally 1536x1024 or higher. Match a clean educational series: near-white background, navy title, blue input values, purple parameters, amber transformations, teal outputs, large readable text, generous space. Three clear numbered panels, with formulas, a small numerical example and an intuitive explanation. Exact identifiers and arithmetic matter more than decoration. No photos, logos, mascots, dense paragraphs or unlabeled plots. Scientific content must be correct. Draw new diagrams; do not reproduce any paper's figure. Use approximately signs for rounded values. Radians are not degrees.
+Title: "YaRN — extend context by tuning RoPE"
+Subtitle: "Frequency adaptation + attention magnitude correction"
+Prominent amber status badge: "Marmotte: YaRN preparation is PLANNED"
+This is a conceptual configuration algorithm feeding the existing RoPE kernel, NOT a second rotation kernel.
+
+Panel 1 "1. Extend the context".
+Define "L: original context length", "s: extension factor", "new length = s × L".
+Show two simple length bars with clearly labelled toy lengths "64 positions" and "256 positions", the latter four times the width if visually feasible; label "Teaching example: s = 4". These are toy values, not target model metadata.
+Explain with three small speed icons or bands: "Fast rotations: keep local detail", "Slow rotations: slow down", "Middle band: blend".
+A short note "Frequency bands are chosen from the original context and model parameters." Do not depict removing tokens, compressing their content or moving their actual positions.
+
+Panel 2 "2. Blend frequencies".
+Display the key equation, with all coefficients and divisions unambiguous:
+"ωY[j] = γ[j] × ω[j] + (1 − γ[j]) × (ω[j] / s)"
+Explain "γ[j] is the keep-original weight, from 0 to 1".
+Three rows with EXACT columns "Band", "ω", "γ", "ωY for s=4":
+Fast | 1 | 1 | 1
+Middle | 0.1 | 0.5 | 0.0625
+Slow | 0.01 | 0 | 0.0025
+Label this table "Illustrative blend weights".
+Below, one worked middle-band calculation:
+"0.5 × 0.1 + 0.5 × (0.1 / 4) = 0.0625"
+Callouts "γ = 1: keep ω" and "γ = 0: use ω / s".
+Small note "The real γ ramp uses L, D, B, beta_fast and beta_slow." The midpoint gamma is a teaching value, not a claim about a specific model.
+Outgoing arrow "θ = p × ωY[j]" feeding a box "Same RoPE rotation".
+Keep high and low frequency directions correct: high frequencies stay original; low frequencies are divided by s; the middle blends both.
+
+Panel 3 "3. Correct attention magnitude".
+Explain "Scale both rotated Q and K by m".
+Reference default, explicitly label as "Reference LLaMA / Llama 2 rule, s > 1":
+"m = 1 + 0.1 × ln(s)"
+"At s = 4: m ≈ 1.1386"
+"Q·K receives a factor m² ≈ 1.2965"
+Define "ln: natural logarithm".
+Draw two inputs "rotated Q" and "rotated K", each through its own "× m" operation, converging on a dot-product box with note "scale factor m²". This factor applies to dot-product scores, not directly to softmax probabilities.
+Prominent caution in concise plain language: "Use the model's effective magnitude; this reference rule is not universal."
+Marmotte connection at the bottom:
+"Corrected frequencies + magnitude + pairing"
+"→ RotaryEmbedding.Create(...)"
+"→ existing IRopeKernel.Rope(...)"
+Mark the preparation step amber dashed PLANNED, but the existing CPU RoPE call teal IMPLEMENTED.
+Final note: "Model-specific attention temperature is a separate setting."
+Do not say all models use this magnitude or that extending a scale guarantees model quality at any context length. Do not invent an IYarnKernel API.
+

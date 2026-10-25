@@ -4,7 +4,8 @@
 and `Marmotte.Metal` each reference Core; Core references none of the backends.
 The implemented operations are element-wise F32 addition, the SwiGLU
 activation of the feed-forward layer, RMS normalization, embedding lookup from
-stored weights, and matrix-vector and matrix-matrix products with stored weights.
+stored weights, matrix-vector and matrix-matrix products with stored weights, and
+rotary position embedding.
 
 ## Reading the Formulas
 
@@ -32,7 +33,7 @@ use unrounded intermediates.
 | `sqrt(...)`, `exp(z)` | Square root, and the exponential `e` raised to `z` |
 | `Wᵀ` | Transposed matrix in the mathematical expression: rows become columns |
 
-| Kernel | What one output represents | Walkthrough |
+| Kernel or technique | What one output represents | Walkthrough |
 | --- | --- | --- |
 | Add | Sum of two values at the same position | [Matching positions](#add-and-buffer-reuse) |
 | SwiGLU | One value multiplied by a smooth gate | [Three scalar steps](#swiglu) |
@@ -40,12 +41,16 @@ use unrounded intermediates.
 | EmbeddingLookup | A feature copied or decoded from the vocabulary row selected by an ID | [Select rows](#embedding-lookup) |
 | MatVec | Sum of products between one weight row and one input vector | [One dot product](#matrix-vector-product) |
 | MatMul | The same dot product for one token in a batch | [Reuse rows across tokens](#matrix-matrix-product) |
+| Rope | One value of a pair turned by an angle that grows with the token's position | [Rotate pairs](#rotary-position-embedding) |
+| YaRN (parameter preparation, planned) | Adjusted RoPE frequencies and an attention magnitude factor | [Extend context](#yarn-context-extension) |
 
-All six kernels have CPU implementations; CUDA and Metal remain placeholders.
-The six walkthrough images were generated with the built-in `image_gen` tool,
-visually reviewed, and their numerical examples checked independently. The
-[generation and correction prompts](kernel-illustrations.prompt.txt) are kept
-alongside the images. The older overview below has its own status note.
+All seven kernels have CPU implementations; CUDA and Metal remain placeholders.
+YaRN parameter preparation is still planned. The eight walkthrough images were
+generated with the built-in `image_gen` tool, visually reviewed, and their
+numerical examples checked independently. The prompts for the
+[first six kernels](kernel-illustrations.prompt.txt) and for
+[RoPE and YaRN](rope-yarn-illustrations.prompt.txt) are kept alongside the
+images. The older overview below has its own status note.
 
 ## From GGUF to Add
 
@@ -116,11 +121,12 @@ them one row at a time.
 | `IEmbeddingKernel.EmbeddingLookup` | Decodes selected rows with `RowDecoder` directly into F32 output | `NotImplementedException` | `NotImplementedException` |
 | `IMatVecKernel.MatVec` | One decoded row at a time, `Vector<T>` dot product in double precision | `NotImplementedException` | `NotImplementedException` |
 | `IMatMulKernel.MatMul` | Each decoded row shared by every token of the batch | `NotImplementedException` | `NotImplementedException` |
+| `IRopeKernel.Rope` | Angles in double precision once per token, shared by every head | `NotImplementedException` | `NotImplementedException` |
 | SDK/driver required today | None | None | None |
 
 `ITensorBackend` inherits `IAddKernel`, `ISwiGluKernel`, `IRmsNormKernel`,
-`IEmbeddingKernel`, `IMatVecKernel` and `IMatMulKernel`, so orchestration can
-call each kernel directly on the backend.
+`IEmbeddingKernel`, `IMatVecKernel`, `IMatMulKernel` and `IRopeKernel`, so
+orchestration can call each kernel directly on the backend.
 A consumer needing a single operation can accept its kernel interface directly.
 No generic operation registry, graph scheduler or native interop is needed for
 this example.
@@ -439,6 +445,121 @@ With 64-token batches, all matrix products of the model take about 0.57 s per
 prompt token, against about 1.8 s one token at a time in the same run. Beyond
 about 16 tokens, the double-precision sums of products dominate, at about
 0.17 ns per weight and token.
+
+## Rotary Position Embedding
+
+![RoPE: split a four-value head into pairs, compute position-dependent angles, rotate each pair, and apply the same convention to queries and keys](kernel-rope.png)
+
+[Open the RoPE illustration](kernel-rope.png).
+
+Think of each pair `[a; b]` as an arrow in a two-dimensional plane. The token's
+position determines how far that arrow turns, and the pair's frequency
+determines its rotation speed. Plain RoPE changes its direction while keeping
+its length. The illustrated angle of one radian is about 57.3 degrees.
+
+Attention needs to know where each token is. Rotary position embedding (RoPE)
+encodes positions by rotating the queries and keys of every head, two values at
+a time. For a head of `D` values, pair `j` of a token at position `p` turns by
+the angle `θ = p × ω[j]`, with `ω[j] = base^(-2j / D)`:
+
+```text
+a' = m × (a × cos θ - b × sin θ)
+b' = m × (a × sin θ + b × cos θ)
+```
+
+`m` is a magnitude factor, 1 for plain RoPE. Rotating a query and a key by their
+own positions makes the positional part of their dot product depend on their
+relative offset. The vectors' content still matters: holding the unrotated
+query and key fixed, positions `(2, 5)` and `(12, 15)` give the same dot product.
+See [RoFormer](https://arxiv.org/abs/2104.09864).
+
+Take a head of four values `[1; 0; 0; 1]` at position 1, with base 10,000. Pair 0
+turns by 1 radian and becomes `[cos 1; sin 1] ≈ [0.5403; 0.8415]`. Pair 1 turns
+by 0.01 radian and becomes `[-sin 0.01; cos 0.01] ≈ [-0.0100; 1.0000]`. At
+position 0, every value stays unchanged.
+
+`Rope(input, positions, embedding, destination)` rotates every head of every
+token. `input` has rank 2 or more, `[tokens; heads × D]` as `MatMul` produces it,
+or `[tokens; heads; D]`, and `positions` holds one absolute position per token.
+A `RotaryEmbedding` describes the model's frequencies, magnitude and pairing:
+`RotaryEmbedding.Standard(128, 1000000.0, RopePairing.AdjacentPairs)` for the
+target model, or `RotaryEmbedding.Create` for custom frequencies.
+`RopePairing.AdjacentPairs` rotates values `2j` and `2j + 1`, llama.cpp's
+"normal" type, which it uses for `mistral3`. `RopePairing.SplitHalves` rotates
+values `j` and `j + D / 2`, llama.cpp's NeoX type and the convention of Hugging
+Face checkpoints. Pairings and formulas follow `rotate_pairs` in llama.cpp's
+`ggml-cpu/ops.cpp`. `destination` may be `input`. Ownership, validation and
+ordering follow `Add`, and a negative position raises
+`ArgumentOutOfRangeException` before any write.
+
+The CPU backend computes the cosine and sine of each pair once per token, in
+double precision, multiplies them by `m`, rounds them once to F32, and uses them
+for every head. Frequencies are kept in double precision, while llama.cpp
+accumulates them in F32, so angles at long positions can differ slightly. Tests
+compare results with a double-precision reference up to position 262,143, and
+check that rotations preserve lengths and that query-key products depend only
+on the distance between positions. The rotation loop is scalar: RoPE touches
+5,120 values per token for the target model's queries and keys, little next to
+the matrix products.
+
+The target model also needs the YaRN preparation described below, which adjusts
+the frequencies and magnitude. `RotaryEmbedding.Create` already accepts those
+values; computing them from the model's YaRN configuration remains planned.
+
+## YaRN Context Extension
+
+![YaRN: extend a toy context from 64 to 256 positions, preserve fast rotations, slow low frequencies, blend the middle band, then apply a model-dependent attention magnitude correction](kernel-yarn.png)
+
+[Open the YaRN illustration](kernel-yarn.png).
+
+YaRN prepares frequencies and a magnitude for the same RoPE rotation. It is
+not a separate tensor kernel in Marmotte. **Parameter preparation is planned**;
+the CPU rotation and `RotaryEmbedding.Create` already support custom values.
+
+Let `L` be the original context length and `s` the extension factor. The picture
+uses the teaching example `L = 64`, `s = 4`, giving `256` positions. These are
+not the target model's parameters. Keep fast rotations, slow the lowest
+frequencies by dividing by `s`, and blend the middle band:
+
+```text
+omegaY[j] = gamma[j] × omega[j] + (1 - gamma[j]) × (omega[j] / s)
+angle[p, j] = p × omegaY[j]
+```
+
+`gamma[j]` is the fraction of the original frequency to keep. The positions
+themselves remain unchanged. The [reference implementation](https://github.com/jquesnelle/yarn/blob/master/scaled_rope/LlamaYaRNScaledRotaryEmbedding.py)
+derives transition boundaries from how many rotations a pair makes within `L`,
+using `beta_fast` and `beta_slow`, then applies a clamped ramp across pair
+indices. The illustration's blend weights demonstrate the arithmetic; they
+are not a substitute for deriving that ramp from model parameters.
+
+| Illustrative band | Original frequency | Keep-original weight `gamma` | Corrected frequency for `s = 4` |
+| --- | --- | --- | --- |
+| Fast | `1` | `1` | `1` |
+| Middle | `0.1` | `0.5` | `0.5 × 0.1 + 0.5 × 0.025 = 0.0625` |
+| Slow | `0.01` | `0` | `0.01 / 4 = 0.0025` |
+
+YaRN also adjusts attention magnitude. The [YaRN paper's LLaMA/Llama 2 reference rule](https://arxiv.org/html/2309.00071v2#S3.SS4)
+for extension factors greater than one is:
+
+```text
+m = 1 + 0.1 × ln(s)
+qY = m × rotatedQuery
+kY = m × rotatedKey
+dot(qY, kY) = m² × dot(rotatedQuery, rotatedKey)
+```
+
+`ln` is the natural logarithm. For `s = 4`, `m ≈ 1.1386` and `m² ≈ 1.2965`.
+The factor acts on attention scores before softmax, not on the resulting
+probabilities. Use the model's effective magnitude: this reference fit is not
+universal, and the target model's combined factors still need validation as
+recorded in the [roadmap](../ROADMAP.md). Its position-dependent
+`attention.temperature_scale` is a separate adjustment.
+
+The intended path is therefore: derive frequencies and magnitude from the
+model configuration, construct a `RotaryEmbedding`, then call `Rope` on Q and
+K. Correctly configuring a longer context does not itself establish the model's
+accuracy at that length.
 
 ## Ordering, Completion and Lifetime
 
