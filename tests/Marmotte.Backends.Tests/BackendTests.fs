@@ -483,12 +483,15 @@ let private randomPayload (random: Random) (encoding: TensorEncoding) rows colum
         let bytes = Array.zeroCreate<byte> (valueCount / encoding.BlockElements * blockBytes)
         random.NextBytes(bytes)
         // Super-block scale offsets from the block layouts cited in docs/kernels.md: d first, plus
-        // dmin for Q4_K; d last for Q6_K.
+        // dmin for Q4_K and Q5_K; d and dmin last for Q2_K, d last for Q3_K and Q6_K.
         let scaleOffsets =
             match encoding with
             | TensorEncoding.Q4_1
             | TensorEncoding.Q5_1
-            | TensorEncoding.Q4_K -> [ 0; 2 ]
+            | TensorEncoding.Q4_K
+            | TensorEncoding.Q5_K -> [ 0; 2 ]
+            | TensorEncoding.Q2_K -> [ 80; 82 ]
+            | TensorEncoding.Q3_K -> [ 108 ]
             | TensorEncoding.Q6_K -> [ 208 ]
             | _ -> [ 0 ]
         for block in 0 .. bytes.Length / blockBytes - 1 do
@@ -544,7 +547,10 @@ let ``MatVec matches decoded rows in double precision for every encoding`` () =
           TensorEncoding.Q5_1, [ 32; 96 ]
           TensorEncoding.Q8_0, [ 32; 96 ]
           TensorEncoding.IQ4_NL, [ 32; 96 ]
+          TensorEncoding.Q2_K, [ 256; 512 ]
+          TensorEncoding.Q3_K, [ 256; 512 ]
           TensorEncoding.Q4_K, [ 256; 512 ]
+          TensorEncoding.Q5_K, [ 256; 512 ]
           TensorEncoding.Q6_K, [ 256; 512 ] ]
 
     for encoding, widths in cases do
@@ -628,7 +634,10 @@ let ``MatMul matches decoded rows in double precision for every encoding and bat
           TensorEncoding.Q5_1, 96
           TensorEncoding.Q8_0, 96
           TensorEncoding.IQ4_NL, 96
+          TensorEncoding.Q2_K, 512
+          TensorEncoding.Q3_K, 512
           TensorEncoding.Q4_K, 512
+          TensorEncoding.Q5_K, 512
           TensorEncoding.Q6_K, 512 ]
 
     for encoding, columns in cases do

@@ -86,6 +86,64 @@ let private q4KValues (scale: single) (minimumScale: single) (scales: int array)
         let offset = minimumScale * float32 minimums[subBlock]
         factor * float32 quants[value] - offset)
 
+/// Each half of 128 values packs 32 bytes four times: byte lane holds values lane, lane + 32,
+/// lane + 64 and lane + 96 of the half in bits 0-1, 2-3, 4-5 and 6-7.
+let private twoBitBytes (quants: int array) =
+    let bytes = Array.zeroCreate<byte> 64
+    for half in 0 .. 1 do
+        for group in 0 .. 3 do
+            for lane in 0 .. 31 do
+                let quant = quants[128 * half + 32 * group + lane] &&& 3
+                bytes[32 * half + lane] <- bytes[32 * half + lane] ||| byte (quant <<< (2 * group))
+    bytes
+
+/// One byte per sub-block of 16, scale in its low nibble and minimum in its high nibble, then the
+/// 2-bit quants and finally d and dmin.
+let private q2KBlock (scale: single) (minimumScale: single) (scales: int array) (minimums: int array) (quants: int array) =
+    let packedScales = Array.init 16 (fun index -> byte (scales[index] ||| (minimums[index] <<< 4)))
+    Array.concat [ packedScales; twoBitBytes quants; halfBytes scale; halfBytes minimumScale ]
+
+let private q2KValues (scale: single) (minimumScale: single) (scales: int array) (minimums: int array) (quants: int array) =
+    Array.init 256 (fun value ->
+        let factor = scale * float32 scales[value / 16]
+        let offset = minimumScale * float32 minimums[value / 16]
+        factor * float32 quants[value] - offset)
+
+/// Quants in [-4, 3] are stored as q + 4 on 3 bits: the low 2 bits as in Q2_K, and the high bit,
+/// set for q >= 0, in bit 4 × half + group of byte lane. Scales in [-32, 31] are stored as s + 32:
+/// bytes 0-7 hold the low nibbles of scales 0-7, and in their high nibbles those of scales 8-15;
+/// byte 8 + k holds the high 2 bits of scales k, k + 4, k + 8 and k + 12, from its lowest bits up.
+let private q3KBlock (scale: single) (scales: int array) (quants: int array) =
+    let stored = quants |> Array.map (fun quant -> quant + 4)
+    let highBits = Array.zeroCreate<byte> 32
+    for half in 0 .. 1 do
+        for group in 0 .. 3 do
+            for lane in 0 .. 31 do
+                let high = stored[128 * half + 32 * group + lane] >>> 2
+                highBits[lane] <- highBits[lane] ||| byte (high <<< (4 * half + group))
+
+    let biased = scales |> Array.map (fun value -> value + 32)
+    let packedScale index =
+        if index < 8 then
+            (biased[index] &&& 15) ||| ((biased[index + 8] &&& 15) <<< 4)
+        else
+            let k = index - 8
+            (biased[k] >>> 4) ||| ((biased[k + 4] >>> 4) <<< 2) ||| ((biased[k + 8] >>> 4) <<< 4) ||| ((biased[k + 12] >>> 4) <<< 6)
+
+    Array.concat [ highBits; twoBitBytes stored; Array.init 12 (packedScale >> byte); halfBytes scale ]
+
+let private q3KValues (scale: single) (scales: int array) (quants: int array) =
+    Array.init 256 (fun value -> scale * float32 scales[value / 16] * float32 quants[value])
+
+/// Q4_K's d, dmin and 12 scale bytes, then the fifth bit of value v in bit v / 32 of byte v % 32,
+/// then the low 4 bits packed as in Q4_K.
+let private q5KBlock (scale: single) (minimumScale: single) (scales: int array) (minimums: int array) (quants: int array) =
+    let q4K = q4KBlock scale minimumScale scales minimums (quants |> Array.map (fun quant -> quant &&& 15))
+    let fifthBits = Array.zeroCreate<byte> 32
+    for value in 0 .. 255 do
+        fifthBits[value % 32] <- fifthBits[value % 32] ||| byte ((quants[value] >>> 4) <<< (value / 32))
+    Array.concat [ q4K[..15]; fifthBits; q4K[16..] ]
+
 /// For each half of 128 quants and each lane l, the reference quantizer stores quants l and l + 64
 /// in the nibbles of ql[l], quants l + 32 and l + 96 in those of ql[l + 32], and the high 2 bits
 /// of the four quants in qh[l], from the lowest bits up. The 16 int8 scales and d follow.
@@ -212,6 +270,52 @@ let ``decodes Q4_K blocks with 6-bit scales and minimums of every sub-block`` ()
             (q4KValues 0.5f 0.25f (Array.rev minimums) (Array.rev scales) otherQuants)
 
     Assert.Equal<single>(expected, decode TensorEncoding.Q4_K row 512)
+
+[<Fact>]
+let ``decodes Q2_K blocks with 4-bit scales and minimums of every sub-block`` () =
+    let scales = Array.init 16 (fun index -> (index * 7 + 1) % 16)
+    let minimums = Array.init 16 (fun index -> 15 - index)
+    let quants = Array.init 256 (fun index -> (index * 5 + index / 64) % 4)
+    let otherQuants = Array.init 256 (fun index -> 3 - index % 4)
+    let row =
+        Array.append
+            (q2KBlock 0.125f 0.0625f scales minimums quants)
+            (q2KBlock 2.0f 0.5f minimums scales otherQuants)
+    let expected =
+        Array.append
+            (q2KValues 0.125f 0.0625f scales minimums quants)
+            (q2KValues 2.0f 0.5f minimums scales otherQuants)
+
+    Assert.Equal<single>(expected, decode TensorEncoding.Q2_K row 512)
+
+[<Fact>]
+let ``decodes Q3_K blocks with signed 6-bit scales and high bits subtracting 4`` () =
+    // Scales cover -32 to 31, so every packed bit of the 12 scale bytes is exercised.
+    let scales = Array.init 16 (fun index -> index * 4 - 32)
+    let quants = Array.init 256 (fun index -> (index * 3 + index / 32) % 8 - 4)
+    let otherScales = Array.init 16 (fun index -> 31 - index * 4)
+    let otherQuants = Array.init 256 (fun index -> 3 - index % 8)
+    let row = Array.append (q3KBlock 0.25f scales quants) (q3KBlock -0.0078125f otherScales otherQuants)
+    let expected = Array.append (q3KValues 0.25f scales quants) (q3KValues -0.0078125f otherScales otherQuants)
+
+    Assert.Equal<single>(expected, decode TensorEncoding.Q3_K row 512)
+
+[<Fact>]
+let ``decodes Q5_K blocks with a fifth bit above Q4_K quants`` () =
+    let scales = [| 1; 17; 33; 63; 5; 21; 42; 60 |]
+    let minimums = [| 0; 63; 16; 31; 48; 7; 32; 59 |]
+    let quants = Array.init 256 (fun index -> (index * 11 + 3) % 32)
+    let otherQuants = Array.init 256 (fun index -> 31 - index % 32)
+    let row =
+        Array.append
+            (q5KBlock 0.0625f 0.03125f scales minimums quants)
+            (q5KBlock 0.5f 0.25f (Array.rev minimums) (Array.rev scales) otherQuants)
+    let expected =
+        Array.append
+            (q4KValues 0.0625f 0.03125f scales minimums quants)
+            (q4KValues 0.5f 0.25f (Array.rev minimums) (Array.rev scales) otherQuants)
+
+    Assert.Equal<single>(expected, decode TensorEncoding.Q5_K row 512)
 
 [<Fact>]
 let ``decodes Q6_K blocks with signed scales and an offset of 32`` () =

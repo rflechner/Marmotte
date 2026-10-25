@@ -82,7 +82,56 @@ module RowDecoder =
         for index = 0 to 31 do
             destination[index] <- float32 (sbyte quants[index]) * scale
 
-    /// The 6-bit scale and minimum of a Q4_K sub-block (0-7) from its 12 packed bytes. Bytes 0-3
+    /// The 2-bit quant of value v (0-255) in the 64 low-bit bytes of a Q2_K or Q3_K block. Each half
+    /// of 128 values reads 32 bytes four times: value 32 × j + lane of the half comes from bits 2j
+    /// and 2j + 1 of byte lane.
+    let private twoBitQuant (lowBits: ReadOnlySpan<byte>) (value: int) =
+        let withinHalf = value % 128
+        (int lowBits[32 * (value / 128) + withinHalf % 32] >>> (2 * (withinHalf / 32))) &&& 3
+
+    /// 256 values in sixteen sub-blocks of 16: 16 bytes whose low 4 bits scale a sub-block and
+    /// whose high 4 bits give its minimum, 64 bytes of 2-bit quants, then the half super-block
+    /// scales d and dmin. Value = d × scale × q - dmin × minimum, with both products computed once
+    /// per sub-block.
+    let private decodeQ2KBlock (block: ReadOnlySpan<byte>) (destination: Span<single>) =
+        let packedScales = block.Slice(0, 16)
+        let lowBits = block.Slice(16, 64)
+        let scale = readHalf (block.Slice(80))
+        let minimumScale = readHalf (block.Slice(82))
+        for subBlock = 0 to 15 do
+            let packed = int packedScales[subBlock]
+            let factor = scale * float32 (packed &&& 0xF)
+            let offset = minimumScale * float32 (packed >>> 4)
+            for value = 16 * subBlock to 16 * subBlock + 15 do
+                destination[value] <- factor * float32 (twoBitQuant lowBits value) - offset
+
+    /// The signed 6-bit scale of a Q3_K sub-block (0-15) from its 12 packed bytes. The low 4 bits
+    /// are the low nibble of byte i for sub-blocks 0-7, and the high nibble of byte i - 8 for
+    /// sub-blocks 8-15. The high 2 bits are bits 2 × (i / 4) and 2 × (i / 4) + 1 of byte
+    /// 8 + i % 4. Scales are offset by 32.
+    let private q3KScale (packed: ReadOnlySpan<byte>) (subBlock: int) =
+        let low = if subBlock < 8 then int packed[subBlock] &&& 0xF else int packed[subBlock - 8] >>> 4
+        let high = (int packed[8 + subBlock % 4] >>> (2 * (subBlock / 4))) &&& 3
+        (low ||| (high <<< 4)) - 32
+
+    /// 256 values in sixteen sub-blocks of 16: 32 bytes of high bits, 64 bytes of 2-bit low
+    /// quants arranged as in Q2_K, 12 bytes of scales, then the half super-block scale d. Value v
+    /// takes its high bit from bit v / 32 of byte v % 32; its quant is the low bits, minus 4 when
+    /// the high bit is clear, in [-4, 3]. Value = d × scale × quant, with the product of the scales
+    /// computed once per sub-block.
+    let private decodeQ3KBlock (block: ReadOnlySpan<byte>) (destination: Span<single>) =
+        let highBits = block.Slice(0, 32)
+        let lowBits = block.Slice(32, 64)
+        let packedScales = block.Slice(96, 12)
+        let scale = readHalf (block.Slice(108))
+        for subBlock = 0 to 15 do
+            let factor = scale * float32 (q3KScale packedScales subBlock)
+            for value = 16 * subBlock to 16 * subBlock + 15 do
+                let highBit = (int highBits[value % 32] >>> (value / 32)) &&& 1
+                let quant = if highBit = 1 then twoBitQuant lowBits value else twoBitQuant lowBits value - 4
+                destination[value] <- factor * float32 quant
+
+    /// The 6-bit scale and minimum of a Q4_K or Q5_K sub-block (0-7) from its 12 packed bytes. Bytes 0-3
     /// hold the scales of sub-blocks 0-3 and bytes 4-7 their minimums, in their low 6 bits.
     /// Sub-blocks 4-7 keep their low 4 bits in the nibbles of bytes 8-11, and their high 2 bits
     /// in the top bits of bytes 0-3 (scales) and 4-7 (minimums).
@@ -118,6 +167,34 @@ module RowDecoder =
                 let packed = int chunkQuants[index]
                 output[index] <- lowFactor * float32 (packed &&& 0xF) - lowOffset
                 output[index + 32] <- highFactor * float32 (packed >>> 4) - highOffset
+
+    /// 256 values as in Q4_K, with a fifth bit per quant: the half scales d and dmin, 12 bytes of
+    /// scales and minimums packed as in Q4_K, 32 bytes of fifth bits, then 128 bytes of low 4 bits
+    /// arranged as in Q4_K. Value v takes its fifth bit from bit v / 32 of byte v % 32.
+    let private decodeQ5KBlock (block: ReadOnlySpan<byte>) (destination: Span<single>) =
+        let scale = readHalf block
+        let minimumScale = readHalf (block.Slice(2))
+        let packedScales = block.Slice(4, 12)
+        let fifthBits = block.Slice(16, 32)
+        let quants = block.Slice(48, 128)
+
+        for chunk = 0 to 3 do
+            let chunkQuants = quants.Slice(32 * chunk, 32)
+            let output = destination.Slice(64 * chunk, 64)
+            let struct (lowScale, lowMinimum) = q4KScaleAndMinimum packedScales (2 * chunk)
+            let struct (highScale, highMinimum) = q4KScaleAndMinimum packedScales (2 * chunk + 1)
+            let lowFactor = scale * float32 lowScale
+            let lowOffset = minimumScale * float32 lowMinimum
+            let highFactor = scale * float32 highScale
+            let highOffset = minimumScale * float32 highMinimum
+
+            for index = 0 to 31 do
+                let packed = int chunkQuants[index]
+                let fifth = int fifthBits[index]
+                let low = (packed &&& 0xF) ||| (((fifth >>> (2 * chunk)) &&& 1) <<< 4)
+                let high = (packed >>> 4) ||| (((fifth >>> (2 * chunk + 1)) &&& 1) <<< 4)
+                output[index] <- lowFactor * float32 low - lowOffset
+                output[index + 32] <- highFactor * float32 high - highOffset
 
     /// 256 values: 128 bytes of low 4 bits, 64 bytes of high 2 bits, 16 signed 8-bit scales (one
     /// per 16 values), then the half super-block scale. Value = d × scale × (quant - 32). Each half
@@ -184,9 +261,18 @@ module RowDecoder =
         | TensorEncoding.IQ4_NL ->
             for block = 0 to blockCount - 1 do
                 decodeIq4NlBlock (row.Slice(18 * block, 18)) (destination.Slice(32 * block, 32))
+        | TensorEncoding.Q2_K ->
+            for block = 0 to blockCount - 1 do
+                decodeQ2KBlock (row.Slice(84 * block, 84)) (destination.Slice(256 * block, 256))
+        | TensorEncoding.Q3_K ->
+            for block = 0 to blockCount - 1 do
+                decodeQ3KBlock (row.Slice(110 * block, 110)) (destination.Slice(256 * block, 256))
         | TensorEncoding.Q4_K ->
             for block = 0 to blockCount - 1 do
                 decodeQ4KBlock (row.Slice(144 * block, 144)) (destination.Slice(256 * block, 256))
+        | TensorEncoding.Q5_K ->
+            for block = 0 to blockCount - 1 do
+                decodeQ5KBlock (row.Slice(176 * block, 176)) (destination.Slice(256 * block, 256))
         | TensorEncoding.Q6_K ->
             for block = 0 to blockCount - 1 do
                 decodeQ6KBlock (row.Slice(210 * block, 210)) (destination.Slice(256 * block, 256))

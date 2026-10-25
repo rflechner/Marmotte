@@ -3,9 +3,9 @@ namespace Marmotte.Core
 open System
 open System.Buffers.Binary
 
-/// Encodes F32 values into stored rows, the inverse of RowDecoder for every encoding except Q4_K
-/// and Q6_K, one quantization block at a time. Their reference quantizers search for sub-block
-/// scales, which Marmotte does not implement. Q4_0, Q4_1, Q5_0, Q5_1 and Q8_0 follow the block
+/// Encodes F32 values into stored rows, the inverse of RowDecoder for every encoding except the
+/// K-quants Q2_K to Q6_K, one quantization block at a time. Their reference quantizers search for
+/// sub-block scales and then quantize those scales, which Marmotte does not implement. Q4_0, Q4_1, Q5_0, Q5_1 and Q8_0 follow the block
 /// layouts, scales and rounding of the reference quantizers cited in docs/gguf.md (checked
 /// 2026-10-25). IQ4_NL searches its scale in the same way as its reference quantizer without an
 /// importance matrix, but is not guaranteed to produce identical blocks.
@@ -29,11 +29,14 @@ module RowEncoder =
         | TensorEncoding.Q5_1
         | TensorEncoding.Q8_0
         | TensorEncoding.IQ4_NL -> true
+        | TensorEncoding.Q2_K
+        | TensorEncoding.Q3_K
         | TensorEncoding.Q4_K
+        | TensorEncoding.Q5_K
         | TensorEncoding.Q6_K -> false
 
     let private unsupported (encoding: TensorEncoding) : exn =
-        NotSupportedException($"Encoding rows as {encoding} is not supported; only Q4_K and Q6_K rows cannot be encoded.")
+        NotSupportedException($"Encoding rows as {encoding} is not supported: K-quant encoders are not implemented.")
 
     let private writeHalf (destination: Span<byte>) (value: Half) =
         BinaryPrimitives.WriteUInt16LittleEndian(destination, BitConverter.HalfToUInt16Bits value)
@@ -220,7 +223,7 @@ module RowEncoder =
 
     /// Encodes values, a whole number of blocks of the encoding, into a row of exactly that many
     /// blocks. Rows of several tensor rows or cache positions can be encoded at once, since blocks
-    /// never span rows. Raises NotSupportedException for Q4_K and Q6_K, and ArgumentException when
+    /// never span rows. Raises NotSupportedException for the K-quants, and ArgumentException when
     /// the lengths do not match.
     let encode (encoding: TensorEncoding, values: ReadOnlySpan<single>, destination: Span<byte>) =
         if not (canEncode encoding) then
@@ -260,5 +263,8 @@ module RowEncoder =
         | TensorEncoding.IQ4_NL ->
             for block = 0 to blockCount - 1 do
                 encodeIq4NlBlock (values.Slice(32 * block, 32)) (destination.Slice(18 * block, 18))
+        | TensorEncoding.Q2_K
+        | TensorEncoding.Q3_K
         | TensorEncoding.Q4_K
+        | TensorEncoding.Q5_K
         | TensorEncoding.Q6_K -> raise (unsupported encoding)

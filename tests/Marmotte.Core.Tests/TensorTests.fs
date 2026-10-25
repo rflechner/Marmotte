@@ -60,7 +60,10 @@ let private encodingNamed name =
     | "Q5_1" -> TensorEncoding.Q5_1
     | "Q8_0" -> TensorEncoding.Q8_0
     | "IQ4_NL" -> TensorEncoding.IQ4_NL
+    | "Q2_K" -> TensorEncoding.Q2_K
+    | "Q3_K" -> TensorEncoding.Q3_K
     | "Q4_K" -> TensorEncoding.Q4_K
+    | "Q5_K" -> TensorEncoding.Q5_K
     | "Q6_K" -> TensorEncoding.Q6_K
     | _ -> failwith $"Unknown test encoding {name}"
 
@@ -88,7 +91,10 @@ let ``reads matrix rows in row-major order`` () =
 [<InlineData("Q5_1", 64, 48)>]
 [<InlineData("Q8_0", 32, 34)>]
 [<InlineData("IQ4_NL", 96, 54)>]
+[<InlineData("Q2_K", 256, 84)>]
+[<InlineData("Q3_K", 512, 220)>]
 [<InlineData("Q4_K", 256, 144)>]
+[<InlineData("Q5_K", 256, 176)>]
 [<InlineData("Q6_K", 512, 420)>]
 let ``rows hold whole quantization blocks`` encodingName columns rowBytes =
     let payload = Array.init (3 * rowBytes) byte

@@ -45,6 +45,12 @@ local check.
 - [x] Decode Q4_K and Q6_K rows, required by the target model.
 - [x] Decode Q4_1, Q5_0, Q5_1 and IQ4_NL rows, added for the key-value cache;
   GGUF tensors in these encodings can also be read as weights.
+- [x] Decode Q2_K, Q3_K and Q5_K rows, so that the Q2_K and Q3_K_S/M/L
+  profiles, which mix them with Q4_K and Q6_K, can be loaded. Layouts checked
+  against the reference; local Q5_K tensors decode to the statistics of Q4_K
+  tensors of the same roles. No Q2_K or Q3_K file has been decoded locally.
+- [ ] IQ2 and IQ3 encodings (`IQ2_XXS`, `IQ2_XS`, `IQ2_S`, `IQ3_XXS`,
+  `IQ3_S`), which index fixed codebooks of 256 to 1,024 entries.
 - [x] Verify block layouts against llama.cpp's reference implementation with
   independently encoded fixtures: `ggml-common.h` and `ggml-quants.c`, checked
   on 2026-10-25, with blocks packed by hand in `RowDecoderTests` and the

@@ -227,10 +227,16 @@ let ``zero and subnormal quantized blocks decode to zero`` () =
 
 [<Fact>]
 let ``encode rejects K-quants and rows of partial blocks`` () =
-    for encoding, values, bytes in [ TensorEncoding.Q4_K, 256, 144; TensorEncoding.Q6_K, 256, 210 ] do
+    let kQuants =
+        [ TensorEncoding.Q2_K, 84
+          TensorEncoding.Q3_K, 110
+          TensorEncoding.Q4_K, 144
+          TensorEncoding.Q5_K, 176
+          TensorEncoding.Q6_K, 210 ]
+    for encoding, bytes in kQuants do
         Assert.False(RowEncoder.canEncode encoding)
         Assert.Throws<NotSupportedException>(fun () ->
-            RowEncoder.encode (encoding, ReadOnlySpan<single>(Array.zeroCreate values), Span<byte>(Array.zeroCreate bytes)))
+            RowEncoder.encode (encoding, ReadOnlySpan<single>(Array.zeroCreate 256), Span<byte>(Array.zeroCreate bytes)))
         |> ignore
 
     Assert.Throws<ArgumentException>(fun () ->

@@ -19,7 +19,10 @@ module GgufTensorSource =
         | GgmlType.Q5_1 -> Some TensorEncoding.Q5_1
         | GgmlType.Q8_0 -> Some TensorEncoding.Q8_0
         | GgmlType.IQ4_NL -> Some TensorEncoding.IQ4_NL
+        | GgmlType.Q2_K -> Some TensorEncoding.Q2_K
+        | GgmlType.Q3_K -> Some TensorEncoding.Q3_K
         | GgmlType.Q4_K -> Some TensorEncoding.Q4_K
+        | GgmlType.Q5_K -> Some TensorEncoding.Q5_K
         | GgmlType.Q6_K -> Some TensorEncoding.Q6_K
         | _ -> None
 

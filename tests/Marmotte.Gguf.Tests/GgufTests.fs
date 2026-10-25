@@ -490,12 +490,15 @@ module TensorSource =
               GgmlType.Q5_1, TensorEncoding.Q5_1
               GgmlType.Q8_0, TensorEncoding.Q8_0
               GgmlType.IQ4_NL, TensorEncoding.IQ4_NL
+              GgmlType.Q2_K, TensorEncoding.Q2_K
+              GgmlType.Q3_K, TensorEncoding.Q3_K
               GgmlType.Q4_K, TensorEncoding.Q4_K
+              GgmlType.Q5_K, TensorEncoding.Q5_K
               GgmlType.Q6_K, TensorEncoding.Q6_K ]
         for tensorType, encoding in supported do
             Assert.Equal(Some encoding, GgufTensorSource.tryEncoding tensorType)
 
-        for tensorType in [ GgmlType.Q8_1; GgmlType.Q3_K; GgmlType.Q5_K; GgmlType.IQ4_XS; GgmlType.I32; GgmlType.F64 ] do
+        for tensorType in [ GgmlType.Q8_1; GgmlType.IQ2_XS; GgmlType.IQ4_XS; GgmlType.I32; GgmlType.F64 ] do
             Assert.Equal(None, GgufTensorSource.tryEncoding tensorType)
 
     [<Fact>]

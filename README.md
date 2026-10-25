@@ -152,8 +152,8 @@ names and model configuration are not implemented yet.
 `IEmbeddingKernel`, `IMatVecKernel`, `IMatMulKernel`, `IRopeKernel`,
 `IAttentionTemperatureKernel`, `IKeyValueCacheKernel` and `ITensorBackend`, plus
 `RotaryEmbedding`, `YarnParameters`, `AttentionTemperature` and
-`KeyValueCacheLayout`. `RowEncoder` writes rows of every encoding except Q4_K
-and Q6_K, the inverse of `RowDecoder`.
+`KeyValueCacheLayout`. `RowEncoder` writes rows of every encoding except the
+K-quants, the inverse of `RowDecoder`.
 The three backend projects share these contracts:
 
 - `Marmotte.Cpu`: owned F32 arrays, explicit upload/download, weight tensors that
@@ -203,8 +203,10 @@ cache yet.
 `EmbeddingLookup(weights, tokenIds, destination)` decodes selected vocabulary
 rows into a preallocated F32 tensor of shape `[tokenIds.Length; weights.Columns]`,
 without scaling. It supports every runtime encoding: F32, F16, BF16, Q4_0, Q4_1,
-Q5_0, Q5_1, Q8_0, IQ4_NL, Q4_K and Q6_K, including the target model's
-`token_embd.weight`. IDs may repeat; an empty batch
+Q5_0, Q5_1, Q8_0, IQ4_NL, Q2_K, Q3_K, Q4_K, Q5_K and Q6_K, including the target
+model's `token_embd.weight`. The K-quants cover the tensors of the Q2_K to Q6_K
+file profiles, such as Q3_K_M, which mix several of them; IQ2 and IQ3 encodings
+are not supported. IDs may repeat; an empty batch
 is valid. All IDs and tensor arguments are validated before writing, so invalid
 input leaves the destination unchanged. The caller may reuse the ID buffer when
 the call returns. Keep the weights' tensor source alive while they are in use.
