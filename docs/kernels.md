@@ -42,10 +42,10 @@ use unrounded intermediates.
 | MatVec | Sum of products between one weight row and one input vector | [One dot product](#matrix-vector-product) |
 | MatMul | The same dot product for one token in a batch | [Reuse rows across tokens](#matrix-matrix-product) |
 | Rope | One value of a pair turned by an angle that grows with the token's position | [Rotate pairs](#rotary-position-embedding) |
-| YaRN (parameter preparation, planned) | Adjusted RoPE frequencies and an attention magnitude factor | [Extend context](#yarn-context-extension) |
+| YaRN (parameter preparation) | Adjusted RoPE frequencies and an attention magnitude factor | [Extend context](#yarn-context-extension) |
 
 All seven kernels have CPU implementations; CUDA and Metal remain placeholders.
-YaRN parameter preparation is still planned. The eight walkthrough images were
+Core implements YaRN parameter preparation. The eight walkthrough images were
 generated with the built-in `image_gen` tool, visually reviewed, and their
 numerical examples checked independently. The prompts for the
 [first six kernels](kernel-illustrations.prompt.txt) and for
@@ -482,8 +482,9 @@ position 0, every value stays unchanged.
 token. `input` has rank 2 or more, `[tokens; heads × D]` as `MatMul` produces it,
 or `[tokens; heads; D]`, and `positions` holds one absolute position per token.
 A `RotaryEmbedding` describes the model's frequencies, magnitude and pairing:
-`RotaryEmbedding.Standard(128, 1000000.0, RopePairing.AdjacentPairs)` for the
-target model, or `RotaryEmbedding.Create` for custom frequencies.
+`RotaryEmbedding.Standard(128, 1000000.0, RopePairing.AdjacentPairs)` gives plain
+RoPE at the target model's base frequency. Use `RotaryEmbedding.Yarn` for its
+context extension, or `RotaryEmbedding.Create` for custom frequencies.
 `RopePairing.AdjacentPairs` rotates values `2j` and `2j + 1`, llama.cpp's
 "normal" type, which it uses for `mistral3`. `RopePairing.SplitHalves` rotates
 values `j` and `j + D / 2`, llama.cpp's NeoX type and the convention of Hugging
@@ -502,9 +503,8 @@ on the distance between positions. The rotation loop is scalar: RoPE touches
 5,120 values per token for the target model's queries and keys, little next to
 the matrix products.
 
-The target model also needs the YaRN preparation described below, which adjusts
-the frequencies and magnitude. `RotaryEmbedding.Create` already accepts those
-values; computing them from the model's YaRN configuration remains planned.
+The target model uses the YaRN preparation described below to adjust its
+frequencies and magnitude before rotation.
 
 ## YaRN Context Extension
 
@@ -512,9 +512,10 @@ values; computing them from the model's YaRN configuration remains planned.
 
 [Open the YaRN illustration](kernel-yarn.png).
 
-YaRN prepares frequencies and a magnitude for the same RoPE rotation. It is
-not a separate tensor kernel in Marmotte. **Parameter preparation is planned**;
-the CPU rotation and `RotaryEmbedding.Create` already support custom values.
+`RotaryEmbedding.Yarn` prepares frequencies and a magnitude in Core for the
+same `IRopeKernel.Rope` operation. The CPU kernel consumes these prepared
+parameters; CUDA and Metal remain placeholders. Preparation depends only on
+the configuration and can be shared across heads, layers and backends.
 
 Let `L` be the original context length and `s` the extension factor. The picture
 uses the teaching example `L = 64`, `s = 4`, giving `256` positions. These are
@@ -532,6 +533,26 @@ derives transition boundaries from how many rotations a pair makes within `L`,
 using `beta_fast` and `beta_slow`, then applies a clamped ramp across pair
 indices. The illustration's blend weights demonstrate the arithmetic; they
 are not a substitute for deriving that ramp from model parameters.
+
+For a full head of `D` values and frequency base `B`, Marmotte uses the
+following equations, verified against ggml's
+[`ggml_rope_yarn_corr_dims`](https://github.com/ggml-org/llama.cpp/blob/2280f0fd163b03d4331d49e08460f66502e35854/ggml/src/ggml.c#L4520-L4533)
+and [`rope_yarn`](https://github.com/ggml-org/llama.cpp/blob/2280f0fd163b03d4331d49e08460f66502e35854/ggml/src/ggml-cpu/ops.cpp#L6268-L6288):
+
+```text
+pairAtRotations(beta) = D × ln(L / (2π × beta)) / (2 × ln(B))
+low  = max(0, floor(pairAtRotations(beta_fast)))
+high = min(D - 1, ceil(pairAtRotations(beta_slow)))
+gamma[j] = 1 - clamp((j - low) / max(0.001, high - low), 0, 1)
+```
+
+`floor` rounds down, `ceil` rounds up, and `clamp` limits a value to the given
+interval. The first equation finds the pair that completes `beta` full turns
+within the original context. The ramp keeps fast pairs unchanged and gradually
+increases interpolation toward the slow pairs. The `0.001` denominator guard
+also covers coincident boundaries. The upper cutoff follows ggml's `D - 1`
+bound even though only `D / 2` pairs are sampled; a transition can extend past
+the last pair. This API uses the full blend, equivalent to `ext_factor = 1`.
 
 | Illustrative band | Original frequency | Keep-original weight `gamma` | Corrected frequency for `s = 4` |
 | --- | --- | --- | --- |
@@ -552,14 +573,70 @@ dot(qY, kY) = m² × dot(rotatedQuery, rotatedKey)
 `ln` is the natural logarithm. For `s = 4`, `m ≈ 1.1386` and `m² ≈ 1.2965`.
 The factor acts on attention scores before softmax, not on the resulting
 probabilities. Use the model's effective magnitude: this reference fit is not
-universal, and the target model's combined factors still need validation as
-recorded in the [roadmap](../ROADMAP.md). Its position-dependent
-`attention.temperature_scale` is a separate adjustment.
+universal. Marmotte combines the general `mscale = 1` rule in
+[`llama-context.cpp`](https://github.com/ggml-org/llama.cpp/blob/2280f0fd163b03d4331d49e08460f66502e35854/src/llama-context.cpp#L269-L306)
+with the compensation inside ggml's kernel, so it applies the final magnitude
+exactly once:
 
-The intended path is therefore: derive frequencies and magnitude from the
-model configuration, construct a `RotaryEmbedding`, then call `Rope` on Q and
-K. Correctly configuring a longer context does not itself establish the model's
-accuracy at that length.
+```text
+m = AttentionFactor × (1 + 0.1 × ln(s)) / (1 + 0.1 × LogMultiplier × ln(s))
+```
+
+`LogMultiplier` corresponds to `rope.scaling.yarn_log_multiplier`; use zero
+when absent to get the reference rule above. `AttentionFactor` corresponds to
+`rope.scaling.attn_factor`, with a default of one when absent. Model-specific
+policies such as DeepSeek's alternative numerator are not inferred. The
+position-dependent `attention.temperature_scale` is a separate roadmap item.
+
+For the target model, `D = 128`, `B = 1,000,000`, `L = 16,384`, `s = 16`,
+`beta_fast = 32` and `beta_slow = 1`. The unrounded cutoff indices are about
+20.385 and 36.440, giving `low = 20` and `high = 37`. Pair 27 therefore keeps
+`10/17` of its original frequency and takes `7/17` of its divided frequency:
+`0.00294272718` becomes `0.00180674794` radians per position. With
+`LogMultiplier = 1` and `AttentionFactor = 1`, the magnitude is exactly one;
+applying the paper's reference amplification again would incorrectly enlarge
+the attention scores.
+
+```fsharp
+let parameters =
+    { ScalingFactor = 16.0
+      OriginalContextLength = 16384
+      BetaFast = 32.0
+      BetaSlow = 1.0
+      LogMultiplier = 1.0
+      AttentionFactor = 1.0 }
+
+let embedding =
+    RotaryEmbedding.Yarn(128, 1000000.0, RopePairing.AdjacentPairs, parameters)
+
+backend.Rope(queries, positions, embedding, queries)
+backend.Rope(keys, positions, embedding, keys)
+```
+
+The factory requires a positive even head dimension, a finite base greater
+than one, `s >= 1`, a positive original context, finite thresholds with
+`BetaFast >= BetaSlow > 0`, a finite non-negative logarithmic multiplier and a
+finite positive attention factor. Invalid configuration raises an argument
+exception before allocating the frequency array; the final magnitude must
+also fit a finite positive F32 value. A scale of one leaves frequencies
+unchanged. Both pairings use the same frequencies and magnitude. Loading these
+parameters from model metadata remains part of the future model loader.
+
+Tests check the transition, magnitude cancellation and non-default magnitude
+parameters, invalid inputs, collapsed or out-of-range cutoffs, and CPU
+rotations of 32 query heads and 8 key heads through position 262,143 with both
+pairings. A separate check ran the unmodified ggml CPU kernel at revision
+`2280f0fd163b03d4331d49e08460f66502e35854` on pairs `(1, 0)` at positions
+0, 1, 16,384 and 262,143, using the target configuration and ggml's compensated
+`attn_factor = 1 / (1 + 0.1 × ln(16))`. Recorded output values are retained in
+[`YarnTests.fs`](../tests/Marmotte.Backends.Tests/YarnTests.fs); running the tests
+does not require ggml or GPU hardware. They account for ggml's F32 angle
+accumulation, while a separate double-precision reference checks Marmotte with
+a tighter tolerance. Neither check measures language-model accuracy at long
+context lengths.
+
+Run [`examples/Yarn.fsx`](../examples/Yarn.fsx) to inspect the frequencies and
+CPU rotations without a model file.
 
 ## Ordering, Completion and Lifetime
 

@@ -8,6 +8,7 @@
     <Compile Include="BackendTests.fs" />
     <Compile Include="EmbeddingTests.fs" />
     <Compile Include="RopeTests.fs" />
+    <Compile Include="YarnTests.fs" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="FSharp.Core" ExcludeAssets="contentFiles" />

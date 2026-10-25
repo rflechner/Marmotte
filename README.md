@@ -149,7 +149,8 @@ names and model configuration are not implemented yet.
 
 `Marmotte.Core` defines `TensorShape`, `ITensor`, `IWeightTensor`, `IAddKernel`,
 `ISwiGluKernel`, `IRmsNormKernel`, `IEmbeddingKernel`, `IMatVecKernel`,
-`IMatMulKernel`, `IRopeKernel` and `ITensorBackend`, plus `RotaryEmbedding`.
+`IMatMulKernel`, `IRopeKernel` and `ITensorBackend`, plus `RotaryEmbedding` and
+`YarnParameters`.
 The three backend projects share these contracts:
 
 - `Marmotte.Cpu`: owned F32 arrays, explicit upload/download, weight tensors that
@@ -176,7 +177,12 @@ normalizes each row along the last dimension and multiplies it by an F32 weight
 vector; its CPU implementation sums the squares in double precision.
 `Rope(input, positions, embedding, destination)` rotates pairs of values in every
 head by angles proportional to each token's position, with the frequencies and
-pairing of a `RotaryEmbedding`.
+pairing of a `RotaryEmbedding`. `RotaryEmbedding.Yarn` prepares the corrected
+frequencies and final magnitude from explicit `YarnParameters`, for use by the
+same kernel. For the target model (factor 16, original context 16,384, betas
+32/1, logarithmic multiplier 1), the effective magnitude is exactly 1.
+Model metadata loading and the separate position-dependent attention temperature
+remain to be implemented.
 
 `EmbeddingLookup(weights, tokenIds, destination)` decodes selected vocabulary
 rows into a preallocated F32 tensor of shape `[tokenIds.Length; weights.Columns]`,
@@ -192,6 +198,7 @@ the examples without a local model:
 ```sh
 dotnet fsi examples/Add.fsx
 dotnet fsi examples/Embedding.fsx
+dotnet fsi examples/Yarn.fsx
 ```
 
 ## Inspect a local GGUF file

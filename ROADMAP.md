@@ -123,12 +123,15 @@ Attention:
   of values (`LLAMA_ROPE_TYPE_NORM`), with base frequency 1,000,000 and the
   token's absolute position. `IRopeKernel` and `RotaryEmbedding` in Core support
   both pairings; `Marmotte.Cpu` computes the angles in double precision.
-- [ ] YaRN frequency correction: scaling factor 16, original context 16,384,
-  `beta_fast` 32 and `beta_slow` 1. With `yarn_log_multiplier` = 1, the
-  attention magnitude correction computed in llama.cpp's `src/llama-context.cpp`
-  should cancel out for this model. Implement the general formula, and check
-  this case against ggml's RoPE implementation. `RotaryEmbedding.Create`
-  accepts the corrected frequencies and magnitude.
+- [x] YaRN frequency correction: `RotaryEmbedding.Yarn` prepares frequencies
+  and the final magnitude from `YarnParameters`. The target uses factor 16,
+  original context 16,384, `beta_fast` 32 and `beta_slow` 1: pairs 20–37 form
+  the transition. The general magnitude formula combines llama.cpp's context
+  compensation with ggml's RoPE scaling; `yarn_log_multiplier` = 1 cancels
+  the correction for this model. Checked against a compiled ggml CPU kernel
+  and retained numerical fixtures, including position 262,143. See the
+  [formulas and validation](docs/kernels.md#yarn-context-extension) and
+  [runnable example](examples/Yarn.fsx).
 - [ ] Attention temperature: after RoPE, multiply Q by
   `1 + β × ln(floor(p / L) + 1)`, where `p` is the token position,
   β = `attention.temperature_scale` (0.1) and
