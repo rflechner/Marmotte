@@ -142,8 +142,14 @@ the tensor's validated byte range into a managed array with positional reads,
 which can run concurrently. A payload must therefore fit in one array, and
 loaded weights occupy as much memory as in the file. `matrix.DecodeRow(row, span)`
 decodes one row of any `TensorEncoding` into F32 values, and CPU embedding lookup
-decodes selected rows on demand. Memory mapping, architecture-specific tensor
-names and model configuration are not implemented yet.
+decodes selected rows on demand.
+
+`GgufTensorSource.openMappedFile` returns the same `ITensorSource` over a
+memory-mapped file instead: payload requests are zero-copy views of the mapping,
+so loaded weights occupy no managed heap and the operating system pages them in
+on demand; see [the measurement](docs/gguf.md#memory-mapped-tensor-source).
+Architecture-specific tensor names and model configuration are not implemented
+yet.
 
 ## Execution tensors and kernels
 

@@ -6,8 +6,8 @@ library reads the metadata and tensor index without loading the weights.
 
 This document describes the format and the current F# implementation, including
 native quantization from floating-point weights. Rows of supported encodings
-can be dequantized through `Marmotte.Core`; memory-mapped tensor views and
-inference remain future work.
+can be dequantized through `Marmotte.Core`, and tensor payloads can be served
+from a memory-mapped file; inference remains future work.
 
 > The imported diagram is a conceptual overview. Its little-endian note omits
 > GGUF v3 big-endian support, its bitwise alignment formula only applies to
@@ -260,10 +260,11 @@ into row-major shapes. On request, it copies a tensor's validated payload range
 into a managed array. Tensors with unknown or unsupported encodings stay listed
 but cannot be read.
 
-Later steps could:
-
-- Memory-map the file instead of copying payloads.
-- Represent tensor payloads as bounded slices of the mapped storage.
+`GgufTensorSource.openMappedFile` serves the same `ITensorSource` contract from
+a memory-mapped file: payloads are zero-copy views of the mapping, so they
+occupy no managed heap and the operating system pages them in on demand. See
+[Memory-mapped tensor source](#memory-mapped-tensor-source) for the measurement
+that chose this design.
 
 `RowDecoder` in `Marmotte.Core` dequantizes one row at a time, only when a kernel
 needs it; see the [matrix-vector product](kernels.md#matrix-vector-product).
@@ -342,6 +343,36 @@ can be inspected but cannot be converted by this initial quantizer.
 10. Validate tensor offsets and encoded sizes against the file length.
 11. Return metadata and resolved descriptors, leaving weights unread.
 
+## Memory-mapped tensor source
+
+`MappedTensorSource` in `Marmotte.Core` implements `ITensorSource` over a
+memory-mapped file, and `GgufTensorSource.openMappedFile` maps a complete
+little-endian GGUF file behind it. `ReadPayload` returns zero-copy
+`ReadOnlyMemory<byte>` over the mapped view, so weights stay in their stored
+encoding in file-backed pages: they occupy no managed heap, the operating
+system faults pages in on first use and can evict them under memory pressure,
+and returned payloads keep the mapping alive after the source is disposed. The
+file length is re-checked on every read so a file truncated after opening
+raises `EndOfStreamException`, but a truncation racing a read can still fault
+the process, so mapped model files must be treated as immutable.
+
+Measured on 2026-11-07, .NET 10.0.401 on macOS 27.2 Arm64 (14 cores), warm page
+cache, against a synthetic GGUF of 2,147,225,664 bytes (eight 256 MiB `Q4_K`
+tensors of 155,325 x 3,072 plus one `F32` vector), reading every payload once:
+
+| Approach | Open | Read all payloads | Managed heap after | Resident set after |
+| --- | --- | --- | --- | --- |
+| `FileTensorSource` (copy per payload) | 3 ms | 177 ms | +2,209 MiB (2.0 GiB of arrays) | 2,376 MiB private |
+| Mapping + copy per payload | 2 ms | 701 ms | +2,209 MiB | 4,424 MiB (mapped pages + copies) |
+| Mapping, zero-copy views (`MappedTensorSource`) | 2 ms | 60 ms to touch every page | +0 MiB | 2,363 MiB file-backed, evictable |
+
+Row decoding speed was the same within noise (about 300 ms for one 256 MiB
+`Q4_K` tensor either way), so the mapping is adopted for load time and resident
+memory, not for decode throughput. Copying from the mapping instead of reading
+the file handle measured worse than both alternatives and was rejected. The
+zero-copy spans over the view are the only unsafe code in Core, confined to
+`MappedPayloadMemory` in `MappedTensorSource.fs`.
+
 ## Security Requirements
 
 GGUF files must be treated as untrusted input.
@@ -382,6 +413,9 @@ Implemented:
 - A format-neutral tensor source through `GgufTensorSource`, copying validated
   payload ranges of `F32`, `F16`, `BF16`, `Q4_0`, `Q4_1`, `Q5_0`, `Q5_1`,
   `Q8_0`, `IQ4_NL`, `Q2_K`, `Q3_K`, `Q4_K`, `Q5_K` and `Q6_K` tensors on request
+- The same source over a memory-mapped file through `GgufTensorSource.openMappedFile`
+  and `MappedTensorSource`, serving payloads as zero-copy views of the mapping;
+  see [Memory-mapped tensor source](#memory-mapped-tensor-source)
 - Row dequantization of those encodings through `Marmotte.Core`'s `RowDecoder`,
   verified against blocks packed by hand from `ggml-common.h` layouts
 - Tests for valid files, malformed input, partial reads, and stream ownership
@@ -394,7 +428,6 @@ Implemented:
 
 Not implemented:
 
-- Memory-mapped storage
 - Model execution
 - Requantization, K-quant/IQ encoders and architecture-specific quantization policies
 
