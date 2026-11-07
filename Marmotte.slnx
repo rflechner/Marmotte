@@ -30,6 +30,7 @@
     <File Path="docs\tensor-storage-modes.png" />
     <File Path="docs\tensor-strides.png" />
     <File Path="docs\tensor-transpose-strides.png" />
+    <File Path="ROADMAP.md" />
   </Folder>
   <Folder Name="/examples/">
     <File Path="examples/Add.fsx" />
