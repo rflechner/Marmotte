@@ -66,3 +66,21 @@ module GgufTensorSource =
 
     /// Opens a file with the default index limits.
     let openFile path = openFileWithOptions GgufReadOptions.Default path
+
+    /// Opens a complete little-endian GGUF file read-only, reads its index with the given limits
+    /// and memory-maps the whole file until the source is disposed. Payloads are served
+    /// zero-copy from the mapping, so they occupy no managed heap; see MappedTensorSource.
+    /// Malformed, big-endian and split files raise InvalidDataException and I/O errors
+    /// propagate; the file is closed when opening fails.
+    let openMappedFileWithOptions (options: GgufReadOptions) (path: string) : ITensorSource =
+        let file = File.OpenRead(path)
+        try
+            let model = Gguf.readWithOptions options file
+            validateForRuntime model
+            new MappedTensorSource(file, Array.map location model.Tensors) :> ITensorSource
+        with _ ->
+            file.Dispose()
+            reraise ()
+
+    /// Opens a memory-mapped file with the default index limits.
+    let openMappedFile path = openMappedFileWithOptions GgufReadOptions.Default path

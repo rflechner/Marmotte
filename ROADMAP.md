@@ -37,8 +37,13 @@ local check.
   the GGUF and Safetensors libraries from their parsed descriptors, with row
   access to weight matrices. It copies validated payload ranges into managed
   arrays.
-- [ ] **A.2** Memory-map the GGUF file behind the same tensor source, after measuring
-  load time and resident memory against the copying source.
+- [x] **A.2** Memory-map the GGUF file behind the same tensor source, after measuring
+  load time and resident memory against the copying source. Implemented as
+  `MappedTensorSource` in Core with `GgufTensorSource.openMappedFile`: zero-copy payload
+  views over the mapping, no managed heap for weights. On a synthetic 2.0 GiB GGUF,
+  reading all payloads by copy took 177 ms and +2.2 GiB of heap, while mapping served
+  them in 60 ms with no heap growth; see
+  [the measurement](docs/gguf.md#memory-mapped-tensor-source).
 - [x] **A.3** Keep weights in their stored encoding: decoding the whole target model to
   F32 would need about 12.8 GiB.
 
