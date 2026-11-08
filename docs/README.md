@@ -11,6 +11,7 @@ work. Illustrations are conceptual aids, not executable format specifications.
 | [GGUF](gguf.md) | Binary layout, parser and native quantization contracts | Index reading, tensor source and F32/F16/BF16 to Q4_0/Q8_0 conversion implemented |
 | [Safetensors](safetensors.md) | JSON header, packed data, and index reader | Index reader and tensor source implemented, including `info` |
 | [From model files to a response](inference-pipeline.md) | Illustrated loading, embeddings, attention, KV cache and generation pipeline | Conceptual guide; inference is planned |
+| [Transformer layer tensors](transformer-layer-tensors.md) | Illustrated guide to the nine per-layer weight descriptors and their shapes | Dense mistral3 mapping and shape validation implemented; forward pass planned |
 | [Execution tensors and kernels](kernels.md) | Eight illustrations covering kernels and YaRN, formula notation, GGUF-to-kernel diagram and backend contracts | Eight CPU kernels, a key-value cache and YaRN preparation implemented; CUDA/Metal placeholders |
 | [Q2_K, Q3_K and BitNet b1.58](quantization.md) | Three illustrations of code levels, `twoBitQuant` packing, storage cost and ternary training | Q2_K/Q3_K decoding implemented; BitNet execution not implemented |
 | Storage and strides below | Concepts for tensor access and execution | Copying tensor source and weight matrix rows implemented; no mapped storage or strided views |

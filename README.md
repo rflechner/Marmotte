@@ -8,7 +8,9 @@ F# libraries for local inference, targeting .NET 10.
 hyperparameters into Core's `ModelConfiguration`, including head dimensions,
 RoPE/YaRN and attention temperature. It rejects missing, mistyped or inconsistent
 values without reading weights. See the [supported metadata contract and example](docs/model-configuration.md).
-Tensor mapping and inference are not implemented yet.
+`GgufModelTensorLayout.read model` maps the index to typed layer roles and checks
+weight shapes, including tied output embeddings. It does not load weights;
+inference is not implemented yet.
 
 ## GGUF reader
 

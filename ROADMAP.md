@@ -72,7 +72,9 @@ local check.
   configuration record, rejecting missing or inconsistent values.
   `GgufModelConfiguration.read` supports dense `mistral3`, plain RoPE and YaRN;
   see the [supported contract](docs/model-configuration.md).
-- [ ] **C.2** Map GGUF tensor names to transformer layers and check their shapes.
+- [x] **C.2** Map GGUF tensor names to transformer layers and check their shapes.
+  `GgufModelTensorLayout.read` validates the dense, bias-free `mistral3` layout,
+  returns row-major descriptors by layer and reuses embeddings for absent output weights.
 
 ### D. Tokenizer
 

@@ -7,6 +7,7 @@
   <ItemGroup>
     <Compile Include="GgufTests.fs" />
     <Compile Include="ModelConfigurationTests.fs" />
+    <Compile Include="ModelTensorLayoutTests.fs" />
     <Compile Include="QuantizationTests.fs" />
   </ItemGroup>
   <ItemGroup>
