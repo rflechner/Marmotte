@@ -408,6 +408,7 @@ block layouts, numerical limits and tensor selection policy.
 
 - [Format comparison, tensor storage, strides, and illustration notes](docs/README.md)
 - [Illustrated inference pipeline: model files, embeddings, KV cache and generation](docs/inference-pipeline.md)
+- [BPE tokenizer tutorial: metadata, ranked merges and special tokens (D.1, planned)](docs/tokenizer.md)
 - [GGUF format and current implementation](docs/gguf.md)
 - [Safetensors format and current implementation](docs/safetensors.md)
 - [Execution tensors and kernels on CPU, CUDA and Metal](docs/kernels.md)

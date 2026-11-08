@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="540" viewBox="0 0 960 540" role="img" aria-labelledby="title desc">
+  <title id="title">BPE: ranked merges become token IDs</title>
+  <desc id="desc">An invented vocabulary merges c a t c a t using rank 0 for c plus a, then rank 1 for ca plus t. The result cat cat maps to IDs 6, 6. Adding BOS gives 0, 6, 6.</desc>
+  <rect width="960" height="540" rx="20" fill="#f4f7fc"/>
+  <g font-family="Arial, sans-serif" fill="#152844">
+    <text x="40" y="48" font-size="28" font-weight="bold">BPE: from symbols to model IDs</text>
+    <text x="40" y="78" font-size="16">Invented ASCII example • one input piece • no rule crosses a piece boundary</text>
+    <rect x="40" y="105" width="550" height="298" rx="12" fill="#ffffff" stroke="#c5d2e4"/>
+    <g font-family="monospace" font-size="24">
+      <text x="70" y="149">c | a | t | c | a | t</text>
+      <text x="70" y="205">ca | t | c | a | t</text>
+      <text x="70" y="261">ca | t | ca | t</text>
+      <text x="70" y="317">cat | ca | t</text>
+      <text x="70" y="373" fill="#12634c">cat | cat</text>
+    </g>
+    <g font-size="15" fill="#50627e">
+      <text x="450" y="191">↓ rank 0</text>
+      <text x="450" y="247">↓ rank 0</text>
+      <text x="450" y="303">↓ rank 1</text>
+      <text x="450" y="359">↓ rank 1</text>
+    </g>
+    <rect x="620" y="105" width="300" height="298" rx="12" fill="#e8eefb"/>
+    <text x="644" y="144" font-size="21" font-weight="bold">Merge rules</text>
+    <text x="644" y="182" font-size="20">Rank 0: c + a → ca</text>
+    <text x="644" y="218" font-size="20">Rank 1: ca + t → cat</text>
+    <text x="644" y="270" font-size="17">Lowest rank first.</text>
+    <text x="644" y="298" font-size="17">Equal rank: leftmost first.</text>
+    <text x="644" y="346" font-size="17">Stop: no cat + cat rule.</text>
+    <rect x="40" y="428" width="880" height="78" rx="12" fill="#dcefe7"/>
+    <text x="64" y="460" font-size="20">Vocabulary lookup: cat → ID 6</text>
+    <text x="64" y="487" font-size="17">Payload: [6, 6]</text>
+    <text x="510" y="460" font-size="20">With BOS (ID 0): [0, 6, 6]</text>
+    <text x="510" y="487" font-size="17">Here: add BOS = true, add EOS = false</text>
+  </g>
+</svg>

@@ -80,6 +80,7 @@ local check.
 
 - [ ] **D.1** BPE tokenizer built from `tokenizer.ggml.*` metadata: tokens, token types,
   merges, special token IDs and BOS/EOS flags.
+  See the [illustrated tutorial and planned validation](docs/tokenizer.md).
 - [ ] **D.2** `tekken` pre-tokenization.
 - [ ] **D.3** Decode token IDs to UTF-8 text, including multi-byte sequences split across
   tokens during streaming.
