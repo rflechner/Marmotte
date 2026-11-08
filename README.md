@@ -1,6 +1,16 @@
 # Marmotte
 
-F# libraries for local inference, targeting .NET 10.
+Marmotte is a proof of concept exploring what a local model inference engine
+implemented in F# could look like. It targets .NET 10 and aims to keep as much
+code managed as possible, while exploring the capabilities and tradeoffs of
+this approach. A central goal is to learn how model inference works by
+implementing its building blocks, from reading model files to executing the
+operations that generate text.
+
+I am developing this project with assistance from Codex (ChatGPT), Claude and
+Mistral.
+
+This is an experimental project and is not production-ready.
 
 ## Model configuration
 
