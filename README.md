@@ -20,7 +20,10 @@ RoPE/YaRN and attention temperature. It rejects missing, mistyped or inconsisten
 values without reading weights. See the [supported metadata contract and example](docs/model-configuration.md).
 `GgufModelTensorLayout.read model` maps the index to typed layer roles and checks
 weight shapes, including tied output embeddings. It does not load weights;
-inference is not implemented yet.
+`TransformerModel.Load(backend, source, layout)` loads them for a dense `mistral3`
+forward pass. `Forward(cache, position, tokenIds)` returns logits for every token
+through the existing backend contracts. See the [walkthrough](docs/forward-pass.md)
+and `examples/Forward.fsx`. Generation and sampling orchestration remain planned.
 
 ## BPE tokenizer
 

@@ -211,8 +211,11 @@ soft-capping.
 
 ### I. Inference and generation
 
-- [ ] **I.1** Forward pass for the `mistral3` architecture, structured so that other
-  LLaMA-family architectures can follow.
+- [x] **I.1** Forward pass for the `mistral3` architecture, structured so that other
+  LLaMA-family architectures can follow. Core's `TransformerModel` loads format-neutral
+  weight roles and executes through `ITensorBackend`, with RoPE/YaRN, temperature,
+  causal attention, both residuals, SwiGLU and tied or separate output. Synthetic
+  tests compare logits with an independent reference; see the [walkthrough](docs/forward-pass.md).
 - [ ] **I.2** Prompt processing and token-by-token generation.
 - [ ] **I.3** Sampling: greedy first, then temperature, top-k and top-p with a seed.
 - [ ] **I.4** Stop on EOS or after a maximum number of tokens.
@@ -295,3 +298,31 @@ These improvements continue alongside the milestones.
   as one tensor index.
 - [ ] **O.2** Read companion files, such as `config.json` and tokenizer files, once
   Safetensors models become inference targets.
+
+## P. Declarative forward architectures
+
+Explore describing forward passes as data, so that a model variant composed of
+existing operations can be supported without another hand-written orchestration.
+Kernels remain implemented in F# through `ITensorBackend`; a genuinely new
+operation still requires implementation and tests. Start with the typed graph
+before designing its YAML representation.
+
+- [ ] **P.1** Define a format-neutral, typed F# graph for forward operations, weight
+  roles, configuration parameters, intermediate tensors, repeated blocks and
+  explicit key-value cache reads/writes. Reproduce the current dense `mistral3`
+  forward and compare logits with the existing implementation and independent
+  numerical reference.
+- [ ] **P.2** Validate operation support, weight roles, tensor dimensions and
+  dependencies before loading weight payloads or submitting computation. Report
+  errors with the affected operation and value; do not infer missing semantics
+  from weight names or shapes.
+- [ ] **P.3** Build an execution plan over `ITensorBackend`, tracking intermediate
+  lifetimes and reusing buffers where safe, while preserving residual inputs,
+  cache effects and backend submission order.
+- [ ] **P.4** Add a versioned YAML schema that constructs the validated graph,
+  including configuration references and repeated transformer blocks. Keep YAML
+  parsing separate from execution, reject unknown operations and fields, and
+  document the supported vocabulary with runnable examples.
+- [ ] **P.5** Demonstrate another architecture variant expressed with existing
+  operations, with numerical regression tests. Document which changes need only
+  a description and which require new kernels or model-format adapters.

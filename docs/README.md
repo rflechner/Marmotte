@@ -10,11 +10,12 @@ work. Illustrations are conceptual aids, not executable format specifications.
 | --- | --- | --- |
 | [GGUF](gguf.md) | Binary layout, parser and native quantization contracts | Index reading, tensor source and F32/F16/BF16 to Q4_0/Q8_0 conversion implemented |
 | [Safetensors](safetensors.md) | JSON header, packed data, and index reader | Index reader and tensor source implemented, including `info` |
-| [From model files to a response](inference-pipeline.md) | Illustrated loading, embeddings, attention, KV cache and generation pipeline | Conceptual guide; inference is planned |
+| [From model files to a response](inference-pipeline.md) | Illustrated loading, embeddings, attention, KV cache and generation pipeline | Conceptual guide; dense mistral3 forward pass implemented, generation planned |
 | [BPE tokenizer (D.1)](tokenizer.md) | Step-by-step merges, metadata and BOS/EOS policy, with an editable SVG illustration | BPE implemented, with automatic Tekken splitting through the GGUF adapter |
 | [Tekken pre-tokenization (D.2)](tekken.md) | Unicode boundaries, preserved spaces and raw-text encoding, with an SVG diagram | Implemented for the tekken profile; other automatic profiles remain unsupported |
 | [Token decoding (D.3)](token-decoding.md) | UTF-8 bytes across token boundaries, special-token policy and stream lifecycle | Complete and streaming decoding implemented |
-| [Transformer layer tensors](transformer-layer-tensors.md) | Illustrated guide to the nine per-layer weight descriptors and their shapes | Dense mistral3 mapping and shape validation implemented; forward pass planned |
+| [Transformer layer tensors](transformer-layer-tensors.md) | Illustrated guide to the nine per-layer weight descriptors and their shapes | Dense mistral3 mapping, validation and forward pass implemented |
+| [Dense forward pass](forward-pass.md) | Runnable synthetic model, loading, logits and cache ownership | Dense mistral3 implemented through backend contracts |
 | [Execution tensors and kernels](kernels.md) | Eight illustrations covering kernels and YaRN, formula notation, GGUF-to-kernel diagram and backend contracts | Eight CPU kernels, a key-value cache and YaRN preparation implemented; CUDA/Metal placeholders |
 | [Q2_K, Q3_K and BitNet b1.58](quantization.md) | Three illustrations of code levels, `twoBitQuant` packing, storage cost and ternary training | Q2_K/Q3_K decoding implemented; BitNet execution not implemented |
 | Storage and strides below | Concepts for tensor access and execution | Copying tensor source and weight matrix rows implemented; no mapped storage or strided views |
@@ -26,9 +27,8 @@ work. Illustrations are conceptual aids, not executable format specifications.
 inspecting a local GGUF file and [`quantize`](../README.md#quantize-a-gguf-file)
 for native conversion into a new file. The readers return an index; the tensor
 sources copy validated payloads on request, and the separate quantizer streams
-weight blocks. Nothing exposes mapped tensors or runs inference yet. Future
-storage types should follow actual consumers rather than being inferred from
-these pictures. Separately, execution tensors now support contiguous F32 `Add`,
+weight blocks. Mapped sources and the dense `mistral3` forward pass are implemented; generation
+and sampling remain planned. Separately, execution tensors now support contiguous F32 `Add`,
 SwiGLU, RMS normalization, rotary position embedding and attention temperature
 on CPU, plus embedding lookup and matrix-vector and matrix-matrix products over
 stored weights, and a key-value cache with configurable key and value
