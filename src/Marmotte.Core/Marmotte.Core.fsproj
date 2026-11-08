@@ -7,6 +7,8 @@
 
     <ItemGroup>
         <Compile Include="Helpers.fs" />
+        <Compile Include="FastStack.fs" />
+        <Compile Include="ParserCombinator.fs" />
         <Compile Include="Tensors.fs" />
         <Compile Include="RowDecoder.fs" />
         <Compile Include="RowEncoder.fs" />
