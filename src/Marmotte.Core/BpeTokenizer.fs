@@ -5,58 +5,9 @@ open System.Collections.Generic
 open System.IO
 open System.Text
 
-/// Vocabulary categories; control and user-defined entries require explicit insertion.
-[<RequireQualifiedAccess>]
-type TokenCategory =
-    | Normal
-    | Unknown
-    | Control
-    | UserDefined
-    | Unused
-    | Byte
-
-/// One vocabulary entry. Its array index, not its spelling or category, is its ID.
-type BpeToken =
-    { Spelling: string
-      Category: TokenCategory }
-
-/// A pair of stored byte-alphabet spellings. Array order defines merge rank.
-type BpeMerge =
-    { Left: string
-      Right: string }
-
-/// Boundary IDs and defaults. None means unavailable, not token zero.
-type TokenBoundaryPolicy =
-    { BosTokenId: int option
-      EosTokenId: int option
-      AddBos: bool
-      AddEos: bool }
-
-/// Input already segmented by a profile-specific pre-tokenizer. Special IDs are
-/// inserted explicitly; text pieces never recognize control spellings automatically.
-[<RequireQualifiedAccess>]
-type TokenizerSegment =
-    | TextPiece of string
-    | SpecialToken of int
-
-/// Reversible byte alphabet used by the supported BPE profiles; see docs/tokenizer.md.
-module private BpeByteAlphabet =
-    let symbols =
-        let mutable next = 256
-        Array.init 256 (fun value ->
-            let preserved =
-                (value >= 33 && value <= 126)
-                || (value >= 161 && value <= 172)
-                || value >= 174
-            if preserved then string (char value)
-            else
-                let symbol = string (char next)
-                next <- next + 1
-                symbol)
-
 /// Safe, synchronous BPE over pre-tokenized UTF-8 pieces. Construction copies caller
 /// arrays. Encoding uses local state and may run concurrently. No normalization,
-/// pre-tokenization, text decoding or implicit recognition of special spellings occurs.
+/// pre-tokenization or implicit recognition of special spellings occurs during encoding.
 /// The reference implementation rescans adjacent pairs after every merge; it is
 /// intended for correctness before performance tuning, not unbounded input pieces.
 type BpeTokenizer(tokens: BpeToken array, merges: BpeMerge array,
@@ -164,3 +115,22 @@ type BpeTokenizer(tokens: BpeToken array, merges: BpeMerge array,
                 | _ -> invalidArg "segments" "Explicit special ID must identify a special token."
         if addBoundaryTokens && boundaries.AddEos then output.Add boundaries.EosTokenId.Value
         output.ToArray()
+
+    /// Create an independent streaming UTF-8 decoder. The policy explicitly controls
+    /// Control, UserDefined and Unknown entries; Unused entries always fail. Call
+    /// Complete when input ends, including after EOS, to detect truncated UTF-8.
+    member this.CreateDecoder(specialTokens: SpecialTokenDecoding) =
+        TokenTextDecoder(this.GetToken, specialTokens)
+
+    /// Decode a complete sequence, using the same strict UTF-8 rules as CreateDecoder.
+    /// Null arrays raise ArgumentNullException. Invalid IDs/spellings and malformed or
+    /// truncated UTF-8 propagate the streaming decoder's exceptions; no partial string
+    /// is returned. Empty input returns an empty string. Input is consumed synchronously.
+    member this.Decode(tokenIds: int array, specialTokens: SpecialTokenDecoding) =
+        ArgumentNullException.ThrowIfNull(tokenIds)
+        let decoder = this.CreateDecoder specialTokens
+        let output = StringBuilder()
+        for tokenId in tokenIds do
+            output.Append(decoder.Append tokenId) |> ignore
+        output.Append(decoder.Complete()) |> ignore
+        output.ToString()

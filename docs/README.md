@@ -13,6 +13,7 @@ work. Illustrations are conceptual aids, not executable format specifications.
 | [From model files to a response](inference-pipeline.md) | Illustrated loading, embeddings, attention, KV cache and generation pipeline | Conceptual guide; inference is planned |
 | [BPE tokenizer (D.1)](tokenizer.md) | Step-by-step merges, metadata and BOS/EOS policy, with an editable SVG illustration | BPE implemented, with automatic Tekken splitting through the GGUF adapter |
 | [Tekken pre-tokenization (D.2)](tekken.md) | Unicode boundaries, preserved spaces and raw-text encoding, with an SVG diagram | Implemented for the tekken profile; other automatic profiles remain unsupported |
+| [Token decoding (D.3)](token-decoding.md) | UTF-8 bytes across token boundaries, special-token policy and stream lifecycle | Complete and streaming decoding implemented |
 | [Transformer layer tensors](transformer-layer-tensors.md) | Illustrated guide to the nine per-layer weight descriptors and their shapes | Dense mistral3 mapping and shape validation implemented; forward pass planned |
 | [Execution tensors and kernels](kernels.md) | Eight illustrations covering kernels and YaRN, formula notation, GGUF-to-kernel diagram and backend contracts | Eight CPU kernels, a key-value cache and YaRN preparation implemented; CUDA/Metal placeholders |
 | [Q2_K, Q3_K and BitNet b1.58](quantization.md) | Three illustrations of code levels, `twoBitQuant` packing, storage cost and ternary training | Q2_K/Q3_K decoding implemented; BitNet execution not implemented |

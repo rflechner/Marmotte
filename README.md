@@ -28,9 +28,11 @@ inference is not implemented yet.
 vocabulary, merge ranks, token categories and BOS/EOS policy. `Encode` takes
 explicit `TokenizerSegment.TextPiece` or `SpecialToken` segments. It does not
 split sentences itself. For a `tekken` profile, `loaded.EncodeText(text, true)`
-automatically splits text with `TekkenPreTokenizer.split` before BPE. Streaming
-decoding and chat templates remain planned. See the [Tekken tutorial](docs/tekken.md)
-and the [BPE contract and tutorial](docs/tokenizer.md).
+automatically splits text with `TekkenPreTokenizer.split` before BPE.
+`loaded.Tokenizer.Decode(ids, SpecialTokenDecoding.Skip)` reconstructs UTF-8 text;
+`CreateDecoder` exposes incremental `Append`/`Complete` for streaming. See the
+[decoding tutorial](docs/token-decoding.md), the [Tekken tutorial](docs/tekken.md)
+and the [BPE contract and tutorial](docs/tokenizer.md). Chat templates remain planned.
 Run the independent sentence example without a model:
 
 ```sh
@@ -423,6 +425,7 @@ block layouts, numerical limits and tensor selection policy.
 
 - [Format comparison, tensor storage, strides, and illustration notes](docs/README.md)
 - [Illustrated inference pipeline: model files, embeddings, KV cache and generation](docs/inference-pipeline.md)
+- [Token decoding: UTF-8 reconstruction and streaming (D.3)](docs/token-decoding.md)
 - [Tekken pre-tokenization: from raw text to BPE pieces (D.2)](docs/tekken.md)
 - [BPE tokenizer tutorial: metadata, ranked merges and special tokens (D.1)](docs/tokenizer.md)
 - [GGUF format and current implementation](docs/gguf.md)

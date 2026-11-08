@@ -1,3 +1,5 @@
+#load "../src/Marmotte.Core/BpeVocabulary.fs"
+#load "../src/Marmotte.Core/TokenTextDecoder.fs"
 #load "../src/Marmotte.Core/BpeTokenizer.fs"
 #load "../src/Marmotte.Core/TekkenPreTokenizer.fs"
 
@@ -38,3 +40,17 @@ if ids <> expected then failwithf "Unexpected token IDs: %A" ids
 printfn "Input: %s" (String.concat "" pieces)
 printfn "IDs with BOS: %A" ids
 printfn "Stored spellings: %A" (ids |> Array.map (fun id -> (tokenizer.GetToken id).Spelling))
+
+let decoded = tokenizer.Decode(ids, SpecialTokenDecoding.Skip)
+if decoded <> text then failwithf "Unexpected decoded text: %A" decoded
+printfn "Decoded text: %s" decoded
+
+// One Unicode scalar split across four vocabulary entries: F0 9F 98 80.
+let byteTokens = [| "ð"; "Ł"; "ĺ"; "Ģ" |] |> Array.map normal
+let byteTokenizer =
+    BpeTokenizer(byteTokens, [||],
+        { BosTokenId = None; EosTokenId = None; AddBos = false; AddEos = false }, false)
+let stream = byteTokenizer.CreateDecoder SpecialTokenDecoding.Skip
+for id in 0 .. 3 do
+    printfn "Append %d -> %A" id (stream.Append id)
+printfn "Complete -> %A" (stream.Complete())

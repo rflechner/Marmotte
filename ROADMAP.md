@@ -85,8 +85,10 @@ local check.
 - [x] **D.2** `tekken` pre-tokenization with Unicode scalar categories in
   `TekkenPreTokenizer.split`, used by `GgufTokenizer.EncodeText`. See the
   [tutorial, validation and compatibility limits](docs/tekken.md).
-- [ ] **D.3** Decode token IDs to UTF-8 text, including multi-byte sequences split across
-  tokens during streaming.
+- [x] **D.3** Decode token IDs to UTF-8 text, including multi-byte sequences split across
+  tokens during streaming. `BpeTokenizer.Decode` and `CreateDecoder` provide strict
+  decoding with explicit special-token policy, completion and reset; see the
+  [tutorial and error contracts](docs/token-decoding.md).
 - [ ] **D.4** Chat prompts: start with raw prompts, then render `tokenizer.chat_template`
   (a Jinja template), or a supported subset of it.
 

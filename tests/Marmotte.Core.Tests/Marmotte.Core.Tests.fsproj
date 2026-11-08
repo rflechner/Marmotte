@@ -6,6 +6,7 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="BpeTokenizerTests.fs" />
+    <Compile Include="TokenTextDecoderTests.fs" />
     <Compile Include="TekkenPreTokenizerTests.fs" />
     <Compile Include="TensorTests.fs" />
     <Compile Include="ComputeTests.fs" />

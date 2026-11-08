@@ -8,7 +8,8 @@ No model download is needed for the worked example.
 **Status:** D.1 is implemented as `BpeTokenizer` in Core and
 `GgufTokenizer.read` in the GGUF library. Input must already be split into
 pieces; [Tekken pre-tokenization (D.2)](tekken.md) now supplies them automatically.
-Streaming text decoding (D.3) and chat templates (D.4) remain unimplemented. The examples below use invented
+[Streaming text decoding (D.3)](token-decoding.md) is implemented; chat templates
+(D.4) remain unimplemented. The examples below use invented
 vocabularies, not measured Ministral IDs.
 
 ## 1. Find the tokenizer's ingredients

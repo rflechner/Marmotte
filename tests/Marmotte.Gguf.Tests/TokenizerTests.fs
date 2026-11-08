@@ -66,7 +66,10 @@ let ``raw text encoding applies the declared profile before BPE and wraps once``
           key "token_type", GgufValue.Array(GgufValueType.Int32, Array.map GgufValue.Int32 [| 3; 1; 1; 1; 1; 1; 1; 1 |])
           key "bos_token_id", GgufValue.UInt32 0u ] |> Map.ofList
     let loaded = GgufTokenizer.read values
-    Assert.Equal<int>([| 0; 1; 2; 3; 4; 5; 6 |], loaded.EncodeText("Hello, how are you ?", true))
+    let ids = loaded.EncodeText("Hello, how are you ?", true)
+    Assert.Equal<int>([| 0; 1; 2; 3; 4; 5; 6 |], ids)
+    Assert.Equal("Hello, how are you ?", loaded.Tokenizer.Decode(ids, SpecialTokenDecoding.Skip))
+    Assert.Equal("<bos>Hello, how are you ?", loaded.Tokenizer.Decode(ids, SpecialTokenDecoding.Include))
     Assert.Equal<int>([| 1; 2 |], loaded.EncodeText("Hello,", false))
     Assert.Equal<int>([| 7 |], loaded.Tokenizer.Encode([| TokenizerSegment.TextPiece "Hello," |], false))
     Assert.Equal<int>([| 0 |], loaded.EncodeText("", true))

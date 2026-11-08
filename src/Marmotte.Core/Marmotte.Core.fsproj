@@ -19,6 +19,8 @@
         <Compile Include="ModelTensorLayout.fs" />
         <Compile Include="KeyValueCache.fs" />
         <Compile Include="Compute.fs" />
+        <Compile Include="BpeVocabulary.fs" />
+        <Compile Include="TokenTextDecoder.fs" />
         <Compile Include="BpeTokenizer.fs" />
         <Compile Include="TekkenPreTokenizer.fs" />
     </ItemGroup>

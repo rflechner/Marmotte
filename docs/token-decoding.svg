@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="768" height="350" viewBox="0 0 768 350" role="img" aria-labelledby="title desc">
+  <title id="title">One character can span four tokens</title>
+  <desc id="desc">Tokens zero through three supply UTF-8 bytes F0, 9F, 98 and 80. The first three appends emit nothing. The fourth emits the complete character U+1F600. Completion checks that no unfinished bytes remain.</desc>
+  <rect width="768" height="350" rx="18" fill="#f4f7fc"/>
+  <g font-family="Arial, sans-serif" fill="#152844">
+    <text x="28" y="42" font-size="25" font-weight="bold">D.3: wait for a complete UTF-8 character</text>
+    <text x="28" y="76" font-size="16">Invented token IDs • real UTF-8 bytes for U+1F600</text>
+    <g fill="#e2eafb" stroke="#8da6d2">
+      <rect x="28" y="102" width="160" height="126" rx="10"/>
+      <rect x="210" y="102" width="160" height="126" rx="10"/>
+      <rect x="392" y="102" width="160" height="126" rx="10"/>
+      <rect x="574" y="102" width="166" height="126" rx="10" fill="#dcefe7" stroke="#77ac96"/>
+    </g>
+    <g text-anchor="middle">
+      <g font-size="18"><text x="108" y="132">Token 0</text><text x="290" y="132">Token 1</text><text x="472" y="132">Token 2</text><text x="657" y="132">Token 3</text></g>
+      <g font-family="monospace" font-size="27"><text x="108" y="172">F0</text><text x="290" y="172">9F</text><text x="472" y="172">98</text><text x="657" y="172">80</text></g>
+      <g font-size="17"><text x="108" y="208">Output: empty</text><text x="290" y="208">Output: empty</text><text x="472" y="208">Output: empty</text><text x="657" y="208">Output: 😀</text></g>
+    </g>
+    <text x="28" y="267" font-size="18">One shared decoder remembers the unfinished byte sequence.</text>
+    <text x="28" y="304" font-size="17">Complete() checks the tail; stopping after token 2 is an error.</text>
+  </g>
+</svg>
