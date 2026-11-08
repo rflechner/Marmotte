@@ -2,6 +2,14 @@
 
 F# libraries for local inference, targeting .NET 10.
 
+## Model configuration
+
+`GgufModelConfiguration.read model.Metadata` reads validated `mistral3`
+hyperparameters into Core's `ModelConfiguration`, including head dimensions,
+RoPE/YaRN and attention temperature. It rejects missing, mistyped or inconsistent
+values without reading weights. See the [supported metadata contract and example](docs/model-configuration.md).
+Tensor mapping and inference are not implemented yet.
+
 ## GGUF reader
 
 `Marmotte.Gguf` reads GGUF v2 (little-endian) and v3 files

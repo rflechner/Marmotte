@@ -15,6 +15,7 @@
         <Compile Include="WeightMatrix.fs" />
         <Compile Include="RotaryEmbedding.fs" />
         <Compile Include="AttentionTemperature.fs" />
+        <Compile Include="ModelConfiguration.fs" />
         <Compile Include="KeyValueCache.fs" />
         <Compile Include="Compute.fs" />
     </ItemGroup>

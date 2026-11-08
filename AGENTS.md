@@ -124,3 +124,10 @@ to F#, .NET, and local model inference.
 - The script command requires `LM_STUDIO_MODELS_FOLDER` and the local model selected by the script's relative path segments. See the [configuration instructions](README.md#inspect-a-local-gguf-file). Run it when changing model inspection or when a real-file check is useful, not as a mandatory test for every edit.
 - Use `--no-restore` only after dependencies have been restored. When build servers cause problems, use `--disable-build-servers -m:1` instead of changing project behavior.
 - Documentation-only changes need review and formatting checks, not a full test run. For code changes, run the relevant tests and build, then report what was actually verified and any remaining limitations.
+
+## Disclose AI assistance in commits
+
+- Every commit created or materially assisted by an AI agent must identify that agent in the commit message for transparency. This applies to ChatGPT Codex, Mistral, Claude, and other AI assistants.
+- Preserve the human author's configured Git identity. Add attribution trailers after a blank line at the end of the commit message; do not impersonate the human or replace their Git configuration.
+- For ChatGPT Codex, use `Co-authored-by: ChatGPT Codex <noreply@openai.com>`.
+- For Mistral, Claude, or another assistant, use a `Co-authored-by: Name <email>` trailer when an attribution identity has been supplied or configured. Otherwise, use an explicit `AI-Assisted-By: Mistral` or `AI-Assisted-By: Claude` trailer instead of inventing an email address.

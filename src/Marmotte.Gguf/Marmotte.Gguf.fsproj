@@ -8,6 +8,7 @@
     <ItemGroup>
         <Compile Include="Types.fs"/>
         <Compile Include="Gguf.fs"/>
+        <Compile Include="GgufModelConfiguration.fs" />
         <Compile Include="GgufTensorSource.fs" />
         <Compile Include="QuantizationCodec.fs" />
         <Compile Include="GgufWriter.fs" />

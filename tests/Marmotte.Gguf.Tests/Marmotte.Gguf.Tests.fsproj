@@ -6,6 +6,7 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="GgufTests.fs" />
+    <Compile Include="ModelConfigurationTests.fs" />
     <Compile Include="QuantizationTests.fs" />
   </ItemGroup>
   <ItemGroup>

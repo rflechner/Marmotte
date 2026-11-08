@@ -68,8 +68,10 @@ local check.
 
 ### C. Model configuration
 
-- [ ] **C.1** Read architecture hyperparameters from typed metadata into an explicit
+- [x] **C.1** Read architecture hyperparameters from typed metadata into an explicit
   configuration record, rejecting missing or inconsistent values.
+  `GgufModelConfiguration.read` supports dense `mistral3`, plain RoPE and YaRN;
+  see the [supported contract](docs/model-configuration.md).
 - [ ] **C.2** Map GGUF tensor names to transformer layers and check their shapes.
 
 ### D. Tokenizer
