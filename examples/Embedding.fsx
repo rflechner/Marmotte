@@ -11,6 +11,9 @@
 #load "../src/Marmotte.Cpu/CpuTensor.fs"
 #load "../src/Marmotte.Cpu/CpuWeightTensor.fs"
 #load "../src/Marmotte.Cpu/CpuKeyValueCache.fs"
+#load "../src/Marmotte.Cpu/CpuQ8Activations.fs"
+#load "../src/Marmotte.Cpu/CpuKQuantBlocks.fs"
+#load "../src/Marmotte.Cpu/CpuMatrixKernels.fs"
 #load "../src/Marmotte.Cpu/CpuBackend.fs"
 
 open System

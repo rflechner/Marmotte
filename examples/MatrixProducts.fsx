@@ -19,13 +19,19 @@ let matrix (encoding: TensorEncoding) rows columns =
     | TensorEncoding.F32 ->
         for index in 0 .. rows * columns - 1 do
             BinaryPrimitives.WriteSingleLittleEndian(bytes.AsSpan(index * 4, 4), float32 (random.NextDouble() - 0.5))
-    | TensorEncoding.Q4_K | TensorEncoding.Q6_K ->
+    | TensorEncoding.Q2_K | TensorEncoding.Q3_K | TensorEncoding.Q4_K
+    | TensorEncoding.Q5_K | TensorEncoding.Q6_K ->
         random.NextBytes bytes
         for offset in 0 .. encoding.BlockBytes .. bytes.Length - 1 do
-            let scaleOffsets = if encoding = TensorEncoding.Q4_K then [ 0; 2 ] else [ 208 ]
+            let scaleOffsets =
+                match encoding with
+                | TensorEncoding.Q2_K -> [ 80; 82 ]
+                | TensorEncoding.Q3_K -> [ 108 ]
+                | TensorEncoding.Q6_K -> [ 208 ]
+                | _ -> [ 0; 2 ]
             for scaleOffset in scaleOffsets do
                 BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(offset + scaleOffset, 2), 0x2400us)
-    | _ -> invalidArg "encoding" "This benchmark uses F32, Q4_K and Q6_K."
+    | _ -> invalidArg "encoding" "This benchmark uses F32 and K-quants."
     let descriptor =
         { Name = "weights"
           Encoding = Some encoding
@@ -41,8 +47,12 @@ let matrix (encoding: TensorEncoding) rows columns =
             member _.Dispose() = () }
     WeightMatrix.Read(source, descriptor.Name)
 
+let mode =
+    if fsi.CommandLineArgs |> Array.contains "--decoded" then CpuMatrixProductMode.DecodedFloat
+    else CpuMatrixProductMode.QuantizedK
+
 let measure encoding rows columns tokens =
-    use backend = new CpuBackend() :> ITensorBackend
+    use backend = new CpuBackend(mode) :> ITensorBackend
     use weights = backend.UploadWeights(matrix encoding rows columns)
     let values = Array.init (tokens * columns) (fun i -> float32 (i % 17 - 8) / 16.0f)
     use input = backend.Upload(TensorShape.Create [| tokens; columns |], ReadOnlyMemory<single>(values))
@@ -63,7 +73,12 @@ let measure encoding rows columns tokens =
 printfn "%s %A; processors=%d; Vector128=%b Vector256=%b"
     RuntimeInformation.FrameworkDescription RuntimeInformation.ProcessArchitecture Environment.ProcessorCount
     Vector128.IsHardwareAccelerated Vector256.IsHardwareAccelerated
-for rows, columns in [ 16, 64; 64, 256; 1024, 3072 ] do
-    for encoding in [ TensorEncoding.F32; TensorEncoding.Q4_K; TensorEncoding.Q6_K ] do
+printfn "Matrix policy: %A" mode
+let shapes =
+    if fsi.CommandLineArgs |> Array.contains "--large" then [ 4096, 3072; 3072, 9216 ]
+    else [ 16, 64; 64, 256; 1024, 3072 ]
+for rows, columns in shapes do
+    for encoding in [ TensorEncoding.F32; TensorEncoding.Q2_K; TensorEncoding.Q3_K
+                      TensorEncoding.Q4_K; TensorEncoding.Q5_K; TensorEncoding.Q6_K ] do
         if columns % encoding.BlockElements = 0 then
             for tokens in [ 1; 8 ] do measure encoding rows columns tokens

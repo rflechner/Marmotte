@@ -203,9 +203,10 @@ soft-capping.
 - [x] **H.1** Matrix products use safe `Vector128`/`Vector256` intrinsics with
   a scalar fallback and parallel contiguous row partitions for large workloads.
   Double-precision arithmetic is preserved; see [measurements and validation](docs/kernels.md#measure-parallel-matrix-products).
-- [ ] **H.2** Quantize the input vector once per product, as ggml's CPU backend does
-  with `Q8_K` for K-quant dot products, instead of converting each weight block
-  to F32.
+- [x] **H.2** K-quant products quantize each input token once to transient Q8_K,
+  share it across row workers and accumulate integer products with block scales.
+  All five K encodings are supported; `DecodedFloat` preserves the H.1 reference
+  policy. See [error bounds, fallback rules and measurements](docs/kernels.md#quantize-activations-once-for-k-quant-products).
 - [ ] **H.3** Compute the last block's feed-forward layer and the LM head only for the
   tokens whose logits are needed, and fuse attention into a single pass (flash
   attention).

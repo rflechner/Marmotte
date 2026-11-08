@@ -7,6 +7,16 @@ open System.Runtime.Intrinsics
 open System.Threading.Tasks
 open Marmotte.Core
 
+/// Arithmetic policy for CPU matrix products. QuantizedK introduces activation rounding
+/// for K-quant weights; DecodedFloat retains the F32 input reference path.
+[<RequireQualifiedAccess>]
+type CpuMatrixProductMode =
+    /// Decode stored weights to F32 and preserve the original F32 activations.
+    | DecodedFloat
+    /// Round activations to transient Q8_K for Q2_K through Q6_K; other encodings
+    /// and unrepresentable cases use DecodedFloat. This is the default CPU policy.
+    | QuantizedK
+
 /// Matrix products over owned host memory. Workers share read-only weights and inputs,
 /// write disjoint output columns and finish before returning. No pointers or pinning are used.
 module internal CpuMatrixKernels =
@@ -90,10 +100,32 @@ module internal CpuMatrixKernels =
         finally
             ArrayPool<single>.Shared.Return(buffer)
 
-    /// destination[t,r] = sum(weights[r,c] * input[t,c]). Each row is decoded once
-    /// per batch, using one pooled F32 row per worker. Small products run serially;
-    /// larger ones partition contiguous rows. Input and destination must not overlap.
-    let matMul (weights: WeightMatrix, input: ReadOnlyMemory<single>, destination: Memory<single>) =
+    let private multiplyQuantizedRows (weights: WeightMatrix) (input: ReadOnlyMemory<single>)
+                                      (destination: Memory<single>) (activations: CpuQ8Activations) firstRow endRow =
+        let columns = weights.Columns
+        let quants = ArrayPool<int16>.Shared.Rent(columns)
+        try
+            let unpacked = CpuKQuantBlocks.createRow columns quants
+            for row = firstRow to endRow - 1 do
+                if CpuKQuantBlocks.unpack weights row unpacked then
+                    for token = 0 to input.Length / columns - 1 do
+                        if activations.ValidTokens[token] then
+                            destination.Span[token * weights.Rows + row] <-
+                                CpuKQuantBlocks.dot unpacked activations token
+                        else
+                            multiplyRows weights (input.Span.Slice(token * columns, columns))
+                                (destination.Span.Slice(token * weights.Rows, weights.Rows)) row (row + 1)
+                else
+                    multiplyRows weights input.Span destination.Span row (row + 1)
+        finally
+            ArrayPool<int16>.Shared.Return(quants)
+
+    /// Matrix products with the selected arithmetic policy. K-quant mode prepares
+    /// activations once per token and unpacks each weight row once per batch into
+    /// integer scratch; other encodings use decoded F32 rows. Non-finite weights or
+    /// unsupported activation scales fall back to the reference arithmetic. Small
+    /// products run serially; large ones partition rows. Input/output must not overlap.
+    let matMul mode (weights: WeightMatrix, input: ReadOnlyMemory<single>, destination: Memory<single>) =
         let columns = weights.Columns
         let rows = weights.Rows
         let tokens = input.Length / columns
@@ -101,15 +133,23 @@ module internal CpuMatrixKernels =
             invalidArg (nameof destination) "Matrix product memory must hold whole token rows of the weight matrix."
 
         if tokens > 0 then
+            let activations =
+                if mode = CpuMatrixProductMode.QuantizedK && CpuKQuantBlocks.supports weights.Encoding then
+                    Some (CpuQ8Activations.create columns input.Span)
+                else None
+            let runRows firstRow endRow =
+                match activations with
+                | Some quantized -> multiplyQuantizedRows weights input destination quantized firstRow endRow
+                | None -> multiplyRows weights input.Span destination.Span firstRow endRow
             // An input is limited to Int32 elements and rows to Int32, so this product
             // fits Int64. Keep enough work per partition to amortize task scheduling.
             let work = int64 input.Length * int64 rows
             let workers = int (min (int64 Environment.ProcessorCount) (min (int64 rows) (work / 65536L)))
             if workers <= 1 then
-                multiplyRows weights input.Span destination.Span 0 rows
+                runRows 0 rows
             else
                 Parallel.For(0, workers, ParallelOptions(MaxDegreeOfParallelism = workers), fun worker ->
                     let firstRow = int (int64 rows * int64 worker / int64 workers)
                     let endRow = int (int64 rows * int64 (worker + 1) / int64 workers)
-                    multiplyRows weights input.Span destination.Span firstRow endRow)
+                    runRows firstRow endRow)
                 |> ignore

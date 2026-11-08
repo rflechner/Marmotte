@@ -171,7 +171,9 @@ type IMatVecKernel =
     /// Each output sums Columns products, and implementations decode blocks and sum in different
     /// orders: compare results with a tolerance relative to Σ |weights[r, c] × input[c]|, not to
     /// the result, which cancellation can make small. Raises NotSupportedException for a weight
-    /// encoding this backend cannot multiply.
+    /// encoding this backend cannot multiply. A backend may expose an explicit arithmetic
+    /// policy that quantizes activations; its documented quantization error is additional
+    /// to summation error. Such a policy must not mutate the caller's F32 input.
     abstract MatVec: weights: IWeightTensor * input: ITensor * destination: ITensor -> unit
 
 /// Matrix product of several tokens with the same stored weights, for prompt processing:

@@ -53,7 +53,10 @@ EOS stops generation without being printed. Missing EOS metadata disables that s
 (capped at the model context), and `--batch-size` to 32 (capped at the selected
 context). Prompts must fit the selected context. The F32 key/value cache is
 allocated up front; keep the context small for initial CPU experiments. Weights
-are memory-mapped read-only. CPU execution currently decodes weight rows, so a
+are memory-mapped read-only. K-quant matrix products now use transient Q8_K
+activations by default; this introduces small additional rounding (see
+[H.2 arithmetic policies](docs/kernels.md#quantize-activations-once-for-k-quant-products)).
+CPU execution still processes every weight row, so a
 large model can take substantial time before the first token.
 
 A stop summary goes to stderr; stdout has no added newline, prompt echo or markup.
@@ -263,8 +266,10 @@ The three backend projects share these contracts:
   retain the stored payload, `Add`, SwiGLU and RMS normalization kernels
   vectorized with `Vector<T>`, embedding lookup, and matrix-vector and
   matrix-matrix products with safe intrinsics and parallel weight rows (see
-  [H.1 measurements](docs/kernels.md#measure-parallel-matrix-products)), which decode rows with Core's
-  `RowDecoder`, rotary position embedding, attention temperature and a
+  [H.1 measurements](docs/kernels.md#measure-parallel-matrix-products)). K-quant
+  products use Q8_K activations and integer arithmetic by default; other products
+  use Core's `RowDecoder`. `CpuBackend(CpuMatrixProductMode.DecodedFloat)` retains
+  the reference path. Also includes rotary position embedding, attention temperature and a
   key-value cache and causal grouped-query attention.
 - `Marmotte.Cuda` and `Marmotte.Metal`: buildable placeholders whose allocation,
   transfers and kernels raise `NotImplementedException`, without requiring a GPU SDK.

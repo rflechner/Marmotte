@@ -6,13 +6,16 @@ open Marmotte.Core
 
 /// Safe CPU implementation of the tensor and kernel contracts. This type is the plumbing:
 /// ownership, lifetime and argument validation over the storage of CpuTensor, CpuWeightTensor and
-/// CpuKeyValueCache, while CpuKernels does the arithmetic and Core's RowEncoder and RowDecoder
-/// convert stored rows. It owns no native resources. Each instance
+/// CpuKeyValueCache, while CpuKernels and CpuMatrixKernels do the arithmetic. Core's
+/// RowEncoder and RowDecoder handle stored rows outside the integer K-quant product path. It owns no native resources. Each instance
 /// accepts only tensors and key-value caches that it created, and tracks the live ones so that
 /// disposing the backend releases them. Operations complete before returning, which
 /// satisfies the ordering contract; Synchronize has nothing to wait for.
+/// The parameterless constructor uses QuantizedK: K-quant products quantize each
+/// activation token once to transient Q8_K. Select DecodedFloat for the unquantized
+/// input reference. Other encodings are unchanged; see docs/kernels.md for error bounds.
 [<Sealed>]
-type CpuBackend() =
+type CpuBackend(matrixProductMode: CpuMatrixProductMode) =
     let owner = obj()
     let liveStorage = HashSet<ICpuStorage>(HashIdentity.Reference)
     let mutable disposed = false
@@ -78,6 +81,9 @@ type CpuBackend() =
         let tensor = new CpuTensor(owner, shape, values, forget)
         track tensor
         tensor :> ITensor
+
+    /// Use quantized activations for K-quant products, with decoded-F32 fallback.
+    new() = new CpuBackend(CpuMatrixProductMode.QuantizedK)
 
     interface ITensorBackend with
         member _.Backend = BackendKind.Cpu
@@ -194,7 +200,7 @@ type CpuBackend() =
             if Object.ReferenceEquals(input, destination) then
                 invalidArg (nameof destination) "MatVec destination must differ from its input, which every output reads in full."
 
-            CpuMatrixKernels.matMul (matrix, ReadOnlyMemory<single>(inputValues), Memory<single>(destinationValues))
+            CpuMatrixKernels.matMul matrixProductMode (matrix, ReadOnlyMemory<single>(inputValues), Memory<single>(destinationValues))
 
     interface IMatMulKernel with
         member this.MatMul(weights, input, destination) =
@@ -215,7 +221,7 @@ type CpuBackend() =
             if Object.ReferenceEquals(input, destination) then
                 invalidArg (nameof destination) "MatMul destination must differ from its input, which every weight row reads in full."
 
-            CpuMatrixKernels.matMul (matrix, ReadOnlyMemory<single>(inputValues), Memory<single>(destinationValues))
+            CpuMatrixKernels.matMul matrixProductMode (matrix, ReadOnlyMemory<single>(inputValues), Memory<single>(destinationValues))
 
     interface IRopeKernel with
         member this.Rope(input, positions, embedding, destination) =
