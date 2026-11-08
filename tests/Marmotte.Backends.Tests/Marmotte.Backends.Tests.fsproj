@@ -10,6 +10,7 @@
     <Compile Include="RopeTests.fs" />
     <Compile Include="AttentionTemperatureTests.fs" />
     <Compile Include="KeyValueCacheTests.fs" />
+    <Compile Include="AttentionTests.fs" />
     <Compile Include="YarnTests.fs" />
   </ItemGroup>
   <ItemGroup>

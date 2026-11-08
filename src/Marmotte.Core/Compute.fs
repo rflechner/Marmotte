@@ -240,6 +240,23 @@ type IKeyValueCacheKernel =
     /// same. Reading an empty batch is a valid no-op.
     abstract ReadKeyValues: cache: IKeyValueCache * layer: int * position: int * keys: ITensor * values: ITensor -> unit
 
+/// Causal grouped-query attention over the stored keys and values of one layer.
+type IAttentionKernel =
+    /// Queries and destination have identical F32 shapes: [tokens; queryHeads; HeadDimension]
+    /// or [tokens; queryHeads × HeadDimension]. queryHeads must be positive and divisible by
+    /// the cache's KeyValueHeads. Consecutive groups of queryHeads / KeyValueHeads query heads
+    /// share one KV head. Queries already include RoPE and any attention temperature scaling.
+    /// Token t attends only to positions 0 through position + t, inclusive. All of these positions
+    /// must already be stored in the chosen layer. position is in [0, StoredPositions(layer)];
+    /// an empty batch is a no-op. Neither queries nor cache is modified; destination must differ
+    /// from queries. Scores are dot(Q, K) / sqrt(HeadDimension), normalized by softmax after
+    /// subtracting their maximum, then used to sum V. CPU uses F32 reductions and decodes one
+    /// cached head at a time. Compare backends with numerical tolerances. Non-finite inputs or
+    /// overflowing scores may produce NaN; masking excludes future positions entirely.
+    /// Ownership, validation and ordering follow IKeyValueCacheKernel; invalid head dimensions
+    /// or aliasing raise ArgumentException. Validation completes before any destination write.
+    abstract Attention: cache: IKeyValueCache * layer: int * position: int * queries: ITensor * destination: ITensor -> unit
+
 /// Creates and operates on its own tensors. Separate instances are separate ownership domains,
 /// even when their Backend values match.
 ///
@@ -268,6 +285,7 @@ type ITensorBackend =
     inherit IRopeKernel
     inherit IAttentionTemperatureKernel
     inherit IKeyValueCacheKernel
+    inherit IAttentionKernel
 
     abstract Backend: BackendKind
 

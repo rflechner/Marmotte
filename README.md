@@ -208,7 +208,7 @@ yet.
 `Marmotte.Core` defines `TensorShape`, `ITensor`, `IWeightTensor`,
 `IKeyValueCache`, `IAddKernel`, `ISwiGluKernel`, `IRmsNormKernel`,
 `IEmbeddingKernel`, `IMatVecKernel`, `IMatMulKernel`, `IRopeKernel`,
-`IAttentionTemperatureKernel`, `IKeyValueCacheKernel` and `ITensorBackend`, plus
+`IAttentionTemperatureKernel`, `IKeyValueCacheKernel`, `IAttentionKernel` and `ITensorBackend`, plus
 `RotaryEmbedding`, `YarnParameters`, `AttentionTemperature` and
 `KeyValueCacheLayout`. `RowEncoder` writes rows of every encoding except the
 K-quants, the inverse of `RowDecoder`.
@@ -219,7 +219,7 @@ The three backend projects share these contracts:
   vectorized with `Vector<T>`, embedding lookup, and matrix-vector and
   matrix-matrix products over stored weights, which all decode rows with Core's
   `RowDecoder`, rotary position embedding, attention temperature and a
-  key-value cache.
+  key-value cache and causal grouped-query attention.
 - `Marmotte.Cuda` and `Marmotte.Metal`: buildable placeholders whose allocation,
   transfers and kernels raise `NotImplementedException`, without requiring a GPU SDK.
 
@@ -255,8 +255,10 @@ appends positions to a layer, or replaces them and discards the later ones;
 4,096-token context, the cache takes 832 MiB in F32, 416 MiB in F16 or BF16,
 221 MiB in Q8_0, 156 MiB in Q5_1, 143 MiB in Q5_0, 130 MiB in Q4_1, and 117 MiB
 in IQ4_NL or Q4_0. Quantized encodings are lossy: see the
-[precision notes](docs/kernels.md#key-value-cache). Attention does not read the
-cache yet.
+[precision notes](docs/kernels.md#key-value-cache).
+`Attention(cache, layer, position, queries, destination)` reads cached heads directly,
+scales scores, applies a causal mask and computes a stable softmax with F32
+accumulation. See the [grouped-query attention walkthrough](docs/kernels.md#grouped-query-attention).
 
 `EmbeddingLookup(weights, tokenIds, destination)` decodes selected vocabulary
 rows into a preallocated F32 tensor of shape `[tokenIds.Length; weights.Columns]`,
@@ -277,6 +279,7 @@ dotnet fsi examples/Add.fsx
 dotnet fsi examples/Embedding.fsx
 dotnet fsi examples/Yarn.fsx
 dotnet fsi examples/KeyValueCache.fsx
+dotnet fsi examples/Attention.fsx
 ```
 
 ## Inspect a local GGUF file

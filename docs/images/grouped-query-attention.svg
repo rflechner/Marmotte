@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="240" viewBox="0 0 760 240" role="img" aria-labelledby="title desc">
+<title id="title">Grouped-query attention and causal visibility</title>
+<desc id="desc">Query heads zero and one share KV head zero. Query heads two and three share KV head one. At query position one, only cache positions zero and one are visible; position two is masked.</desc>
+<rect width="760" height="240" fill="#f8fafc"/>
+<g font-family="sans-serif" font-size="16" fill="#0f172a" text-anchor="middle">
+<text x="200" y="28">Consecutive query groups</text><text x="570" y="28">Query position 1</text>
+<g fill="#dbeafe" stroke="#2563eb"><rect x="25" y="50" width="150" height="45" rx="8"/><rect x="215" y="50" width="150" height="45" rx="8"/></g>
+<text x="100" y="78">Q0 · Q1</text><text x="290" y="78">Q2 · Q3</text>
+<path d="M100 95 V140 M290 95 V140" stroke="#2563eb" stroke-width="3"/>
+<g fill="#dcfce7" stroke="#15803d"><rect x="25" y="140" width="150" height="45" rx="8"/><rect x="215" y="140" width="150" height="45" rx="8"/></g>
+<text x="100" y="168">KV head 0</text><text x="290" y="168">KV head 1</text>
+<rect x="420" y="70" width="95" height="65" fill="#dcfce7"/><rect x="525" y="70" width="95" height="65" fill="#dcfce7"/><rect x="630" y="70" width="95" height="65" fill="#e2e8f0"/>
+<text x="467" y="108">p = 0</text><text x="572" y="108">p = 1</text><text x="677" y="108">p = 2</text>
+<text x="520" y="165">Visible prefix</text><text x="677" y="165">Masked</text>
+<text x="380" y="218">Scores → scale by 1/√d → stable softmax → weighted values</text>
+</g></svg>

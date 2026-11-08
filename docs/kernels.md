@@ -808,8 +808,8 @@ truncates. `position + tokens` may not exceed the capacity.
 `ReadKeyValues(cache, layer, position, keys, values)` decodes stored positions
 into two different F32 tensors of the same shapes. An F32 cache reads back bit
 for bit; another encoding reads back what `RowDecoder` decodes from the stored
-blocks. Attention will read the cache this way until it decodes cached rows
-directly.
+blocks. Attention decodes cached heads directly, without materializing all
+stored rows as execution tensors.
 
 Values that an encoding cannot hold are never replaced by plausible numbers.
 F16 and BF16 turn values beyond their range into infinities, and NaN stays NaN.
@@ -873,3 +873,96 @@ model's cache size for each encoding, then stores random keys in a small CPU
 cache and prints the root mean square and largest errors after reading them
 back. Tests also call GPU allocation, download and each
 kernel directly to verify that all unfinished operations fail explicitly.
+
+
+## Grouped-query attention
+
+Learn how a query selects information from its causal prefix. Prerequisites:
+.NET 10 and the cache concepts above. Run the self-contained example without a
+model file:
+
+```sh
+dotnet fsi examples/Attention.fsx
+```
+
+### 1. Store the keys and values
+
+The example stores three positions, each with two KV heads of two channels.
+In a model, keys have already received RoPE; values have not. Queries have
+received RoPE and any position-dependent attention temperature scaling.
+Store the whole prompt batch before calling attention: the kernel's causal
+mask prevents earlier tokens from seeing later ones.
+
+### 2. Share the KV heads
+
+Allocate queries and destination with shape `[3; 4; 2]`: tokens, query heads,
+channels. Four query heads share two KV heads, in consecutive groups:
+
+![Two consecutive query heads share each KV head; position one sees only cached positions zero and one.](images/grouped-query-attention.svg)
+
+For query head `h`, the KV head is `h / (queryHeads / KeyValueHeads)` using
+integer division. This also covers multi-head attention (one query per KV head)
+and multi-query attention (one KV head shared by every query).
+
+```fsharp
+backend.Attention(cache, 0, 0, queries, output)
+```
+
+The arguments select the cache, layer, first absolute query position, queries
+and destination. Both tensors must have identical shapes, either
+`[tokens; queryHeads; HeadDimension]` or `[tokens; queryHeads × HeadDimension]`.
+The number of query heads must be positive and divisible by the KV head count.
+The destination cannot alias queries. All storage belongs to the same backend.
+
+### 3. Normalize only the visible scores
+
+For token `t` at absolute position `p = position + t`, each head computes:
+
+```text
+score[j] = sum(Q[c] × K[j,c]) / sqrt(HeadDimension), 0 <= j <= p
+weight[j] = exp(score[j] - max(score)) / sum(exp(score - max(score)))
+output[c] = sum(weight[j] × V[j,c])
+```
+
+The maximum subtraction prevents exponential overflow for large finite scores.
+CPU reductions and output accumulation use F32. This is a reference kernel,
+not flash attention: scratch storage is one prefix-length score buffer plus
+one decoded head, reused across tokens and heads. K and V can independently
+use any supported cache encoding. Each head slice contains whole encoding
+blocks, so no full-cache F32 copy is needed. Future rows are not decoded at all,
+including future rows containing NaN. Non-finite visible data or overflowing
+scores can produce NaN; finite inputs are not a guarantee against F32 overflow.
+
+The example uses zero queries, hence equal scores and uniform probabilities.
+It prints the causal averages (two identical outputs per KV group), shown
+rounded below; F32 accumulation can print `60.00000381f` instead of `60.0f`:
+
+```text
+Position 0: [|2.0f; 4.0f; 2.0f; 4.0f; 20.0f; 40.0f; 20.0f; 40.0f|]
+Position 1: [|4.0f; 6.0f; 4.0f; 6.0f; 40.0f; 60.0f; 40.0f; 60.0f|]
+Position 2: [|6.0f; 8.0f; 6.0f; 8.0f; 60.0f; 80.0f; 60.0f; 80.0f|]
+```
+
+For generation, store the next K/V row, then pass a single query token and its
+absolute position. Batched queries can also start inside an existing prefix.
+Every query position must already be stored in that layer; an empty batch is
+valid at any position from zero through `StoredPositions(layer)`. Validation
+finishes before writing output. A replaced/truncated cache immediately limits
+which positions can be attended to. CUDA and Metal expose the contract but
+still throw `NotImplementedException`.
+
+### Validation and references
+
+`AttentionTests` compares against an independent dense, double-precision
+reference, covers multi-query, grouped and multi-head layouts, and checks
+batch/single-token equivalence, nonzero batch offsets, causal masking, large
+scores, all 81 K/V encoding combinations, validation and lifetime failures.
+Quantized attention is compared with the actual decoded cached values; this
+does not establish model-quality tolerances for cache quantization. There is
+no end-to-end model inference or performance claim yet.
+
+The grouping follows [Ainslie et al., GQA (2023)](https://arxiv.org/abs/2305.13245).
+Scaled dot-product attention is defined in
+[Vaswani et al., Attention Is All You Need, section 3.2.1](https://arxiv.org/abs/1706.03762).
+The implementation is original; neither reference code nor a native library is
+required by the kernel or its tests.

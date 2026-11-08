@@ -35,6 +35,7 @@
   </Folder>
   <Folder Name="/examples/">
     <File Path="examples/Add.fsx" />
+    <File Path="examples\Attention.fsx" />
     <File Path="examples\Embedding.fsx" />
     <File Path="examples/Yarn.fsx" />
     <File Path="examples\KeyValueCache.fsx" />

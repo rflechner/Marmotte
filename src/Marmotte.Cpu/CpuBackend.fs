@@ -301,6 +301,36 @@ type CpuBackend() =
             RowDecoder.decode (layout.KeyEncoding, keyRows, Span<single>(keyValues))
             RowDecoder.decode (layout.ValueEncoding, valueRows, Span<single>(valueValues))
 
+    interface IAttentionKernel with
+        member this.Attention(cache, layer, position, queries, destination) =
+            ObjectDisposedException.ThrowIf(disposed, this)
+            let storage = cacheOf (nameof cache) cache
+            let queryValues = valuesOf (nameof queries) queries
+            let destinationValues = valuesOf (nameof destination) destination
+            let stored = cache.StoredPositions(layer)
+            let layout = cache.Layout
+            let dimensions = queries.Shape.Dimensions
+            let queryHeads =
+                match dimensions.Count with
+                | 2 when dimensions[1] % layout.HeadDimension = 0 -> dimensions[1] / layout.HeadDimension
+                | 3 when dimensions[2] = layout.HeadDimension -> dimensions[1]
+                | _ -> invalidArg (nameof queries) "Attention requires [tokens; queryHeads × HeadDimension] or [tokens; queryHeads; HeadDimension]."
+
+            if queryHeads <= 0 || queryHeads % layout.KeyValueHeads <> 0 then
+                invalidArg (nameof queries) "Query head count must be positive and divisible by the cache's KV head count."
+            requireSameShape "Attention" queries (nameof destination) destination
+            if Object.ReferenceEquals(queries, destination) then
+                invalidArg (nameof destination) "Attention destination must differ from queries."
+            let tokens = dimensions[0]
+            if position < 0 || position > stored || tokens > stored - position then
+                raise (ArgumentOutOfRangeException(nameof position, box position, "Every query position must already be stored in the layer."))
+
+            if tokens > 0 then
+                CpuKernels.attention (
+                    layout, queryHeads, position, ReadOnlySpan<byte>(storage.KeyRows(layer)),
+                    ReadOnlySpan<byte>(storage.ValueRows(layer)), ReadOnlySpan<single>(queryValues),
+                    Span<single>(destinationValues))
+
     interface IDisposable with
         member _.Dispose() =
             if not disposed then

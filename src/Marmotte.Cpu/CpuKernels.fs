@@ -233,3 +233,55 @@ module internal CpuKernels =
             for token = 0 to tokens - 1 do
                 let row = input.Slice(token * valuesPerToken, valuesPerToken)
                 multiplyRow row factors[token] (destination.Slice(token * valuesPerToken, valuesPerToken))
+
+    /// Reference attention uses O(prefix length + head dimension) scratch, independent of the
+    /// number of heads and tokens. Future cache rows are never decoded, even if they contain NaN.
+    let attention (layout: KeyValueCacheLayout, queryHeads: int, position: int,
+                   keys: ReadOnlySpan<byte>, values: ReadOnlySpan<byte>,
+                   queries: ReadOnlySpan<single>, destination: Span<single>) =
+        let dimension = layout.HeadDimension
+        let rowValues = queryHeads * dimension
+        if queries.Length <> destination.Length || queries.Length % rowValues <> 0 then
+            invalidArg (nameof destination) "Attention spans must contain the same whole query rows."
+        let tokens = queries.Length / rowValues
+        let prefixLength = position + tokens
+        if keys.Length / layout.KeyRowBytes < prefixLength || values.Length / layout.ValueRowBytes < prefixLength then
+            invalidArg (nameof keys) "Attention requires cached keys and values for every query position."
+
+        let scores = Array.zeroCreate<single> prefixLength
+        let decoded = Array.zeroCreate<single> dimension
+        let keyHeadBytes = layout.KeyRowBytes / layout.KeyValueHeads
+        let valueHeadBytes = layout.ValueRowBytes / layout.KeyValueHeads
+        let groupSize = queryHeads / layout.KeyValueHeads
+        let scale = 1.0f / MathF.Sqrt(single dimension)
+
+        for token = 0 to tokens - 1 do
+            let visible = position + token + 1
+            for head = 0 to queryHeads - 1 do
+                let cacheHead = head / groupSize
+                let query = queries.Slice(token * rowValues + head * dimension, dimension)
+                let output = destination.Slice(token * rowValues + head * dimension, dimension)
+                let mutable maximum = Single.NegativeInfinity
+                for cachedPosition = 0 to visible - 1 do
+                    let offset = cachedPosition * layout.KeyRowBytes + cacheHead * keyHeadBytes
+                    RowDecoder.decode (layout.KeyEncoding, keys.Slice(offset, keyHeadBytes), decoded.AsSpan())
+                    let mutable dot = 0.0f
+                    for channel = 0 to dimension - 1 do
+                        dot <- dot + query[channel] * decoded[channel]
+                    let score = dot * scale
+                    scores[cachedPosition] <- score
+                    maximum <- MathF.Max(maximum, score)
+
+                let mutable denominator = 0.0f
+                for cachedPosition = 0 to visible - 1 do
+                    let weight = MathF.Exp(scores[cachedPosition] - maximum)
+                    scores[cachedPosition] <- weight
+                    denominator <- denominator + weight
+
+                output.Clear()
+                for cachedPosition = 0 to visible - 1 do
+                    let weight = scores[cachedPosition] / denominator
+                    let offset = cachedPosition * layout.ValueRowBytes + cacheHead * valueHeadBytes
+                    RowDecoder.decode (layout.ValueEncoding, values.Slice(offset, valueHeadBytes), decoded.AsSpan())
+                    for channel = 0 to dimension - 1 do
+                        output[channel] <- output[channel] + weight * decoded[channel]

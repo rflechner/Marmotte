@@ -184,12 +184,14 @@ about 2 GiB, so the matrix products dominate the cost.
   `RowEncoder` represent them; IQ4_NL searches its scale by weighted least
   squares. Which pair of encodings the target model tolerates remains to be
   measured once attention runs.
-- [ ] **G.6** Grouped-query attention: each of the 32 query heads reads the cached keys
+- [x] **G.6** Grouped-query attention: each of the 32 query heads reads the cached keys
   and values of its key-value head, shared by 4 query heads, decoded from the
   cache's encoding one head at a time. Scores are scaled
   by 1/√128, masked causally, normalized with a numerically stable softmax
   (subtracting the maximum) and used to weight the cached values, with F32
-  accumulation.
+  accumulation. `IAttentionKernel` and the CPU implementation support prompt batches
+  and single-token decoding, with all nine cache encodings. See the
+  [walkthrough](docs/kernels.md#grouped-query-attention) and `examples/Attention.fsx`.
 
 Not needed for the target model: the `mistral3` graph also handles biases and
 mixture-of-experts layers, but the file has neither, and the architecture has

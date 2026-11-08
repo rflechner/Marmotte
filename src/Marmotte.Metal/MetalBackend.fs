@@ -53,5 +53,8 @@ type MetalBackend() =
         member _.StoreKeyValues(_, _, _, _, _) = notImplemented "key-value cache store"
         member _.ReadKeyValues(_, _, _, _, _) = notImplemented "key-value cache read"
 
+    interface IAttentionKernel with
+        member _.Attention(_, _, _, _, _) = notImplemented "grouped-query attention"
+
     interface IDisposable with
         member _.Dispose() = disposed <- true
