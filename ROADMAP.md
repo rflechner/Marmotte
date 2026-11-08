@@ -200,8 +200,9 @@ soft-capping.
 
 **H. Optimizations, once reference implementations exist to compare against:**
 
-- [ ] **H.1** Vectorize the matrix products with `System.Runtime.Intrinsics` and
-  parallelize them across rows.
+- [x] **H.1** Matrix products use safe `Vector128`/`Vector256` intrinsics with
+  a scalar fallback and parallel contiguous row partitions for large workloads.
+  Double-precision arithmetic is preserved; see [measurements and validation](docs/kernels.md#measure-parallel-matrix-products).
 - [ ] **H.2** Quantize the input vector once per product, as ggml's CPU backend does
   with `Q8_K` for K-quant dot products, instead of converting each weight block
   to F32.

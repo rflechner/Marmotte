@@ -110,53 +110,6 @@ module internal CpuKernels =
                 let scale = float32 (1.0 / Math.Sqrt(mean + float epsilon))
                 scaleRow inputRow scale weight (destination.Slice(row * columns, columns))
 
-    /// Multiplies left[i] by right[i] at every position of two equal-length spans and returns the
-    /// sum of those products (their dot product). Products are formed and summed in double
-    /// precision, in two vector accumulators, so long rows keep F32 accuracy even when terms cancel.
-    let private sumOfProducts (left: ReadOnlySpan<single>) (right: ReadOnlySpan<single>) =
-        let mutable sum = 0.0
-        let mutable firstScalar = 0
-        if Vector.IsHardwareAccelerated then
-            let leftVectors = MemoryMarshal.Cast<single, Vector<single>>(left)
-            let rightVectors = MemoryMarshal.Cast<single, Vector<single>>(right)
-            let mutable lowSum = Vector<double>.Zero
-            let mutable highSum = Vector<double>.Zero
-            for index = 0 to leftVectors.Length - 1 do
-                let leftVector = leftVectors[index]
-                let rightVector = rightVectors[index]
-                lowSum <- lowSum + Vector.WidenLower(leftVector) * Vector.WidenLower(rightVector)
-                highSum <- highSum + Vector.WidenUpper(leftVector) * Vector.WidenUpper(rightVector)
-            sum <- Vector.Sum(lowSum + highSum)
-            firstScalar <- leftVectors.Length * Vector<single>.Count
-
-        for index = firstScalar to left.Length - 1 do
-            sum <- sum + float left[index] * float right[index]
-        sum
-
-    /// destination[t, r] = Σ weights[r, c] × input[t, c], for consecutive token rows of Columns input
-    /// values and Rows output values. Decodes each weight row once into a pooled F32 buffer, then
-    /// sums its products with the input row of every token, so the whole batch shares the decoding
-    /// cost; one token is a matrix-vector product, and an empty batch decodes nothing. Destination
-    /// must not overlap input, which every weight row reads in full.
-    let matMul (weights: WeightMatrix, input: ReadOnlySpan<single>, destination: Span<single>) =
-        let columns = weights.Columns
-        let rows = weights.Rows
-        let tokens = input.Length / columns
-        if input.Length % columns <> 0 || int64 destination.Length <> int64 tokens * int64 rows then
-            invalidArg (nameof destination) "Matrix product spans must hold whole token rows of the weight matrix."
-
-        if tokens > 0 then
-            let buffer = ArrayPool<single>.Shared.Rent(columns)
-            try
-                for row = 0 to rows - 1 do
-                    weights.DecodeRow(row, Span<single>(buffer, 0, columns))
-                    let decodedRow = ReadOnlySpan<single>(buffer, 0, columns)
-                    for token = 0 to tokens - 1 do
-                        let tokenInput = input.Slice(token * columns, columns)
-                        destination[token * rows + row] <- float32 (sumOfProducts decodedRow tokenInput)
-            finally
-                ArrayPool<single>.Shared.Return(buffer)
-
     /// Rotates every head of consecutive token rows: pair j of the token at positions[t] turns by
     /// positions[t] × frequency j. The cosine and sine of each angle are computed once per token in
     /// double precision, multiplied by the magnitude, rounded once to F32 and shared by every head.

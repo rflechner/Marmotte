@@ -650,20 +650,20 @@ let ``MatMul matches decoded rows in double precision for every encoding and bat
 let ``MatMul gives each token exactly its MatVec result`` () =
     use backend = cpu ()
     let random = Random(2021)
-    let matrix = matrixOf TensorEncoding.Q4_K 16 3072 (randomPayload random TensorEncoding.Q4_K 16 3072)
+    let matrix = matrixOf TensorEncoding.Q4_K 257 3072 (randomPayload random TensorEncoding.Q4_K 257 3072)
     let inputValues = Array.init (4 * 3072) (fun _ -> float32 (random.NextDouble() * 2.0 - 1.0))
     use weights = backend.UploadWeights(matrix)
     use input = backend.Upload(TensorShape.Create [| 4; 3072 |], ReadOnlyMemory<single>(inputValues))
-    use destination = backend.Allocate(TensorShape.Create [| 4; 16 |])
+    use destination = backend.Allocate(TensorShape.Create [| 4; 257 |])
 
     backend.MatMul(weights, input, destination)
 
     let batched = download backend destination
     for token in 0 .. 3 do
         use vector = backend.Upload(TensorShape.Create [| 3072 |], ReadOnlyMemory<single>(inputValues, token * 3072, 3072))
-        use output = backend.Allocate(TensorShape.Create [| 16 |])
+        use output = backend.Allocate(TensorShape.Create [| 257 |])
         backend.MatVec(weights, vector, output)
-        Assert.Equal<single>(download backend output, batched[token * 16 .. token * 16 + 15])
+        Assert.Equal<single>(download backend output, batched[token * 257 .. token * 257 + 256])
 
 [<Fact>]
 let ``MatMul accepts an empty batch as a no-op`` () =
@@ -780,3 +780,58 @@ let ``disposed backends reject all operations and allow repeated disposal`` name
     Assert.Throws<ObjectDisposedException>(fun () -> backend.AllocateKeyValueCache(cacheLayout ()) |> ignore) |> ignore
     Assert.Throws<ObjectDisposedException>(fun () -> backend.StoreKeyValues(cache, 0, 0, tensor, tensor)) |> ignore
     Assert.Throws<ObjectDisposedException>(fun () -> backend.ReadKeyValues(cache, 0, 0, tensor, tensor)) |> ignore
+
+[<Fact>]
+let ``large matrix products match scalar references for every encoding`` () =
+    use backend = cpu ()
+    let random = Random(8128)
+    // Uneven row partitions and enough work to exercise row parallelism on multi-core hosts.
+    for encoding in [ TensorEncoding.F32; TensorEncoding.F16; TensorEncoding.BF16
+                      TensorEncoding.Q4_0; TensorEncoding.Q4_1; TensorEncoding.Q5_0
+                      TensorEncoding.Q5_1; TensorEncoding.Q8_0; TensorEncoding.IQ4_NL
+                      TensorEncoding.Q2_K; TensorEncoding.Q3_K; TensorEncoding.Q4_K
+                      TensorEncoding.Q5_K; TensorEncoding.Q6_K ] do
+        let columns = if encoding.BlockElements = 1 then 515 else 512
+        let matrix = matrixOf encoding 257 columns (randomPayload random encoding 257 columns)
+        let values = Array.init (3 * columns) (fun _ -> float32 (random.NextDouble() - 0.5))
+        assertMatVec backend matrix values[..columns - 1]
+        assertMatMul backend matrix 3 values
+
+[<Theory>]
+[<InlineData(1)>]
+[<InlineData(3)>]
+[<InlineData(4)>]
+[<InlineData(7)>]
+[<InlineData(8)>]
+[<InlineData(15)>]
+[<InlineData(16)>]
+[<InlineData(17)>]
+[<InlineData(65)>]
+let ``matrix products handle SIMD boundaries and repeated execution`` columns =
+    use backend = cpu ()
+    let random = Random(columns)
+    let matrix = matrixOf TensorEncoding.F32 257 columns (randomPayload random TensorEncoding.F32 257 columns)
+    let tokens = 9
+    let values = Array.init (tokens * columns) (fun _ -> float32 (random.NextDouble() - 0.5))
+    assertMatMul backend matrix tokens values
+    use weights = backend.UploadWeights matrix
+    use input = backend.Upload(TensorShape.Create [| tokens; columns |], ReadOnlyMemory<single>(values))
+    use output = backend.Allocate(TensorShape.Create [| tokens; 257 |])
+    backend.MatMul(weights, input, output)
+    let expected = download backend output
+    for _ in 1 .. 4 do
+        backend.MatMul(weights, input, output)
+        Assert.Equal<single>(expected, download backend output)
+
+[<Fact>]
+let ``matrix products widen before multiplying large cancelling terms`` () =
+    use backend = cpu ()
+    let columns = 1024
+    let values = Array.init columns (fun i -> if i % 2 = 0 then 1e20f else -1e20f)
+    let payload = Array.init (257 * columns) (fun i -> values[i % columns]) |> Array.collect BitConverter.GetBytes
+    let matrix = matrixOf TensorEncoding.F32 257 columns payload
+    use weights = backend.UploadWeights matrix
+    use input = backend.Upload(TensorShape.Create [| columns |], ReadOnlyMemory<single>(Array.create columns 1e20f))
+    use output = backend.Allocate(TensorShape.Create [| 257 |])
+    backend.MatVec(weights, input, output)
+    Assert.Equal<single>(Array.zeroCreate 257, download backend output)

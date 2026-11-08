@@ -125,7 +125,7 @@ them one row at a time.
 | `ISwiGluKernel.SwiGlu` | Safe `Vector<T>` loop with `Vector.Exp`, scalar tail with `MathF.Exp` | `NotImplementedException` | `NotImplementedException` |
 | `IRmsNormKernel.RmsNorm` | Safe `Vector<T>` loops, sum of squares in double precision | `NotImplementedException` | `NotImplementedException` |
 | `IEmbeddingKernel.EmbeddingLookup` | Decodes selected rows with `RowDecoder` directly into F32 output | `NotImplementedException` | `NotImplementedException` |
-| `IMatVecKernel.MatVec` | One decoded row at a time, `Vector<T>` dot product in double precision | `NotImplementedException` | `NotImplementedException` |
+| `IMatVecKernel.MatVec` | Parallel rows, safe intrinsics and double-precision dot products | `NotImplementedException` | `NotImplementedException` |
 | `IMatMulKernel.MatMul` | Each decoded row shared by every token of the batch | `NotImplementedException` | `NotImplementedException` |
 | `IRopeKernel.Rope` | Angles in double precision once per token, shared by every head | `NotImplementedException` | `NotImplementedException` |
 | `IAttentionTemperatureKernel.ApplyAttentionTemperature` | One F32 factor per token, `Vector<T>` multiplication | `NotImplementedException` | `NotImplementedException` |
@@ -408,10 +408,11 @@ mean, spread and range as Q4_K or Q8_0 tensors of the same roles, an optional
 check; no local Q2_K or Q3_K file has been decoded yet. Embedding lookup uses
 the same decoder.
 
-The CPU backend decodes one row at a time into a pooled buffer, so its memory
-use is one row, not a decoded matrix. It then computes the dot product with
-`Vector<T>`, widening the products to double precision and summing them in two
-vector accumulators. Each output is rounded to F32 once. Because outputs are
+The CPU backend decodes one row at a time per worker into a pooled buffer.
+`CpuMatrixKernels` uses safe `Vector256` or `Vector128` intrinsics when accelerated,
+with a scalar fallback. Operands are widened before multiplication and summed
+in four double-precision vector accumulators. Large products partition weight
+rows between workers; each worker writes distinct output columns. Each output is rounded to F32 once. Because outputs are
 sums of many products that can cancel, tests compare them with a tolerance
 relative to the sum of the absolute products, not to the output itself.
 
@@ -421,8 +422,9 @@ to the normalized embedding of 10 sample tokens gives each token the highest
 logit. On an Apple M4 Max, single-threaded in Release, a `Q4_K` product takes
 about 0.5 ns per weight and a `Q6_K` product about 0.83 ns: 7 ms for `attn_q`,
 336 ms for the LM head, and about 2.1 s for all matrix products of one token.
-Parallelizing across rows and vectorizing the decoders are the next
-optimizations.
+These are historical measurements before H.1. See the updated
+[parallel matrix measurements](#measure-parallel-matrix-products) below;
+vectorizing the decoders remains separate work.
 
 ## Matrix-Matrix Product
 
@@ -462,7 +464,7 @@ token. Each output is computed exactly as `MatVec` computes it, so batched and
 token-by-token results are identical on the CPU; a test checks this. `MatVec`
 itself is the one-token case of the same kernel.
 
-On the local Ministral file, single-threaded in Release on an Apple M4 Max:
+Before H.1, on the local Ministral file, single-threaded in Release on an Apple M4 Max:
 
 | Matrix | `MatVec` | 4 tokens | 16 tokens | 64 tokens |
 | --- | --- | --- | --- | --- |
@@ -473,6 +475,87 @@ With 64-token batches, all matrix products of the model take about 0.57 s per
 prompt token, against about 1.8 s one token at a time in the same run. Beyond
 about 16 tokens, the double-precision sums of products dominate, at about
 0.17 ns per weight and token.
+
+## Measure parallel matrix products
+
+To measure H.1 independently of model loading, build .NET 10 in Release and run
+the synthetic benchmark. No model download is needed:
+
+```sh
+dotnet build src/Marmotte.Cpu -c Release
+DOTNET_TieredCompilation=0 dotnet fsi --optimize+ examples/MatrixProducts.fsx
+DOTNET_PROCESSOR_COUNT=1 DOTNET_TieredCompilation=0 dotnet fsi --optimize+ examples/MatrixProducts.fsx
+```
+
+The second run constrains scheduling to one worker, separating the intrinsics
+change from row parallelism. Disabling tiered compilation keeps short workloads
+from being measured partly before JIT optimization. Each case warms up ten calls,
+then reports the median and range of seven groups of ten calls. Timings include
+row decoding, dot products, pooled row buffers and scheduling; they exclude
+fixture creation, uploads and downloads. One-token `MatMul` uses the same kernel
+as `MatVec`. Checksums help spot differences but do not replace the scalar-reference
+tests. Before/after runs use the same script; the baseline is commit `0cea0b3`.
+
+Recorded on 2026-11-08, ARM64, .NET 10.0.12, 14 logical processors,
+`Vector128.IsHardwareAccelerated = true`, `Vector256.IsHardwareAccelerated = false`:
+
+| Stored encoding, 1,024 × 3,072 | Tokens | Before (ms) | Intrinsics, one worker (ms) | Intrinsics, parallel (ms) | Total speedup |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| F32 | 1 | 1.991 | 1.915 | 0.387 | 5.1× |
+| F32 | 8 | 5.467 | 4.694 | 0.741 | 7.4× |
+| Q4_K | 1 | 1.388 | 1.243 | 0.283 | 4.9× |
+| Q4_K | 8 | 4.800 | 3.994 | 0.681 | 7.0× |
+| Q6_K | 1 | 2.798 | 2.673 | 0.485 | 5.8× |
+| Q6_K | 8 | 6.297 | 5.433 | 0.827 | 7.6× |
+
+Small 16 × 64 F32 matrices remain serial (about 0.001 ms for one token,
+0.002 ms for eight). At 64 × 256, eight-token products use two partitions:
+F32 improves from 0.024 to 0.015 ms, Q4_K from 0.022 to 0.012 ms, and Q6_K
+from 0.029 to 0.016 ms. These measurements motivate a minimum of 65,536
+multiply terms per scheduled partition. They are local kernel timings, not a
+claim about full-model throughput or a universal optimum for other CPUs.
+
+### Follow ownership through the workers
+
+For `Rows * Columns * Tokens` work, the number of partitions is bounded by
+`Environment.ProcessorCount`, `Rows`, and `floor(work / 65536)`. Zero or one
+partition runs serially. Contiguous row ranges are computed with 64-bit arithmetic,
+including uneven division; each row belongs to exactly one partition. Each active
+worker rents one row buffer and returns it in `finally`. The pool may round its
+capacity up; scratch storage is O(workers × columns), independent of tokens.
+
+```mermaid
+flowchart LR
+    W["Stored weights: rows 0–3"] --> A["Worker A: decode rows 0–1"]
+    W --> B["Worker B: decode rows 2–3"]
+    X["Shared input: all token rows"] --> A
+    X --> B
+    A --> Y0["Output columns 0–1 for every token"]
+    B --> Y1["Output columns 2–3 for every token"]
+    Y0 --> J["Join workers before returning"]
+    Y1 --> J
+```
+
+The diagram shows a two-partition example. Only memory values cross task
+boundaries; spans are created inside the worker. Weights and inputs are read-only
+throughout the call. The backend retains ownership and rejects aliasing before
+execution, and the parallel loop joins before the call returns, including on
+failure. A batch still decodes each weight row exactly once. There is no native
+pointer, pinning, global mutable scratch buffer or new package dependency.
+
+SIMD may change addition order relative to the former `Vector<T>` implementation,
+so cross-version results are compared with numerical tolerances. Scheduling never
+splits an individual dot product: repeated calls and batch/single-token execution
+remain identical on the same runtime and hardware. Tests cover all fourteen
+encodings, uneven partitions, SIMD boundaries and tails, large cancelling
+products, repeated writes, empty batches, and existing ownership/shape validation.
+The matrix tests also pass with `DOTNET_EnableHWIntrinsic=0`; the 256-bit path
+compiles but still needs execution on an accelerated x64 host.
+
+The intrinsic operations and feature guards follow the contracts in Microsoft's
+[SIMD and hardware intrinsics documentation](https://learn.microsoft.com/en-us/dotnet/standard/simd).
+The arithmetic and partitioning are original Marmotte code. H.2 (quantized input
+dot products) and H.3 (last-token projections and attention fusion) remain separate.
 
 ## Rotary Position Embedding
 

@@ -262,7 +262,8 @@ The three backend projects share these contracts:
 - `Marmotte.Cpu`: owned F32 arrays, explicit upload/download, weight tensors that
   retain the stored payload, `Add`, SwiGLU and RMS normalization kernels
   vectorized with `Vector<T>`, embedding lookup, and matrix-vector and
-  matrix-matrix products over stored weights, which all decode rows with Core's
+  matrix-matrix products with safe intrinsics and parallel weight rows (see
+  [H.1 measurements](docs/kernels.md#measure-parallel-matrix-products)), which decode rows with Core's
   `RowDecoder`, rotary position embedding, attention temperature and a
   key-value cache and causal grouped-query attention.
 - `Marmotte.Cuda` and `Marmotte.Metal`: buildable placeholders whose allocation,

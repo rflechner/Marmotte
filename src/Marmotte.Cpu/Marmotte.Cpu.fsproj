@@ -5,6 +5,7 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="CpuKernels.fs" />
+    <Compile Include="CpuMatrixKernels.fs" />
     <Compile Include="CpuStorage.fs" />
     <Compile Include="CpuTensor.fs" />
     <Compile Include="CpuWeightTensor.fs" />

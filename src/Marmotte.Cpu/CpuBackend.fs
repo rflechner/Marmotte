@@ -194,7 +194,7 @@ type CpuBackend() =
             if Object.ReferenceEquals(input, destination) then
                 invalidArg (nameof destination) "MatVec destination must differ from its input, which every output reads in full."
 
-            CpuKernels.matMul (matrix, ReadOnlySpan<single>(inputValues), Span<single>(destinationValues))
+            CpuMatrixKernels.matMul (matrix, ReadOnlyMemory<single>(inputValues), Memory<single>(destinationValues))
 
     interface IMatMulKernel with
         member this.MatMul(weights, input, destination) =
@@ -215,7 +215,7 @@ type CpuBackend() =
             if Object.ReferenceEquals(input, destination) then
                 invalidArg (nameof destination) "MatMul destination must differ from its input, which every weight row reads in full."
 
-            CpuKernels.matMul (matrix, ReadOnlySpan<single>(inputValues), Span<single>(destinationValues))
+            CpuMatrixKernels.matMul (matrix, ReadOnlyMemory<single>(inputValues), Memory<single>(destinationValues))
 
     interface IRopeKernel with
         member this.Rope(input, positions, embedding, destination) =
