@@ -9,6 +9,7 @@
     <Compile Include="InfoCommandTests.fs" />
     <Compile Include="SafetensorsInfoTests.fs" />
     <Compile Include="QuantizeCommandTests.fs" />
+    <Compile Include="GenerateCommandTests.fs" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="FSharp.Core" ExcludeAssets="contentFiles" />

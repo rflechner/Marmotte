@@ -33,6 +33,10 @@ let main args =
             .WithExample("info", "model.safetensors")
             .WithExample("info", "model.gguf", "--metadata", "--tensor-limit", "20")
         |> ignore
+        config.AddCommand<GenerateCommand>("generate")
+            .WithDescription("Stream a greedy CPU continuation of a literal prompt from a mistral3 GGUF.")
+            .WithExample("generate", "model.gguf", "The capital of France is", "--max-tokens", "32")
+        |> ignore
         config.AddCommand<QuantizeCommand>("quantize")
             .WithDescription("Quantize F32/F16/BF16 GGUF weights into a new Q8_0 or Q4_0 file.")
             .WithExample("quantize", "model-f16.gguf", "model-q8_0.gguf")

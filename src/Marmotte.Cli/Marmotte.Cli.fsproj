@@ -11,6 +11,7 @@
         <Compile Include="SafetensorsReport.fs" />
         <Compile Include="InfoCommand.fs" />
         <Compile Include="QuantizeCommand.fs" />
+        <Compile Include="GenerateCommand.fs" />
         <Compile Include="Program.fs"/>
         <None Include="Properties/launchSettings.json" />
     </ItemGroup>
@@ -22,6 +23,7 @@
     </ItemGroup>
 
     <ItemGroup>
+        <ProjectReference Include="../Marmotte.Cpu/Marmotte.Cpu.fsproj" />
         <ProjectReference Include="../Marmotte.Gguf/Marmotte.Gguf.fsproj" />
         <ProjectReference Include="../Marmotte.Safetensors/Marmotte.Safetensors.fsproj" />
     </ItemGroup>

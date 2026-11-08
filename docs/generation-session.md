@@ -165,5 +165,6 @@ This completes the sequence mechanics of I.2. I.3 now includes both greedy and
 `TokenSamplingTests` covers finite scores, ties, excluded tokens, invalid values,
 input slices and comparison with a sorted reference up to 131,072 entries.
 I.4 is implemented by [`TokenGenerator`](token-generation.md); a generation CLI
-remains J.1. A real-model prompt/continuation comparison is not established
-by the synthetic tests and remains a separate check.
+is available through `generate`; see [Try a prompt](../README.md#try-a-prompt).
+A real-model prompt/continuation comparison is not established by the synthetic
+tests and remains a separate check.

@@ -29,7 +29,43 @@ and `examples/Generation.fsx`. `TokenSampling.greedy` selects the largest finite
 and explicit errors. `TokenSampler` adds temperature, top-k, top-p and seeded
 random selection; see [sampling](docs/sampling.md). `TokenGenerator` adds EOS and
 new-token limits, callbacks and explicit stop reasons; see [generation stopping](docs/token-generation.md).
-A generation CLI remains planned.
+The `generate` CLI streams a greedy CPU continuation; see [Try a prompt](#try-a-prompt).
+
+## Try a prompt
+
+Build with .NET 10 and provide a dense `mistral3` GGUF with a `tekken` tokenizer.
+For the local model described below, run from the repository root:
+
+```sh
+dotnet build Marmotte.slnx
+dotnet run --no-build --project src/Marmotte.Cli -- generate \
+  "$LM_STUDIO_MODELS_FOLDER/lmstudio-community/Ministral-3-3B-Instruct-2512-GGUF/Ministral-3-3B-Instruct-2512-Q4_K_M.gguf" \
+  "La capitale de la France est" --max-tokens 8 --context-size 64
+```
+
+The command writes only the continuation to stdout and flushes after each token.
+The prompt is literal text: tokenizer boundary flags apply once, but chat templates
+and special spellings inside the text are not interpreted. This is a completion
+interface, not an instruction/chat interface. Selection is greedy and configured
+EOS stops generation without being printed. Missing EOS metadata disables that stop.
+
+`--max-tokens` defaults to 128 (zero runs prefill only), `--context-size` to 2048
+(capped at the model context), and `--batch-size` to 32 (capped at the selected
+context). Prompts must fit the selected context. The F32 key/value cache is
+allocated up front; keep the context small for initial CPU experiments. Weights
+are memory-mapped read-only. CPU execution currently decodes weight rows, so a
+large model can take substantial time before the first token.
+
+A stop summary goes to stderr; stdout has no added newline, prompt echo or markup.
+UTF-8 characters split across tokens are buffered. If stopping cuts through a
+character, its incomplete trailing bytes are omitted with a stderr diagnostic.
+Invalid UTF-8 during generation remains an error. Exit codes are 0 for EOS/budget/
+context stops, 1 for errors (including sampling failure), and 130 for cancellation.
+The first Ctrl+C requests cancellation between execution steps; a second terminates
+immediately. Load/prefill/generation timing remains roadmap item J.2.
+
+Small synthetic GGUF tests check exact output, literal brackets, EOS, token and
+context limits, and invalid arguments without requiring a local model.
 
 ## BPE tokenizer
 

@@ -128,5 +128,5 @@ counts, sampling failures, invalid IDs and cancellation/exception paths. The
 absence of extra decoding is checked through the processed cache count.
 
 This completes I.4. A script can now connect a real GGUF model, tokenizer and
-prompt with the full generation loop. A user-facing generation CLI remains J.1;
+prompt with the full generation loop. The `generate` CLI now connects these components (see [Try a prompt](../README.md#try-a-prompt));
 real-model correctness and text quality still require separate validation.
