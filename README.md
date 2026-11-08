@@ -32,11 +32,22 @@ automatically splits text with `TekkenPreTokenizer.split` before BPE.
 `loaded.Tokenizer.Decode(ids, SpecialTokenDecoding.Skip)` reconstructs UTF-8 text;
 `CreateDecoder` exposes incremental `Append`/`Complete` for streaming. See the
 [decoding tutorial](docs/token-decoding.md), the [Tekken tutorial](docs/tekken.md)
-and the [BPE contract and tutorial](docs/tokenizer.md). Chat templates remain planned.
+and the [BPE contract and tutorial](docs/tokenizer.md). Chat-template rendering remains planned.
 Run the independent sentence example without a model:
 
 ```sh
 dotnet fsi examples/Tokenizer.fsx
+```
+
+`JinjaParser.parse` builds a reusable syntax tree for a documented Jinja subset:
+text, expressions, comments, nested loops and `if`/`elif`/`else` conditions.
+Expressions include literals, comparisons and boolean operators. Syntax errors
+include source positions. See the [parser tutorial](docs/jinja-parser-sample.md)
+for the grammar and limits. Context lookup and runtime evaluation remain planned.
+Run the example without a model:
+
+```sh
+dotnet fsi examples/ParserCombinatorSample.fsx
 ```
 
 ## GGUF reader
