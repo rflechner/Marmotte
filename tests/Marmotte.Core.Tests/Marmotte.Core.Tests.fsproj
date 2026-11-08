@@ -10,6 +10,7 @@
     <Compile Include="Jinja/ChatPromptTests.fs" />
     <Compile Include="BpeTokenizerTests.fs" />
     <Compile Include="TokenTextDecoderTests.fs" />
+    <Compile Include="TokenSamplingTests.fs" />
     <Compile Include="TekkenPreTokenizerTests.fs" />
     <Compile Include="TensorTests.fs" />
     <Compile Include="ComputeTests.fs" />

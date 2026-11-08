@@ -5,10 +5,12 @@ open Marmotte.Core
 open Marmotte.Cpu
 open SyntheticModel
 
-// The caller supplies the selection policy. This small demonstration picks the largest logit;
-// configurable sampling and EOS/length policy will be separate library features.
+// The caller selects the library's greedy policy. Invalid model scores are reported explicitly;
+// probabilistic sampling and EOS/length policy remain separate features.
 let chooseToken (logits: single array) =
-    logits |> Array.mapi (fun index value -> index, value) |> Array.maxBy snd |> fst
+    match TokenSampling.greedy (ReadOnlySpan<single>(logits)) with
+    | Ok token -> token
+    | Error error -> invalidOp $"Token selection failed: {error}."
 
 let run () =
     let source, layout = createExample ()

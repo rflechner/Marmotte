@@ -30,6 +30,7 @@
         <Compile Include="ModelLoading.fs" />
         <Compile Include="TransformerModel.fs" />
         <Compile Include="GenerationSession.fs" />
+        <Compile Include="TokenSampling.fs" />
         <Compile Include="BpeVocabulary.fs" />
         <Compile Include="TokenTextDecoder.fs" />
         <Compile Include="BpeTokenizer.fs" />

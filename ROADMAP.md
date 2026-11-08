@@ -222,6 +222,9 @@ soft-capping.
   at batch boundaries and explicit fault handling; see the
   [walkthrough](docs/generation-session.md). Sampling and stopping policy remain separate.
 - [ ] **I.3** Sampling: greedy first, then temperature, top-k and top-p with a seed.
+  Greedy is implemented as `TokenSampling.greedy`, with deterministic ties and
+  explicit invalid-logit errors, and used by `examples/Generation.fsx`.
+  Temperature, top-k, top-p and seeded random sampling remain to implement.
 - [ ] **I.4** Stop on EOS or after a maximum number of tokens.
 
 ### J. CLI

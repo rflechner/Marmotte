@@ -25,7 +25,8 @@ forward pass. `Forward(cache, position, tokenIds)` returns logits for every toke
 through the existing backend contracts. See the [walkthrough](docs/forward-pass.md)
 and `examples/Forward.fsx`. `GenerationSession` adds batched prompt prefill and
 single-token decoding with an owned cache; see the [session walkthrough](docs/generation-session.md)
-and `examples/Generation.fsx`. Sampling, stopping policies and a generation CLI remain planned.
+and `examples/Generation.fsx`. `TokenSampling.greedy` selects the largest finite logit with deterministic ties
+and explicit errors. Probabilistic sampling, stopping policies and a generation CLI remain planned.
 
 ## BPE tokenizer
 

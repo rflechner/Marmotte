@@ -24,9 +24,10 @@ Generated token 2: 2 (cached: 4)
 Generated token 3: 2 (cached: 5)
 ```
 
-The largest-logit choice and three-token loop belong to this exploration script.
-Configurable sampling and EOS/length stopping policies are still roadmap I.3
-and I.4; the session accepts the caller's selected token.
+The script uses Core's `TokenSampling.greedy` for the largest-logit choice; the
+three-token loop remains an application decision. Probabilistic sampling and
+EOS/length stopping policies are still roadmap I.3 and I.4; the session accepts
+the caller's selected token.
 
 ## 2. Create an independent sequence
 
@@ -85,7 +86,29 @@ let selectedToken = chooseToken logits
 let followingLogits = sequence.Decode(selectedToken)
 ```
 
-`chooseToken` is an application-supplied policy. `Decode` appends exactly one
+For deterministic greedy selection, define the application helper as follows:
+
+```fsharp
+let chooseToken (logits: single array) =
+    match TokenSampling.greedy (ReadOnlySpan<single>(logits)) with
+    | Ok tokenId -> tokenId
+    | Error error -> invalidOp $"Token selection failed: {error}."
+```
+
+The helper chooses how to report a failure; the library returns a typed `Result`.
+Greedy selects the largest finite logit without softmax, sorting or a random
+seed. For `[1.0f; 3.0f; 3.0f]`, it returns `Ok 1`: equal maxima select the
+smallest token ID, including signed-zero ties. Selection scans the vocabulary
+in linear time with constant auxiliary space and leaves logits unchanged.
+
+Negative infinity excludes an entry, allowing callers to mask tokens. An empty
+span returns `EmptyLogits`; all entries excluded returns `NoEligibleTokens`.
+NaN or positive infinity anywhere returns `InvalidLogit(tokenId, value)` for
+the first invalid entry, rather than hiding an invalid model output. IDs are
+relative to the supplied span, so pass the full vocabulary row. EOS is an
+ordinary candidate here; stopping belongs to the caller.
+
+`Decode` appends exactly one
 selected token at `ProcessedTokenCount` and returns scores for the following
 token. The input ID is validated before cache updates. A full cache raises
 `ArgumentOutOfRangeException`; there is no eviction or automatic context sliding.
@@ -135,7 +158,9 @@ attention temperature against the independent scalar forward reference. They
 also cover interleaved sessions, full capacity, invalid prompts, reset, resource
 ownership, injected execution failures and cancellation between batches.
 
-This completes the sequence mechanics of I.2. The example supplies a minimal
-selection loop, but library sampling, stopping rules and a generation CLI remain
-I.3, I.4 and J.1. A real-model prompt/continuation comparison is not established
+This completes the sequence mechanics of I.2 and the greedy part of I.3.
+`TokenSamplingTests` covers finite scores, ties, excluded tokens, invalid values,
+input slices and comparison with a sorted reference up to 131,072 entries.
+Probabilistic sampling, stopping rules and a generation CLI remain I.3, I.4
+and J.1. A real-model prompt/continuation comparison is not established
 by the synthetic tests and remains a separate check.
