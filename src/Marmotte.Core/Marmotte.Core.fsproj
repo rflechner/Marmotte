@@ -19,6 +19,7 @@
         <Compile Include="ModelTensorLayout.fs" />
         <Compile Include="KeyValueCache.fs" />
         <Compile Include="Compute.fs" />
+        <Compile Include="BpeTokenizer.fs" />
     </ItemGroup>
 
     <ItemGroup>

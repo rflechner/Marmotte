@@ -78,9 +78,10 @@ local check.
 
 ### D. Tokenizer
 
-- [ ] **D.1** BPE tokenizer built from `tokenizer.ggml.*` metadata: tokens, token types,
+- [x] **D.1** BPE tokenizer built from `tokenizer.ggml.*` metadata: tokens, token types,
   merges, special token IDs and BOS/EOS flags.
-  See the [illustrated tutorial and planned validation](docs/tokenizer.md).
+  Implemented by Core's `BpeTokenizer` and `GgufTokenizer.read`, over explicitly
+  pre-tokenized pieces. See the [tutorial and supported limits](docs/tokenizer.md).
 - [ ] **D.2** `tekken` pre-tokenization.
 - [ ] **D.3** Decode token IDs to UTF-8 text, including multi-byte sequences split across
   tokens during streaming.

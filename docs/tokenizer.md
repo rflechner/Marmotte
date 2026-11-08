@@ -1,14 +1,15 @@
 # D.1: turn vocabulary metadata into BPE token IDs
 
-This tutorial explains the planned tokenizer in [roadmap item D.1](../ROADMAP.md#d-tokenizer).
+This tutorial explains the BPE tokenizer in [roadmap item D.1](../ROADMAP.md#d-tokenizer).
 By the end, you should be able to trace a small input through ranked merges,
 map the result to vocabulary IDs, and explain where BOS/EOS markers belong.
 No model download is needed for the worked example.
 
-**Status:** Marmotte reads tokenizer metadata through `Gguf.read`, but has no
-BPE tokenizer API yet. The steps below describe the intended design and a
-hand-worked example, not an executable Marmotte tokenization feature. D.1
-remains unchecked. The existing `info` command can inspect a real file today.
+**Status:** D.1 is implemented as `BpeTokenizer` in Core and
+`GgufTokenizer.read` in the GGUF library. Input must already be split into
+pieces; automatic Tekken pre-tokenization (D.2), streaming text decoding (D.3)
+and chat templates (D.4) remain unimplemented. The examples below use invented
+vocabularies, not measured Ministral IDs.
 
 ## 1. Find the tokenizer's ingredients
 
@@ -42,11 +43,10 @@ Vocabulary and special-ID fields are described in the
 profile and insertion keys are listed in the
 [metadata constants](https://github.com/ggml-org/llama.cpp/blob/master/gguf-py/gguf/constants.py).
 
-For Marmotte's planned loader, keep missing values distinguishable from explicit
-values. Reject an unsupported profile instead of silently selecting another.
-Validate array types and lengths, special-ID bounds, and ambiguous duplicate
-entries before constructing lookup tables. Any profile defaults must be
-explicitly documented as defaults, rather than reported as file metadata.
+The loader preserves absent flags separately from their effective defaults. It
+rejects unsupported profiles, wrong types, mismatched type-array lengths, invalid
+IDs, duplicate spellings/pairs, and merges whose operands or result are absent
+from the ordinary vocabulary.
 
 ## 2. Follow one small example
 
@@ -151,11 +151,12 @@ For the invented vocabulary, explicitly choose `add_bos_token = true` and
 With both flags enabled it would give `[0; 6; 6; 1]`. A defined EOS ID alone
 does not imply that every prompt ends with EOS.
 
-The planned API should distinguish automatic boundary insertion from recognition
-of special-token spellings inside input text. Test these decisions separately,
-including empty input and text containing `<bos>`. Keep markers out of ordinary
-pair merging, and make ownership of wrapping explicit so callers do not insert
-BOS twice. Chat rendering belongs to D.4.
+The API distinguishes automatic boundary insertion from explicit
+`TokenizerSegment.SpecialToken` IDs. `TextPiece` never recognizes special
+spellings automatically. Control, user-defined and unknown tokens can be inserted
+explicitly; unused and ordinary entries cannot. No duplicate BOS suppression
+occurs: callers must choose one owner for boundary insertion. Chat rendering
+belongs to D.4.
 
 The resulting IDs will select rows in `token_embd.weight` through
 [`EmbeddingLookup`](kernels.md). In our invented example, rows 0, 6 and 6 would
@@ -174,14 +175,13 @@ profile enables a whole-piece vocabulary shortcut before ordinary merging
 The profile also supplies defaults which explicit metadata may override. See
 [the profile selection and BPE session logic](https://github.com/ggml-org/llama.cpp/blob/master/src/llama-vocab.cpp).
 
-For the future implementation, keep the format-neutral tokenizer data and
-algorithm in Core, with GGUF metadata interpretation in `Marmotte.Gguf`.
-Construction should use metadata only and retain the reader's allocation limits.
-The exact public API and exception contract remain to be designed.
+The format-neutral tokenizer and algorithm live in Core; GGUF interpretation
+lives in `Marmotte.Gguf`. Construction uses metadata only, without reading
+weights or changing the index reader's allocation limits.
 
 ## 5. Turn the example into acceptance cases
 
-When implementing D.1, use small independently specified fixtures:
+The Core and GGUF tests use small independently specified fixtures:
 
 - Expect `[6; 6]` for the toy piece and `[0; 6; 6]` with the stated wrapping policy.
 - Exercise competing ranks, repeated pairs, ties, and a piece with no applicable merge.
@@ -192,5 +192,55 @@ When implementing D.1, use small independently specified fixtures:
   tokenizer, including pieces already present in the vocabulary. A text round
   trip alone cannot prove that the segmentation matches.
 
+## Run the implementation
+
+From the repository root, without a local model:
+
+```sh
+dotnet fsi examples/Tokenizer.fsx
+```
+
+This runs the sentence example with its exact invented IDs and checks the result:
+`[0; 20; 21; 22; 23; 24; 25; 22; 26]`. The actual stored spelling for the space
+byte is `Ġ`; the earlier tables use `␠` only for display.
+
+To construct the same engine from an already read GGUF index:
+
+```fsharp
+let loaded = GgufTokenizer.read model.Metadata
+let segments = [| TokenizerSegment.TextPiece "Hello" |]
+let ids = loaded.Tokenizer.Encode(segments, true)
+```
+
+Open `Marmotte.Core` and `Marmotte.Gguf` for that snippet. Supplying a whole
+sentence as one `TextPiece` bypasses pre-tokenization and is not a substitute
+for D.2. `Encode` wraps the complete segment sequence once when its second
+argument is true; false disables boundary insertion.
+
+### Supported contract and limits
+
+- `model` must be `gpt2`. Missing `pre`, `default`, and `gpt-2` use ranked merges
+  with BOS/EOS off by default. `tekken` enables whole-piece lookup and defaults
+  BOS on, EOS off. Explicit flags override these defaults; enabled insertion
+  requires a corresponding ID. No conventional special IDs are guessed.
+- Missing `merges` means no merges. Missing token types mean Normal. Scores
+  do not participate in BPE ranking. Unknown categories and profiles are rejected.
+- Normal and Byte entries participate in byte-alphabet lookup and merging.
+  Alternate byte spellings such as hexadecimal placeholders are not interpreted.
+  Missing input-byte coverage raises `InvalidDataException`; no unknown-token
+  replacement silently changes the text.
+- Metadata errors raise `InvalidDataException`; invalid Core constructor or
+  special-ID arguments raise `ArgumentException`. Null arguments are rejected.
+  Malformed UTF-16 raises `EncoderFallbackException` instead of replacement.
+- Construction snapshots vocabulary arrays and merge ranks. Results are fresh
+  arrays; encoding calls share no mutable working state. Token IDs are Int32.
+- Each merge rescans adjacent pairs with leftmost tie-breaking. This correctness
+  baseline can be quadratic in piece length, with additional string allocation.
+  No performance claim or target-model compatibility claim is made yet.
+
+The byte alphabet preserves bytes 33–126, 161–172 and 174–255 as their same-valued
+Unicode characters. Other bytes, in ascending order, map to characters starting
+at U+0100. Input first becomes strict UTF-8 bytes, then these symbols. This was
+checked against the [byte mapping reference](https://github.com/ggml-org/llama.cpp/blob/master/src/unicode.cpp).
 The upstream sources linked above were consulted on 2026-11-08. They are moving
-branches; pin the revision used for compatibility fixtures when D.1 is implemented.
+branches; pin a revision when recording target-model compatibility fixtures.

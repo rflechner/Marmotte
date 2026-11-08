@@ -22,6 +22,19 @@ values without reading weights. See the [supported metadata contract and example
 weight shapes, including tied output embeddings. It does not load weights;
 inference is not implemented yet.
 
+## BPE tokenizer
+
+`GgufTokenizer.read model.Metadata` builds Core's `BpeTokenizer` from a `gpt2`
+vocabulary, merge ranks, token categories and BOS/EOS policy. `Encode` takes
+explicit `TokenizerSegment.TextPiece` or `SpecialToken` segments. It does not
+split sentences: automatic Tekken pre-tokenization, streaming decoding and chat
+templates remain planned. See the [contract and tutorial](docs/tokenizer.md).
+Run the independent sentence example without a model:
+
+```sh
+dotnet fsi examples/Tokenizer.fsx
+```
+
 ## GGUF reader
 
 `Marmotte.Gguf` reads GGUF v2 (little-endian) and v3 files
@@ -408,7 +421,7 @@ block layouts, numerical limits and tensor selection policy.
 
 - [Format comparison, tensor storage, strides, and illustration notes](docs/README.md)
 - [Illustrated inference pipeline: model files, embeddings, KV cache and generation](docs/inference-pipeline.md)
-- [BPE tokenizer tutorial: metadata, ranked merges and special tokens (D.1, planned)](docs/tokenizer.md)
+- [BPE tokenizer tutorial: metadata, ranked merges and special tokens (D.1)](docs/tokenizer.md)
 - [GGUF format and current implementation](docs/gguf.md)
 - [Safetensors format and current implementation](docs/safetensors.md)
 - [Execution tensors and kernels on CPU, CUDA and Metal](docs/kernels.md)

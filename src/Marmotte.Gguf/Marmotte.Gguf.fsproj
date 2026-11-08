@@ -9,6 +9,7 @@
         <Compile Include="Types.fs"/>
         <Compile Include="Gguf.fs"/>
         <Compile Include="GgufModelConfiguration.fs" />
+        <Compile Include="GgufTokenizer.fs" />
         <Compile Include="GgufTensorSource.fs" />
         <Compile Include="GgufModelTensorLayout.fs" />
         <Compile Include="QuantizationCodec.fs" />

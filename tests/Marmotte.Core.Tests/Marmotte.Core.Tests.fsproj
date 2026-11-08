@@ -5,6 +5,7 @@
     <IsTestProject>true</IsTestProject>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="BpeTokenizerTests.fs" />
     <Compile Include="TensorTests.fs" />
     <Compile Include="ComputeTests.fs" />
     <Compile Include="YarnTests.fs" />
