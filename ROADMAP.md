@@ -221,10 +221,10 @@ soft-capping.
   tokens one at a time, returning next-token logits. Includes reset, cancellation
   at batch boundaries and explicit fault handling; see the
   [walkthrough](docs/generation-session.md). Sampling and stopping policy remain separate.
-- [ ] **I.3** Sampling: greedy first, then temperature, top-k and top-p with a seed.
-  Greedy is implemented as `TokenSampling.greedy`, with deterministic ties and
-  explicit invalid-logit errors, and used by `examples/Generation.fsx`.
-  Temperature, top-k, top-p and seeded random sampling remain to implement.
+- [x] **I.3** Sampling: `TokenSampling.greedy` provides deterministic maximum selection;
+  `TokenSampler` applies top-k, temperature-scaled softmax and top-p with an explicit
+  seed. Both report invalid logits explicitly. `examples/Generation.fsx --sample`
+  demonstrates probabilistic selection; see the [sampling walkthrough](docs/sampling.md).
 - [ ] **I.4** Stop on EOS or after a maximum number of tokens.
 
 ### J. CLI

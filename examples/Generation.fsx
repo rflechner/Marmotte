@@ -5,10 +5,16 @@ open Marmotte.Core
 open Marmotte.Cpu
 open SyntheticModel
 
-// The caller selects the library's greedy policy. Invalid model scores are reported explicitly;
-// probabilistic sampling and EOS/length policy remain separate features.
+// Use --sample for probabilistic selection; greedy remains the default. Keep one sampler
+// for the whole sequence so the random state advances instead of restarting for every token.
+let stochastic = fsi.CommandLineArgs |> Array.contains "--sample"
+let parameters = TokenSamplingParameters.Create(temperature = 0.8, topK = Some 3, topP = 0.9)
+let sampler = TokenSampler(parameters, seed = 42)
 let chooseToken (logits: single array) =
-    match TokenSampling.greedy (ReadOnlySpan<single>(logits)) with
+    let result =
+        if stochastic then sampler.Sample(ReadOnlySpan<single>(logits))
+        else TokenSampling.greedy (ReadOnlySpan<single>(logits))
+    match result with
     | Ok token -> token
     | Error error -> invalidOp $"Token selection failed: {error}."
 

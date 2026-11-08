@@ -15,7 +15,7 @@ work. Illustrations are conceptual aids, not executable format specifications.
 | [Tekken pre-tokenization (D.2)](tekken.md) | Unicode boundaries, preserved spaces and raw-text encoding, with an SVG diagram | Implemented for the tekken profile; other automatic profiles remain unsupported |
 | [Token decoding (D.3)](token-decoding.md) | UTF-8 bytes across token boundaries, special-token policy and stream lifecycle | Complete and streaming decoding implemented |
 | [Transformer layer tensors](transformer-layer-tensors.md) | Illustrated guide to the nine per-layer weight descriptors and their shapes | Dense mistral3 mapping, validation and forward pass implemented |
-| [Prompt processing and decoding](generation-session.md) | Batched prefill, incremental tokens, session cache and failure handling | GenerationSession implemented; sampling and stopping policies planned |
+| [Prompt processing and decoding](generation-session.md) | Batched prefill, incremental tokens, session cache and failure handling | GenerationSession and seeded sampling implemented; stopping policies planned |
 | [Dense forward pass](forward-pass.md) | Runnable synthetic model, loading, logits and cache ownership | Dense mistral3 implemented through backend contracts |
 | [Execution tensors and kernels](kernels.md) | Eight illustrations covering kernels and YaRN, formula notation, GGUF-to-kernel diagram and backend contracts | Eight CPU kernels, a key-value cache and YaRN preparation implemented; CUDA/Metal placeholders |
 | [Q2_K, Q3_K and BitNet b1.58](quantization.md) | Three illustrations of code levels, `twoBitQuant` packing, storage cost and ternary training | Q2_K/Q3_K decoding implemented; BitNet execution not implemented |

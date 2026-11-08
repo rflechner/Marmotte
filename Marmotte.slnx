@@ -33,6 +33,7 @@
     <File Path="docs/chat-prompts.md" />
     <File Path="docs/forward-pass.md" />
     <File Path="docs/generation-session.md" />
+    <File Path="docs/sampling.md" />
     <File Path="ROADMAP.md" />
   </Folder>
   <Folder Name="/examples/">

@@ -25,9 +25,9 @@ Generated token 3: 2 (cached: 5)
 ```
 
 The script uses Core's `TokenSampling.greedy` for the largest-logit choice; the
-three-token loop remains an application decision. Probabilistic sampling and
-EOS/length stopping policies are still roadmap I.3 and I.4; the session accepts
-the caller's selected token.
+three-token loop remains an application decision. Pass `--sample` to use the seeded `TokenSampler` instead; see
+[probabilistic sampling](sampling.md). EOS/length stopping policies remain
+roadmap I.4; the session accepts the caller's selected token.
 
 ## 2. Create an independent sequence
 
@@ -158,9 +158,9 @@ attention temperature against the independent scalar forward reference. They
 also cover interleaved sessions, full capacity, invalid prompts, reset, resource
 ownership, injected execution failures and cancellation between batches.
 
-This completes the sequence mechanics of I.2 and the greedy part of I.3.
+This completes the sequence mechanics of I.2. I.3 now includes both greedy and
+[seeded probabilistic sampling](sampling.md).
 `TokenSamplingTests` covers finite scores, ties, excluded tokens, invalid values,
 input slices and comparison with a sorted reference up to 131,072 entries.
-Probabilistic sampling, stopping rules and a generation CLI remain I.3, I.4
-and J.1. A real-model prompt/continuation comparison is not established
+Stopping rules and a generation CLI remain I.4 and J.1. A real-model prompt/continuation comparison is not established
 by the synthetic tests and remains a separate check.
