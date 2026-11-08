@@ -36,6 +36,8 @@ to F#, .NET, and local model inference.
 
 ## Document contracts and intent
 
+- Write documentation with a tutorial-oriented approach: start from a concrete learning goal, state prerequisites, and guide the reader through progressive steps with runnable examples and expected results. Introduce concepts when they are needed, explain why each step matters, and keep detailed reference material available to support the walkthrough.
+- Proactively generate explanatory images whenever they can help the reader understand a concept, without waiting for an explicit request. Use diagrams, illustrations, or annotated visuals to clarify data layouts, tensor dimensions, processing steps, and relationships. Place each image beside the relevant explanation, with clear labels and descriptive alternative text, and verify that it accurately represents the documented behavior.
 - Use F# `///` documentation for public APIs, important contracts, and non-obvious behavior.
 - Explain why a decision exists, including constraints and tradeoffs, rather than restating the implementation.
 - Document units, dimension order, supported versions, stream requirements, stream ownership, final stream position, and exception behavior where relevant.
