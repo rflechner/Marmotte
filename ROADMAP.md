@@ -225,7 +225,10 @@ soft-capping.
   `TokenSampler` applies top-k, temperature-scaled softmax and top-p with an explicit
   seed. Both report invalid logits explicitly. `examples/Generation.fsx --sample`
   demonstrates probabilistic selection; see the [sampling walkthrough](docs/sampling.md).
-- [ ] **I.4** Stop on EOS or after a maximum number of tokens.
+- [x] **I.4** `TokenGenerator` stops on explicit end-token IDs or a maximum number
+  of new tokens, without decoding the final emitted token unnecessarily. It reports
+  EOS, token/context limits and sampling failures, with per-token callbacks and
+  cancellation; see the [walkthrough](docs/token-generation.md).
 
 ### J. CLI
 

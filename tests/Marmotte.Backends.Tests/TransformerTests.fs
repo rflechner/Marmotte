@@ -536,3 +536,139 @@ let ``session creation rejects invalid limits and incompatible cache encodings``
         Assert.Throws<ArgumentOutOfRangeException>(fun () -> session model capacity batchSize |> ignore) |> ignore
     Assert.Throws<ArgumentException>(fun () -> GenerationSession.Create(model, 8, 2, TensorEncoding.Q8_0, TensorEncoding.F32) |> ignore) |> ignore
     Assert.Throws<ArgumentNullException>(fun () -> session Unchecked.defaultof<_> 8 2 |> ignore) |> ignore
+
+[<Fact>]
+let ``generation stops on EOS without emitting or decoding it and ignores EOS in the prompt`` () =
+    use fixture = new ModelFixture(true, false)
+    use backend = new CpuBackend() :> ITensorBackend
+    use model = TransformerModel.Load(backend, fixture, fixture.Layout)
+    use sequence = session model 8 2
+    let selected = [| 2; 3; 4 |]
+    let mutable calls = 0
+    let selector (logits: ReadOnlyMemory<single>) =
+        let prefix = Array.append [| 4; 1 |] selected[..calls - 1]
+        let expected = reference fixture fixture.Layout prefix |> Array.skip ((prefix.Length - 1) * 5)
+        close expected (logits.ToArray())
+        let token = selected[calls]
+        calls <- calls + 1
+        Ok token
+    let endIds = [| 4; 0; 4 |]
+    let generator = TokenGenerator(sequence, 6, ReadOnlyMemory<int>(endIds), selector)
+    Array.fill endIds 0 endIds.Length 2
+    let emitted = ResizeArray<int>()
+    let result = generator.Generate(ReadOnlyMemory<int>([| 4; 1 |]), onToken = emitted.Add)
+    Assert.Equal<int>([| 2; 3 |], result.Tokens)
+    Assert.Equal<int>(result.Tokens, emitted.ToArray())
+    Assert.Equal(GenerationStopReason.EndToken 4, result.StopReason)
+    Assert.Equal(3, calls)
+    Assert.Equal(4, sequence.ProcessedTokenCount)
+
+[<Theory>]
+[<InlineData(0)>]
+[<InlineData(1)>]
+[<InlineData(3)>]
+let ``generation enforces token limits without an extra selection or final decode`` limit =
+    use fixture = new ModelFixture(true, false)
+    use backend = new CpuBackend() :> ITensorBackend
+    use model = TransformerModel.Load(backend, fixture, fixture.Layout)
+    use sequence = session model 8 2
+    let mutable calls = 0
+    let selector _ =
+        calls <- calls + 1
+        Ok 2
+    let generator = TokenGenerator(sequence, limit, ReadOnlyMemory<int>.Empty, selector)
+    let emitted = ResizeArray<int>()
+    let result = generator.Generate(ReadOnlyMemory<int>([| 1; 3 |]), onToken = emitted.Add)
+    Assert.Equal(GenerationStopReason.TokenLimit, result.StopReason)
+    Assert.Equal<int>(Array.create limit 2, result.Tokens)
+    Assert.Equal(limit, calls)
+    Assert.Equal<int>(result.Tokens, emitted.ToArray())
+    Assert.Equal(2 + max 0 (limit - 1), sequence.ProcessedTokenCount)
+
+[<Fact>]
+let ``EOS takes priority over the final token budget and a full cache`` () =
+    use fixture = new ModelFixture(true, false)
+    use backend = new CpuBackend() :> ITensorBackend
+    use model = TransformerModel.Load(backend, fixture, fixture.Layout)
+    use sequence = session model 1 1
+    let generator = TokenGenerator(sequence, 1, ReadOnlyMemory<int>([| 4 |]), fun _ -> Ok 4)
+    let result = generator.Generate(ReadOnlyMemory<int>([| 1 |]), onToken = (fun _ -> failwith "EOS must not be emitted."))
+    Assert.Empty(result.Tokens)
+    Assert.Equal(GenerationStopReason.EndToken 4, result.StopReason)
+    Assert.Equal(1, sequence.ProcessedTokenCount)
+
+[<Theory>]
+[<InlineData(1)>]
+[<InlineData(3)>]
+let ``a full context permits its last prediction and stops without overflowing`` limit =
+    use fixture = new ModelFixture(true, false)
+    use backend = new CpuBackend() :> ITensorBackend
+    use model = TransformerModel.Load(backend, fixture, fixture.Layout)
+    use sequence = session model 2 2
+    let generator = TokenGenerator(sequence, limit, ReadOnlyMemory<int>.Empty, fun _ -> Ok 2)
+    let result = generator.Generate(ReadOnlyMemory<int>([| 1; 3 |]))
+    Assert.Equal<int>([| 2 |], result.Tokens)
+    Assert.Equal((if limit = 1 then GenerationStopReason.TokenLimit else GenerationStopReason.ContextLimit), result.StopReason)
+    Assert.Equal(2, sequence.ProcessedTokenCount)
+
+[<Fact>]
+let ``sampling failure returns the partial output without decoding another token`` () =
+    use fixture = new ModelFixture(true, false)
+    use backend = new CpuBackend() :> ITensorBackend
+    use model = TransformerModel.Load(backend, fixture, fixture.Layout)
+    use sequence = session model 8 2
+    let mutable calls = 0
+    let selector _ =
+        calls <- calls + 1
+        if calls = 1 then Ok 2 else Error TokenSamplingError.NoEligibleTokens
+    let generator = TokenGenerator(sequence, 5, ReadOnlyMemory<int>.Empty, selector)
+    let result = generator.Generate(ReadOnlyMemory<int>([| 1 |]))
+    Assert.Equal<int>([| 2 |], result.Tokens)
+    Assert.Equal(GenerationStopReason.SamplingFailed TokenSamplingError.NoEligibleTokens, result.StopReason)
+    Assert.Equal(2, sequence.ProcessedTokenCount)
+    Assert.False(sequence.IsFaulted)
+    Assert.Throws<InvalidOperationException>(fun () -> generator.Generate(ReadOnlyMemory<int>([| 1 |])) |> ignore) |> ignore
+    sequence.Reset()
+    let retry = generator.Generate(ReadOnlyMemory<int>([| 1 |]))
+    Assert.Empty(retry.Tokens)
+
+[<Fact>]
+let ``generation validates stop settings and selected IDs without emitting invalid tokens`` () =
+    use fixture = new ModelFixture(true, false)
+    use backend = new CpuBackend() :> ITensorBackend
+    use model = TransformerModel.Load(backend, fixture, fixture.Layout)
+    use sequence = session model 8 2
+    Assert.Throws<ArgumentOutOfRangeException>(fun () -> TokenGenerator(sequence, -1, ReadOnlyMemory<int>.Empty, fun _ -> Ok 0) |> ignore) |> ignore
+    for eos in [ -1; 5 ] do
+        Assert.Throws<ArgumentOutOfRangeException>(fun () -> TokenGenerator(sequence, 3, ReadOnlyMemory<int>([| eos |]), fun _ -> Ok 0) |> ignore) |> ignore
+    Assert.Throws<ArgumentNullException>(fun () -> TokenGenerator(sequence, 3, ReadOnlyMemory<int>.Empty, Unchecked.defaultof<_>) |> ignore) |> ignore
+    Assert.Equal(0, sequence.ProcessedTokenCount)
+    let invalid = TokenGenerator(sequence, 3, ReadOnlyMemory<int>.Empty, fun _ -> Ok 5)
+    Assert.Throws<ArgumentOutOfRangeException>(fun () -> invalid.Generate(ReadOnlyMemory<int>([| 1 |]), onToken = (fun _ -> failwith "Invalid ID emitted.")) |> ignore) |> ignore
+    Assert.Equal(1, sequence.ProcessedTokenCount)
+
+[<Fact>]
+let ``generation cancellation and callback exceptions do not trigger an extra forward`` () =
+    use fixture = new ModelFixture(true, false)
+    use backend = new CpuBackend() :> ITensorBackend
+    use model = TransformerModel.Load(backend, fixture, fixture.Layout)
+    use sequence = session model 8 2
+    let mutable calls = 0
+    let selector _ =
+        calls <- calls + 1
+        Ok 2
+    let generator = TokenGenerator(sequence, 3, ReadOnlyMemory<int>.Empty, selector)
+    use cancelled = new System.Threading.CancellationTokenSource()
+    cancelled.Cancel()
+    Assert.Throws<OperationCanceledException>(fun () -> generator.Generate(ReadOnlyMemory<int>([| 1 |]), cancellationToken = cancelled.Token) |> ignore) |> ignore
+    Assert.Equal(0, calls)
+    Assert.Equal(0, sequence.ProcessedTokenCount)
+    use during = new System.Threading.CancellationTokenSource()
+    Assert.Throws<OperationCanceledException>(fun () -> generator.Generate(ReadOnlyMemory<int>([| 1 |]), onToken = (fun _ -> during.Cancel()), cancellationToken = during.Token) |> ignore) |> ignore
+    Assert.Equal(1, calls)
+    Assert.Equal(1, sequence.ProcessedTokenCount)
+    Assert.False(sequence.IsFaulted)
+    sequence.Reset()
+    Assert.Throws<ApplicationException>(fun () -> generator.Generate(ReadOnlyMemory<int>([| 1 |]), onToken = (fun _ -> raise (ApplicationException("Injected callback failure.")))) |> ignore) |> ignore
+    Assert.Equal(1, sequence.ProcessedTokenCount)
+    Assert.False(sequence.IsFaulted)

@@ -48,6 +48,7 @@ type GenerationSession private (model: TransformerModel, layout: KeyValueCacheLa
     /// selecting/emitting a token does not count it: it enters the cache on the next Decode call.
     /// On a fault this counts only completed batches; the partial cache must not be reused.
     member _.ProcessedTokenCount = processedTokens
+    member _.VocabularySize = model.VocabularySize
     member _.Capacity = layout.Capacity
     member _.BatchSize = batchSize
     member _.IsFaulted = state = GenerationState.Faulted

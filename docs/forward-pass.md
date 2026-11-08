@@ -126,8 +126,8 @@ non-empty batch replaces that suffix in every layer. An empty batch returns
 `[0; VocabularySize]` logits and preserves the cache even at an earlier position.
 
 For prompt chunking and token-by-token sequence state, use
-[`GenerationSession`](generation-session.md), implemented in I.2. Sampling and
-stopping policies remain I.3–I.4. Callers decide the batch size. Scratch tensors are allocated per call
+[`GenerationSession`](generation-session.md), implemented in I.2. Sampling is provided by `TokenSampling`/`TokenSampler`;
+[`TokenGenerator`](token-generation.md) applies I.4 stopping policies. Callers decide the batch size. Scratch tensors are allocated per call
 and reused across layers, approximately
 `tokens × (3E + 2Q + 2K + 2F)` F32 values, plus `tokens × vocabulary` output,
 where E is embedding width, Q/K projected head widths and F feed-forward width.

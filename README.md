@@ -27,8 +27,9 @@ and `examples/Forward.fsx`. `GenerationSession` adds batched prompt prefill and
 single-token decoding with an owned cache; see the [session walkthrough](docs/generation-session.md)
 and `examples/Generation.fsx`. `TokenSampling.greedy` selects the largest finite logit with deterministic ties
 and explicit errors. `TokenSampler` adds temperature, top-k, top-p and seeded
-random selection; see [sampling](docs/sampling.md). Stopping policies and a
-generation CLI remain planned.
+random selection; see [sampling](docs/sampling.md). `TokenGenerator` adds EOS and
+new-token limits, callbacks and explicit stop reasons; see [generation stopping](docs/token-generation.md).
+A generation CLI remains planned.
 
 ## BPE tokenizer
 

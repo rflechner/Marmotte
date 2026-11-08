@@ -10,13 +10,9 @@ open SyntheticModel
 let stochastic = fsi.CommandLineArgs |> Array.contains "--sample"
 let parameters = TokenSamplingParameters.Create(temperature = 0.8, topK = Some 3, topP = 0.9)
 let sampler = TokenSampler(parameters, seed = 42)
-let chooseToken (logits: single array) =
-    let result =
-        if stochastic then sampler.Sample(ReadOnlySpan<single>(logits))
-        else TokenSampling.greedy (ReadOnlySpan<single>(logits))
-    match result with
-    | Ok token -> token
-    | Error error -> invalidOp $"Token selection failed: {error}."
+let chooseToken (logits: ReadOnlyMemory<single>) =
+    if stochastic then sampler.Sample(logits.Span)
+    else TokenSampling.greedy logits.Span
 
 let run () =
     let source, layout = createExample ()
@@ -24,13 +20,15 @@ let run () =
     use backend = new CpuBackend() :> ITensorBackend
     use model = TransformerModel.Load(backend, source, layout)
     use sequence = GenerationSession.Create(model, 8, 2, TensorEncoding.F32, TensorEncoding.F32)
-    let mutable logits = sequence.Prefill(ReadOnlyMemory<int>([| 0; 1; 2 |]))
-    printfn "Prompt cached: %d tokens (batch size %d)" sequence.ProcessedTokenCount sequence.BatchSize
-    // Displaying the selected ID does not put it in the cache. Decode consumes it only when
-    // we need the following token's logits. This avoids an unnecessary final forward call.
-    for step = 1 to 3 do
-        let token = chooseToken logits
-        printfn "Generated token %d: %d (cached: %d)" step token sequence.ProcessedTokenCount
-        if step < 3 then logits <- sequence.Decode(token)
+    // --eos treats ID 2 as an invented end token for this synthetic model.
+    let endIds = if fsi.CommandLineArgs |> Array.contains "--eos" then [| 2 |] else Array.empty
+    let generator = TokenGenerator(sequence, 3, ReadOnlyMemory<int>(endIds), chooseToken)
+    let mutable emitted = 0
+    let onToken token =
+        emitted <- emitted + 1
+        printfn "Generated token %d: %d (cached: %d)" emitted token sequence.ProcessedTokenCount
+    printfn "Prompt: 3 tokens (batch size %d)" sequence.BatchSize
+    let result = generator.Generate(ReadOnlyMemory<int>([| 0; 1; 2 |]), onToken = onToken)
+    printfn "Stopped: %A; returned: %d; cached: %d" result.StopReason result.Tokens.Length sequence.ProcessedTokenCount
 
 run ()

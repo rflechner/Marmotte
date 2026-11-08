@@ -107,8 +107,8 @@ Different seeds can still select the same tokens; a seed does not force diversit
 
 Sampling reads but never mutates or retains the input span. Pass the complete
 vocabulary row: returned IDs are indices relative to that span. EOS is an ordinary
-candidate and does not stop the sampler. Stop conditions remain application work
-until I.4. Allocation failures propagate as exceptions.
+candidate and does not stop the sampler. [`TokenGenerator`](token-generation.md)
+applies the separate EOS and token-budget policy. Allocation failures propagate as exceptions.
 
 ## Validation and cost
 

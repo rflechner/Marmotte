@@ -34,6 +34,7 @@
     <File Path="docs/forward-pass.md" />
     <File Path="docs/generation-session.md" />
     <File Path="docs/sampling.md" />
+    <File Path="docs/token-generation.md" />
     <File Path="ROADMAP.md" />
   </Folder>
   <Folder Name="/examples/">
