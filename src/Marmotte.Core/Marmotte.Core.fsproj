@@ -12,6 +12,9 @@
         <Compile Include="Jinja/JinjaSyntax.fs" />
         <Compile Include="Jinja/JinjaExpressionParser.fs" />
         <Compile Include="Jinja/JinjaParser.fs" />
+        <Compile Include="Jinja/JinjaValue.fs" />
+        <Compile Include="Jinja/JinjaRuntime.fs" />
+        <Compile Include="Jinja/ChatPrompt.fs" />
         <Compile Include="Tensors.fs" />
         <Compile Include="RowDecoder.fs" />
         <Compile Include="RowEncoder.fs" />

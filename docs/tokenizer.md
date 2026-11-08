@@ -8,8 +8,8 @@ No model download is needed for the worked example.
 **Status:** D.1 is implemented as `BpeTokenizer` in Core and
 `GgufTokenizer.read` in the GGUF library. Input must already be split into
 pieces; [Tekken pre-tokenization (D.2)](tekken.md) now supplies them automatically.
-[Streaming text decoding (D.3)](token-decoding.md) is implemented; chat templates
-(D.4) remain unimplemented. The examples below use invented
+[Streaming text decoding (D.3)](token-decoding.md) and a supported subset of
+[chat prompt rendering (D.4)](chat-prompts.md) are implemented. The examples below use invented
 vocabularies, not measured Ministral IDs.
 
 ## 1. Find the tokenizer's ingredients
@@ -156,8 +156,9 @@ The API distinguishes automatic boundary insertion from explicit
 `TokenizerSegment.SpecialToken` IDs. `TextPiece` never recognizes special
 spellings automatically. Control, user-defined and unknown tokens can be inserted
 explicitly; unused and ordinary entries cannot. No duplicate BOS suppression
-occurs: callers must choose one owner for boundary insertion. Chat rendering
-belongs to D.4.
+occurs: callers must choose one owner for boundary insertion.
+[D.4 rendering](chat-prompts.md) returns text; it does not recognize special
+spellings as token IDs.
 
 The resulting IDs will select rows in `token_embd.weight` through
 [`EmbeddingLookup`](kernels.md). In our invented example, rows 0, 6 and 6 would

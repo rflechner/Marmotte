@@ -9,7 +9,8 @@ dotnet fsi examples/ParserCombinatorSample.fsx
 ```
 
 The example prints a chat template's AST containing a loop and three conditional
-branches, then an error for a missing `endif`. Parsing does not render text,
+branches, an error for a missing `endif`, and runtime renderings with explicit
+contexts. See the [runtime tutorial](chat-prompts.md). Parsing itself does not render text,
 resolve variables, choose branches or perform escaping.
 
 ## 1. Parse a variable expression
@@ -62,9 +63,9 @@ flowchart TD
     First --> Body["Text and output nodes"]
 ```
 
-The AST carries syntax independently of runtime values. A future runtime can
-accept a context, resolve variable paths and evaluate the selected body without
-parsing again. No context or evaluation API is introduced yet.
+The AST carries syntax independently of runtime values. `JinjaRuntime.render`
+accepts a context, resolves variable paths and evaluates the selected body without
+parsing again. See the [runtime contract](chat-prompts.md).
 
 ## 3. Compose conditions with explicit precedence
 
@@ -82,8 +83,8 @@ From strongest to weakest binding:
 For example, `a or not b == 2 and c` groups as
 `a or ((not (b == 2)) and c)`. Logical chains associate to the left.
 `0 < count <= 10` stores the first operand and an ordered list of comparison
-steps. This preserves the middle operand once, allowing a future runtime to
-implement chained comparisons rather than compare a boolean result to `10`.
+steps. This preserves the middle operand once, allowing the runtime to
+evaluate chained comparisons rather than compare a boolean result to `10`.
 
 Supported literals are signed decimal 64-bit integers, single- or double-quoted
 strings, `true`, `false`, `none` and their title-case variants. String escapes

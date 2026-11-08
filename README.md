@@ -32,7 +32,7 @@ automatically splits text with `TekkenPreTokenizer.split` before BPE.
 `loaded.Tokenizer.Decode(ids, SpecialTokenDecoding.Skip)` reconstructs UTF-8 text;
 `CreateDecoder` exposes incremental `Append`/`Complete` for streaming. See the
 [decoding tutorial](docs/token-decoding.md), the [Tekken tutorial](docs/tekken.md)
-and the [BPE contract and tutorial](docs/tokenizer.md). Chat-template rendering remains planned.
+and the [BPE contract and tutorial](docs/tokenizer.md). See [chat prompt rendering (D.4)](docs/chat-prompts.md).
 Run the independent sentence example without a model:
 
 ```sh
@@ -43,7 +43,11 @@ dotnet fsi examples/Tokenizer.fsx
 text, expressions, comments, nested loops and `if`/`elif`/`else` conditions.
 Expressions include literals, comparisons and boolean operators. Syntax errors
 include source positions. See the [parser tutorial](docs/jinja-parser-sample.md)
-for the grammar and limits. Context lookup and runtime evaluation remain planned.
+for the grammar and limits. `JinjaRuntime.render` evaluates the AST with an immutable
+context. `ChatPrompt.render` preserves raw prompts or formats conversations;
+`GgufTokenizer.RenderPrompt` uses `tokenizer.chat_template` and configured BOS/EOS
+spellings. These APIs return text, not token IDs; special-token insertion remains
+explicit. See the [runtime and prompt tutorial](docs/chat-prompts.md).
 Run the example without a model:
 
 ```sh

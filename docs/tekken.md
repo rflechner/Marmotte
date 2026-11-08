@@ -7,7 +7,8 @@ and this repository. No downloaded model is required for the runnable example.
 **Implemented:** `TekkenPreTokenizer.split` in Core and `GgufTokenizer.EncodeText`
 for GGUF files declaring `tokenizer.ggml.pre = "tekken"`.
 [Streaming UTF-8 decoding (D.3)](token-decoding.md) is also implemented. Chat
-templates (D.4) and other automatic pre-tokenizer profiles remain unimplemented.
+templates now have a [supported rendering subset (D.4)](chat-prompts.md); other
+automatic pre-tokenizer profiles remain unimplemented.
 Pre-tokenization returns text pieces, not vocabulary IDs.
 
 ## 1. Start with the sentence

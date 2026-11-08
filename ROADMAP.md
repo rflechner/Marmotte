@@ -89,8 +89,10 @@ local check.
   tokens during streaming. `BpeTokenizer.Decode` and `CreateDecoder` provide strict
   decoding with explicit special-token policy, completion and reset; see the
   [tutorial and error contracts](docs/token-decoding.md).
-- [ ] **D.4** Chat prompts: start with raw prompts, then render `tokenizer.chat_template`
-  (a Jinja template), or a supported subset of it.
+- [x] **D.4** Chat prompts: raw prompts and a supported subset of
+  `tokenizer.chat_template`, through `JinjaRuntime`, `ChatPrompt.render` and
+  `GgufTokenizer.RenderPrompt`. Produces text; special-token segmentation remains
+  explicit. See [supported syntax, runtime limits and examples](docs/chat-prompts.md).
 
 ### CPU kernels
 

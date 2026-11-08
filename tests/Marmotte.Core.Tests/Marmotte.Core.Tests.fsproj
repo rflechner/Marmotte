@@ -6,6 +6,8 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="Jinja/JinjaParserTests.fs" />
+    <Compile Include="Jinja/JinjaRuntimeTests.fs" />
+    <Compile Include="Jinja/ChatPromptTests.fs" />
     <Compile Include="BpeTokenizerTests.fs" />
     <Compile Include="TokenTextDecoderTests.fs" />
     <Compile Include="TekkenPreTokenizerTests.fs" />

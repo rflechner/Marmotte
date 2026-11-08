@@ -87,3 +87,46 @@ let ``raw text does not reinterpret control spellings or guess a missing profile
             | Some value -> Map.add (key "pre") (GgufValue.String value) metadata
         let unsupported = GgufTokenizer.read values
         Assert.Throws<System.NotSupportedException>(fun () -> unsupported.EncodeText("cat", false) |> ignore) |> ignore
+
+[<Fact>]
+let ``chat template metadata renders exact prompt text with declared boundaries`` () =
+    let template = "{{ bos_token }}{% for message in messages %}[{{ message.role }}]{{ message.content }}{{ eos_token }}{% endfor %}{% if add_generation_prompt %}[assistant]{% endif %}"
+    let loaded =
+        metadata
+        |> Map.add "tokenizer.chat_template" (GgufValue.String template)
+        |> Map.add (key "add_bos_token") (GgufValue.Bool true)
+        |> Map.add (key "add_eos_token") (GgufValue.Bool true)
+        |> GgufTokenizer.read
+    Assert.Equal(Some template, loaded.ChatTemplate)
+    let messages = [{ Role = "system"; Content = "Brief." }; { Role = "user"; Content = "{{ literal }}" }]
+    Assert.Equal<Result<string, ChatPromptError>>(
+        Ok "<bos>[system]Brief.<eos>[user]{{ literal }}<eos>[assistant]",
+        loaded.RenderPrompt(ChatPrompt.Conversation (messages, true)))
+    Assert.Equal<Result<string, ChatPromptError>>(Ok "raw\n", loaded.RenderPrompt(ChatPrompt.Raw "raw\n"))
+    Assert.Equal<Result<string, ChatPromptError>>(Ok "<bos>", loaded.RenderPrompt(ChatPrompt.Conversation ([], false)))
+
+[<Fact>]
+let ``chat template absence invalid metadata and unsupported syntax remain distinct`` () =
+    let loaded = GgufTokenizer.read metadata
+    Assert.Equal(None, loaded.ChatTemplate)
+    Assert.Equal(Error ChatPromptError.MissingTemplate, loaded.RenderPrompt(ChatPrompt.Conversation ([], false)))
+    Assert.Equal<Result<string, ChatPromptError>>(Ok "raw", loaded.RenderPrompt(ChatPrompt.Raw "raw"))
+    for value in [GgufValue.Bool true; GgufValue.String null; strings [| "template" |]] do
+        Assert.Throws<InvalidDataException>(fun () ->
+            metadata |> Map.add "tokenizer.chat_template" value |> GgufTokenizer.read |> ignore) |> ignore
+    let unsupported = metadata |> Map.add "tokenizer.chat_template" (GgufValue.String "{{ messages | length }}") |> GgufTokenizer.read
+    Assert.Equal<Result<string, ChatPromptError>>(Ok "raw", unsupported.RenderPrompt(ChatPrompt.Raw "raw"))
+    match unsupported.RenderPrompt(ChatPrompt.Conversation ([], false)) with
+    | Error (ChatPromptError.Syntax _) -> ()
+    | actual -> failwithf "Expected unsupported syntax: %A" actual
+
+[<Fact>]
+let ``rendering never invents missing special tokens or encodes their spelling`` () =
+    let loaded =
+        metadata |> Map.remove (key "bos_token_id")
+        |> Map.add "tokenizer.chat_template" (GgufValue.String "{{ bos_token }}") |> GgufTokenizer.read
+    Assert.Equal(
+        Error (ChatPromptError.Runtime (JinjaRuntimeError.MissingVariable ["bos_token"])),
+        loaded.RenderPrompt(ChatPrompt.Conversation ([], false)))
+    let literals = metadata |> Map.add "tokenizer.chat_template" (GgufValue.String "<bos>cat<eos>") |> GgufTokenizer.read
+    Assert.Equal<Result<string, ChatPromptError>>(Ok "<bos>cat<eos>", literals.RenderPrompt(ChatPrompt.Conversation ([], false)))

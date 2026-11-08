@@ -14,7 +14,23 @@ type GgufTokenizer =
       AddEosToken: bool option
       UnknownTokenId: int option
       SeparatorTokenId: int option
-      PaddingTokenId: int option }
+      PaddingTokenId: int option
+      /// Exact tokenizer.chat_template source; None preserves absence. Parsed only on rendering.
+      ChatTemplate: string option }
+
+    /// Render a raw prompt or a text-only conversation using tokenizer.chat_template.
+    /// Exposes configured BOS/EOS spellings only when their IDs exist; insertion flags
+    /// do not add text. The template owns formatting. Missing variables remain errors.
+    /// Returns text, not token IDs: EncodeText treats special spellings as ordinary text.
+    /// Use explicit TokenizerSegment.SpecialToken IDs when assembling model input.
+    member this.RenderPrompt(prompt: ChatPrompt) =
+        let context =
+            [ "bos_token", this.Tokenizer.Boundaries.BosTokenId
+              "eos_token", this.Tokenizer.Boundaries.EosTokenId ]
+            |> List.choose (fun (name, id) ->
+                id |> Option.map (fun value -> name, JinjaValue.String (this.Tokenizer.GetToken(value).Spelling)))
+            |> Map.ofList
+        ChatPrompt.render this.ChatTemplate context prompt
 
     /// Split ordinary text with the declared tekken profile, then encode and optionally
     /// apply the configured BOS/EOS policy once. Special spellings remain literal text;
@@ -36,6 +52,8 @@ module GgufTokenizer =
     /// Tekken enables whole-piece lookup and defaults BOS on; other profiles default
     /// BOS off. EOS defaults off. Explicit flags override defaults. Token types default
     /// to Normal. Missing merges mean no merges. No scores are used.
+    /// Preserves optional tokenizer.chat_template source without parsing it; a present
+    /// value must be a non-null String. RenderPrompt parses it on demand.
     /// Raises InvalidDataException for invalid or unsupported metadata and
     /// ArgumentNullException for a null map. See docs/tokenizer.md for limitations.
     let read (metadata: Map<string, GgufValue>) =
@@ -105,6 +123,11 @@ module GgufTokenizer =
               EosTokenId = tokenId "eos_token_id"
               AddBos = Option.defaultValue wholePiece addBos
               AddEos = Option.defaultValue false addEos }
+        let chatTemplate =
+            match Map.tryFind "tokenizer.chat_template" metadata with
+            | None -> None
+            | Some (GgufValue.String value) when not (isNull value) -> Some value
+            | Some _ -> raise (InvalidDataException("Tokenizer metadata 'tokenizer.chat_template': expected String."))
         let tokenizer =
             try BpeTokenizer(tokens, merges, boundaries, wholePiece)
             with :? ArgumentException as error ->
@@ -115,4 +138,5 @@ module GgufTokenizer =
           AddEosToken = addEos
           UnknownTokenId = tokenId "unknown_token_id"
           SeparatorTokenId = tokenId "separator_token_id"
-          PaddingTokenId = tokenId "padding_token_id" }
+          PaddingTokenId = tokenId "padding_token_id"
+          ChatTemplate = chatTemplate }

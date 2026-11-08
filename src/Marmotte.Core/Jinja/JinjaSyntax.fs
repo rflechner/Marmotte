@@ -41,7 +41,7 @@ type JinjaNode =
     | For of variable: string * collection: JinjaExpression * body: JinjaNode list
     | If of branches: JinjaBranch list * elseBody: JinjaNode list option
 
-/// One if or elif branch, kept in source order for future short-circuit evaluation.
+/// One if or elif branch, kept in source order for short-circuit evaluation.
 and JinjaBranch =
     { Condition: JinjaExpression
       Body: JinjaNode list }
