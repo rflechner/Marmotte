@@ -216,7 +216,11 @@ soft-capping.
   weight roles and executes through `ITensorBackend`, with RoPE/YaRN, temperature,
   causal attention, both residuals, SwiGLU and tied or separate output. Synthetic
   tests compare logits with an independent reference; see the [walkthrough](docs/forward-pass.md).
-- [ ] **I.2** Prompt processing and token-by-token generation.
+- [x] **I.2** Prompt processing and token-by-token generation. `GenerationSession`
+  owns a sequence cache, prefills prompts in bounded batches and consumes selected
+  tokens one at a time, returning next-token logits. Includes reset, cancellation
+  at batch boundaries and explicit fault handling; see the
+  [walkthrough](docs/generation-session.md). Sampling and stopping policy remain separate.
 - [ ] **I.3** Sampling: greedy first, then temperature, top-k and top-p with a seed.
 - [ ] **I.4** Stop on EOS or after a maximum number of tokens.
 

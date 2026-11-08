@@ -291,6 +291,9 @@ type private TrackingBackend() =
     let inner = new CpuBackend() :> ITensorBackend
     let tensors = ResizeArray<ITensor>()
     let weights = ResizeArray<IWeightTensor>()
+    let caches = ResizeArray<IKeyValueCache>()
+    let batches = ResizeArray<int>()
+    let mutable onSynchronize = ignore
     let mutable products = 0
     let mutable failProduct = -1
     let track tensor =
@@ -299,6 +302,9 @@ type private TrackingBackend() =
     member _.Tensors = tensors.ToArray()
     member _.Weights = weights.ToArray()
     member _.FailProduct with set value = failProduct <- value
+    member _.Caches = caches.ToArray()
+    member _.Batches = batches.ToArray()
+    member _.OnSynchronize with set action = onSynchronize <- action
     interface ITensorBackend with
         member _.Backend = inner.Backend
         member _.Allocate shape = inner.Allocate shape |> track
@@ -307,9 +313,14 @@ type private TrackingBackend() =
             let weight = inner.UploadWeights matrix
             weights.Add weight
             weight
-        member _.AllocateKeyValueCache layout = inner.AllocateKeyValueCache layout
+        member _.AllocateKeyValueCache layout =
+            let cache = inner.AllocateKeyValueCache layout
+            caches.Add cache
+            cache
         member _.Download(tensor, data) = inner.Download(tensor, data)
-        member _.Synchronize() = inner.Synchronize()
+        member _.Synchronize() =
+            inner.Synchronize()
+            onSynchronize ()
     interface IAddKernel with
         member _.Add(a, b, output) = inner.Add(a, b, output)
     interface ISwiGluKernel with
@@ -317,7 +328,9 @@ type private TrackingBackend() =
     interface IRmsNormKernel with
         member _.RmsNorm(input, weight, epsilon, output) = inner.RmsNorm(input, weight, epsilon, output)
     interface IEmbeddingKernel with
-        member _.EmbeddingLookup(weight, ids, output) = inner.EmbeddingLookup(weight, ids, output)
+        member _.EmbeddingLookup(weight, ids, output) =
+            batches.Add ids.Length
+            inner.EmbeddingLookup(weight, ids, output)
     interface IMatVecKernel with
         member _.MatVec(weight, input, output) = inner.MatVec(weight, input, output)
     interface IMatMulKernel with
@@ -371,3 +384,155 @@ let ``execution failure releases scratch and logits while leaving the partial ca
     use replacement = cache backend TensorEncoding.F32
     use result = model.Forward(replacement, 0, ReadOnlyMemory<int>([| 1 |]))
     close (reference fixture fixture.Layout [| 1 |]) (download backend result)
+
+let private session model capacity batchSize =
+    GenerationSession.Create(model, capacity, batchSize, TensorEncoding.F32, TensorEncoding.F32)
+
+[<Theory>]
+[<InlineData(1)>]
+[<InlineData(2)>]
+[<InlineData(3)>]
+[<InlineData(8)>]
+let ``session prefill and decoding match the full scalar reference for every batch size`` batchSize =
+    use fixture = new ModelFixture(false, false)
+    use tracking = new TrackingBackend()
+    let layout =
+        { fixture.Layout with
+            Configuration = { fixture.Layout.Configuration with AttentionTemperature = Some (AttentionTemperature.Create(0.3, 2)) } }
+    use model = TransformerModel.Load(tracking, fixture, layout)
+    use sequence = session model 8 batchSize
+    let prompt = [| 1; 4; 2; 0; 3 |]
+    let logits = sequence.Prefill(ReadOnlyMemory<int>(prompt))
+    close (reference fixture layout prompt |> Array.skip 20) logits
+    Assert.Equal(5, sequence.ProcessedTokenCount)
+    Assert.All(tracking.Batches, fun count -> Assert.InRange(count, 1, batchSize))
+    Assert.Equal(5, Array.sum tracking.Batches)
+    // Returned logits are caller-owned; modifying them cannot affect later execution.
+    Array.fill logits 0 logits.Length Single.NaN
+    let next = sequence.Decode(2)
+    close (reference fixture layout (Array.append prompt [| 2 |]) |> Array.skip 25) next
+    let final = sequence.Decode(1)
+    close (reference fixture layout (Array.append prompt [| 2; 1 |]) |> Array.skip 30) final
+    Assert.Equal(7, sequence.ProcessedTokenCount)
+    Assert.Equal<int>([| 1; 1 |], tracking.Batches |> Array.rev |> Array.take 2)
+
+[<Fact>]
+let ``sessions share model weights while keeping independent sequences and resetting their caches`` () =
+    use fixture = new ModelFixture(true, false)
+    use backend = new CpuBackend() :> ITensorBackend
+    use model = TransformerModel.Load(backend, fixture, fixture.Layout)
+    use first = session model 8 2
+    use second = session model 8 3
+    let firstLogits = first.Prefill(ReadOnlyMemory<int>([| 1; 2; 3 |]))
+    let secondLogits = second.Prefill(ReadOnlyMemory<int>([| 4 |]))
+    close (reference fixture fixture.Layout [| 1; 2; 3 |] |> Array.skip 10) firstLogits
+    close (reference fixture fixture.Layout [| 4 |]) secondLogits
+    close (reference fixture fixture.Layout [| 1; 2; 3; 0 |] |> Array.skip 15) (first.Decode 0)
+    close (reference fixture fixture.Layout [| 4; 2 |] |> Array.skip 5) (second.Decode 2)
+    first.Reset()
+    Assert.Equal(0, first.ProcessedTokenCount)
+    close (reference fixture fixture.Layout [| 0; 1 |] |> Array.skip 5) (first.Prefill(ReadOnlyMemory<int>([| 0; 1 |])))
+    Assert.Equal(20, fixture.Reads)
+
+[<Fact>]
+let ``session validates the entire prompt and available capacity before changing the sequence`` () =
+    use fixture = new ModelFixture(true, false)
+    use tracking = new TrackingBackend()
+    use model = TransformerModel.Load(tracking, fixture, fixture.Layout)
+    use sequence = session model 3 1
+    Assert.Throws<InvalidOperationException>(fun () -> sequence.Decode(0) |> ignore) |> ignore
+    Assert.Throws<ArgumentException>(fun () -> sequence.Prefill(ReadOnlyMemory<int>.Empty) |> ignore) |> ignore
+    for prompt in [ [| 0; 1; 5 |]; [| 0; -1 |]; [| 0; 1; 2; 3 |] ] do
+        Assert.Throws<ArgumentOutOfRangeException>(fun () -> sequence.Prefill(ReadOnlyMemory<int>(prompt)) |> ignore) |> ignore
+    Assert.Empty(tracking.Batches)
+    Assert.Equal(0, sequence.ProcessedTokenCount)
+    Assert.False(sequence.IsFaulted)
+    sequence.Prefill(ReadOnlyMemory<int>([| 1; 2 |])) |> ignore
+    Assert.Throws<InvalidOperationException>(fun () -> sequence.Prefill(ReadOnlyMemory<int>([| 1 |])) |> ignore) |> ignore
+    Assert.Throws<ArgumentOutOfRangeException>(fun () -> sequence.Decode(5) |> ignore) |> ignore
+    Assert.Equal(2, sequence.ProcessedTokenCount)
+    sequence.Decode(0) |> ignore
+    Assert.Throws<ArgumentOutOfRangeException>(fun () -> sequence.Decode(1) |> ignore) |> ignore
+    Assert.Equal(3, sequence.ProcessedTokenCount)
+    Assert.False(sequence.IsFaulted)
+    sequence.Reset()
+    sequence.Prefill(ReadOnlyMemory<int>([| 0; 1; 2 |])) |> ignore
+    Assert.Equal(3, sequence.ProcessedTokenCount)
+
+[<Fact>]
+let ``session cancellation before execution is harmless and cancellation between batches faults the prefix`` () =
+    use fixture = new ModelFixture(true, false)
+    use tracking = new TrackingBackend()
+    use model = TransformerModel.Load(tracking, fixture, fixture.Layout)
+    use sequence = session model 8 2
+    use cancellation = new System.Threading.CancellationTokenSource()
+    cancellation.Cancel()
+    Assert.Throws<OperationCanceledException>(fun () -> sequence.Prefill(ReadOnlyMemory<int>([| 1 |]), cancellation.Token) |> ignore) |> ignore
+    Assert.False(sequence.IsFaulted)
+    Assert.Empty(tracking.Batches)
+    use between = new System.Threading.CancellationTokenSource()
+    tracking.OnSynchronize <- fun () -> between.Cancel()
+    Assert.Throws<OperationCanceledException>(fun () -> sequence.Prefill(ReadOnlyMemory<int>([| 1; 2; 3 |]), between.Token) |> ignore) |> ignore
+    Assert.True(sequence.IsFaulted)
+    Assert.Equal(2, sequence.ProcessedTokenCount)
+    Assert.Throws<InvalidOperationException>(fun () -> sequence.Decode(0) |> ignore) |> ignore
+    tracking.OnSynchronize <- ignore
+    sequence.Reset()
+    Assert.False(sequence.IsFaulted)
+    sequence.Prefill(ReadOnlyMemory<int>([| 1 |])) |> ignore
+    Assert.Throws<OperationCanceledException>(fun () -> sequence.Decode(0, cancellation.Token) |> ignore) |> ignore
+    Assert.Equal(1, sequence.ProcessedTokenCount)
+    Assert.False(sequence.IsFaulted)
+    close (reference fixture fixture.Layout [| 1; 0 |] |> Array.skip 5) (sequence.Decode 0)
+
+[<Theory>]
+[<InlineData(false)>]
+[<InlineData(true)>]
+let ``session execution errors require reset even when they happen during single token decoding`` decoding =
+    use fixture = new ModelFixture(true, false)
+    use tracking = new TrackingBackend()
+    use model = TransformerModel.Load(tracking, fixture, fixture.Layout)
+    use sequence = session model 8 2
+    if decoding then sequence.Prefill(ReadOnlyMemory<int>([| 1 |])) |> ignore
+    tracking.FailProduct <- if decoding then 24 else 9
+    let operation () =
+        if decoding then sequence.Decode(2) |> ignore
+        else sequence.Prefill(ReadOnlyMemory<int>([| 1; 2; 3 |])) |> ignore
+    Assert.Throws<InvalidOperationException>(Action operation) |> ignore
+    Assert.True(sequence.IsFaulted)
+    Assert.Equal((if decoding then 1 else 0), sequence.ProcessedTokenCount)
+    Assert.Throws<InvalidOperationException>(fun () -> sequence.Prefill(ReadOnlyMemory<int>([| 0 |])) |> ignore) |> ignore
+    sequence.Reset()
+    close (reference fixture fixture.Layout [| 2 |]) (sequence.Prefill(ReadOnlyMemory<int>([| 2 |])))
+
+[<Fact>]
+let ``session owns and releases its caches but borrows the model`` () =
+    use fixture = new ModelFixture(true, false)
+    use tracking = new TrackingBackend()
+    use model = TransformerModel.Load(tracking, fixture, fixture.Layout)
+    use sequence = session model 8 2
+    sequence.Prefill(ReadOnlyMemory<int>([| 1; 2 |])) |> ignore
+    sequence.Reset()
+    Assert.Throws<ObjectDisposedException>(fun () -> tracking.Caches[0].StoredPositions(0) |> ignore) |> ignore
+    (sequence :> IDisposable).Dispose()
+    (sequence :> IDisposable).Dispose()
+    for cache in tracking.Caches do
+        Assert.Throws<ObjectDisposedException>(fun () -> cache.StoredPositions(0) |> ignore) |> ignore
+    Assert.Throws<ObjectDisposedException>(fun () -> sequence.Reset()) |> ignore
+    Assert.Throws<ObjectDisposedException>(fun () -> sequence.Prefill(ReadOnlyMemory<int>([| 0 |])) |> ignore) |> ignore
+    Assert.Throws<ObjectDisposedException>(fun () -> sequence.Decode(0) |> ignore) |> ignore
+    use next = session model 8 2
+    next.Prefill(ReadOnlyMemory<int>([| 0 |])) |> ignore
+    (model :> IDisposable).Dispose()
+    Assert.Throws<ObjectDisposedException>(fun () -> next.Decode(1) |> ignore) |> ignore
+    Assert.Throws<ObjectDisposedException>(fun () -> session model 8 2 |> ignore) |> ignore
+
+[<Fact>]
+let ``session creation rejects invalid limits and incompatible cache encodings`` () =
+    use fixture = new ModelFixture(true, false)
+    use backend = new CpuBackend() :> ITensorBackend
+    use model = TransformerModel.Load(backend, fixture, fixture.Layout)
+    for capacity, batchSize in [ 0, 2; -1, 2; 9, 2; 8, 0; 8, -1 ] do
+        Assert.Throws<ArgumentOutOfRangeException>(fun () -> session model capacity batchSize |> ignore) |> ignore
+    Assert.Throws<ArgumentException>(fun () -> GenerationSession.Create(model, 8, 2, TensorEncoding.Q8_0, TensorEncoding.F32) |> ignore) |> ignore
+    Assert.Throws<ArgumentNullException>(fun () -> session Unchecked.defaultof<_> 8 2 |> ignore) |> ignore

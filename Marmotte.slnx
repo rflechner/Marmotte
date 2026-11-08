@@ -32,11 +32,14 @@
     <File Path="docs\tensor-transpose-strides.png" />
     <File Path="docs/chat-prompts.md" />
     <File Path="docs/forward-pass.md" />
+    <File Path="docs/generation-session.md" />
     <File Path="ROADMAP.md" />
   </Folder>
   <Folder Name="/examples/">
     <File Path="examples/Add.fsx" />
     <File Path="examples/Forward.fsx" />
+    <File Path="examples/Generation.fsx" />
+    <File Path="examples/SyntheticModel.fsx" />
     <File Path="examples\Attention.fsx" />
     <File Path="examples\Embedding.fsx" />
     <File Path="examples/Yarn.fsx" />

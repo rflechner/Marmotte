@@ -23,7 +23,9 @@ weight shapes, including tied output embeddings. It does not load weights;
 `TransformerModel.Load(backend, source, layout)` loads them for a dense `mistral3`
 forward pass. `Forward(cache, position, tokenIds)` returns logits for every token
 through the existing backend contracts. See the [walkthrough](docs/forward-pass.md)
-and `examples/Forward.fsx`. Generation and sampling orchestration remain planned.
+and `examples/Forward.fsx`. `GenerationSession` adds batched prompt prefill and
+single-token decoding with an owned cache; see the [session walkthrough](docs/generation-session.md)
+and `examples/Generation.fsx`. Sampling, stopping policies and a generation CLI remain planned.
 
 ## BPE tokenizer
 

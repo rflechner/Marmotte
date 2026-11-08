@@ -19,6 +19,10 @@ type TransformerModel private (backend: ITensorBackend, configuration: ModelConf
     member _.Configuration = configuration
     member _.VocabularySize = vocabularySize
 
+    member internal _.ExecutionBackend = backend
+
+    member internal this.EnsureAlive() = ObjectDisposedException.ThrowIf(disposed, this)
+
     /// Runs consecutive token IDs starting at absolute position, returning caller-owned F32
     /// logits [tokens; VocabularySize] on the backend, without softmax or sampling. Empty batches
     /// return an empty tensor and do not truncate the cache. All tokens receive logits.

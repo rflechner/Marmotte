@@ -125,9 +125,9 @@ All layers must have equal stored counts before the call. On success, a
 non-empty batch replaces that suffix in every layer. An empty batch returns
 `[0; VocabularySize]` logits and preserves the cache even at an earlier position.
 
-The kernel supports these calls so it can be tested independently; prompt
-chunking, token-by-token generation and sampling orchestration remain roadmap
-I.2–I.4. Callers decide the batch size. Scratch tensors are allocated per call
+For prompt chunking and token-by-token sequence state, use
+[`GenerationSession`](generation-session.md), implemented in I.2. Sampling and
+stopping policies remain I.3–I.4. Callers decide the batch size. Scratch tensors are allocated per call
 and reused across layers, approximately
 `tokens × (3E + 2Q + 2K + 2F)` F32 values, plus `tokens × vocabulary` output,
 where E is embedding width, Q/K projected head widths and F feed-forward width.
