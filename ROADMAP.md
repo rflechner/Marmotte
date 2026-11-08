@@ -82,7 +82,9 @@ local check.
   merges, special token IDs and BOS/EOS flags.
   Implemented by Core's `BpeTokenizer` and `GgufTokenizer.read`, over explicitly
   pre-tokenized pieces. See the [tutorial and supported limits](docs/tokenizer.md).
-- [ ] **D.2** `tekken` pre-tokenization.
+- [x] **D.2** `tekken` pre-tokenization with Unicode scalar categories in
+  `TekkenPreTokenizer.split`, used by `GgufTokenizer.EncodeText`. See the
+  [tutorial, validation and compatibility limits](docs/tekken.md).
 - [ ] **D.3** Decode token IDs to UTF-8 text, including multi-byte sequences split across
   tokens during streaming.
 - [ ] **D.4** Chat prompts: start with raw prompts, then render `tokenizer.chat_template`

@@ -27,8 +27,10 @@ inference is not implemented yet.
 `GgufTokenizer.read model.Metadata` builds Core's `BpeTokenizer` from a `gpt2`
 vocabulary, merge ranks, token categories and BOS/EOS policy. `Encode` takes
 explicit `TokenizerSegment.TextPiece` or `SpecialToken` segments. It does not
-split sentences: automatic Tekken pre-tokenization, streaming decoding and chat
-templates remain planned. See the [contract and tutorial](docs/tokenizer.md).
+split sentences itself. For a `tekken` profile, `loaded.EncodeText(text, true)`
+automatically splits text with `TekkenPreTokenizer.split` before BPE. Streaming
+decoding and chat templates remain planned. See the [Tekken tutorial](docs/tekken.md)
+and the [BPE contract and tutorial](docs/tokenizer.md).
 Run the independent sentence example without a model:
 
 ```sh
@@ -421,6 +423,7 @@ block layouts, numerical limits and tensor selection policy.
 
 - [Format comparison, tensor storage, strides, and illustration notes](docs/README.md)
 - [Illustrated inference pipeline: model files, embeddings, KV cache and generation](docs/inference-pipeline.md)
+- [Tekken pre-tokenization: from raw text to BPE pieces (D.2)](docs/tekken.md)
 - [BPE tokenizer tutorial: metadata, ranked merges and special tokens (D.1)](docs/tokenizer.md)
 - [GGUF format and current implementation](docs/gguf.md)
 - [Safetensors format and current implementation](docs/safetensors.md)

@@ -1,4 +1,5 @@
 #load "../src/Marmotte.Core/BpeTokenizer.fs"
+#load "../src/Marmotte.Core/TekkenPreTokenizer.fs"
 
 open Marmotte.Core
 
@@ -27,8 +28,10 @@ let boundaries =
       AddEos = false }
 let tokenizer = BpeTokenizer(tokens, merges, boundaries, false)
 
-// These boundaries are supplied by hand; automatic pre-tokenization is a separate step.
-let pieces = [| "Hello"; ","; " how"; " are"; " you"; " ?" |]
+// Pre-tokenization preserves the sentence exactly; BPE still uses the invented vocabulary.
+let text = "Hello, how are you ?"
+let pieces = TekkenPreTokenizer.split text
+printfn "Pieces: %A" pieces
 let ids = tokenizer.Encode(Array.map TokenizerSegment.TextPiece pieces, true)
 let expected = [| 0; 20; 21; 22; 23; 24; 25; 22; 26 |]
 if ids <> expected then failwithf "Unexpected token IDs: %A" ids

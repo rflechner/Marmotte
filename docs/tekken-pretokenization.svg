@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="420" viewBox="0 0 960 420" role="img" aria-labelledby="title desc">
+  <title id="title">Tekken finds boundaries before BPE</title>
+  <desc id="desc">The sentence Hello, how are you ? becomes six text pieces: Hello, comma, space how, space are, space you and space question mark. BPE operates within each piece. Model-specific IDs and optional BOS or EOS come afterward.</desc>
+  <rect width="960" height="420" rx="20" fill="#f4f7fc"/>
+  <g font-family="Arial, sans-serif" fill="#152844">
+    <text x="36" y="46" font-size="27" font-weight="bold">D.2: boundaries first, vocabulary IDs afterward</text>
+    <text x="36" y="83" font-size="19">Input: Hello, how are you ?</text>
+    <text x="36" y="123" font-size="17" fill="#50627e">1. Tekken preserves text and finds piece boundaries</text>
+    <g fill="#e2eafb" stroke="#8da6d2">
+      <rect x="36" y="142" width="135" height="54" rx="9"/>
+      <rect x="186" y="142" width="70" height="54" rx="9"/>
+      <rect x="271" y="142" width="145" height="54" rx="9"/>
+      <rect x="431" y="142" width="145" height="54" rx="9"/>
+      <rect x="591" y="142" width="145" height="54" rx="9"/>
+      <rect x="751" y="142" width="145" height="54" rx="9"/>
+    </g>
+    <g font-size="23" text-anchor="middle">
+      <text x="103" y="177">Hello</text><text x="221" y="177">,</text>
+      <text x="343" y="177">·how</text><text x="503" y="177">·are</text>
+      <text x="663" y="177">·you</text><text x="823" y="177">·?</text>
+    </g>
+    <text x="36" y="229" font-size="16">· shows a preserved space. Concatenating all six pieces recovers the exact input.</text>
+    <text x="36" y="272" font-size="17" fill="#50627e">2. BPE operates independently inside each piece</text>
+    <rect x="36" y="289" width="860" height="44" rx="9" fill="#dcefe7"/>
+    <text x="56" y="318" font-size="19">One piece → one or more token IDs • no merge crosses a piece boundary</text>
+    <text x="36" y="375" font-size="18">3. Concatenate IDs, then apply the configured BOS/EOS policy once</text>
+  </g>
+</svg>

@@ -4,7 +4,7 @@ open System
 open System.IO
 open Marmotte.Core
 
-/// Metadata adapter for a byte-level BPE vocabulary. It does not split prompt text.
+/// Metadata adapter for a byte-level BPE vocabulary, with raw-text encoding for tekken.
 type GgufTokenizer =
     { Tokenizer: BpeTokenizer
       /// None preserves an absent profile; the merge-only policy is then used.
@@ -16,10 +16,23 @@ type GgufTokenizer =
       SeparatorTokenId: int option
       PaddingTokenId: int option }
 
+    /// Split ordinary text with the declared tekken profile, then encode and optionally
+    /// apply the configured BOS/EOS policy once. Special spellings remain literal text;
+    /// use Tokenizer.Encode with explicit segments to insert control tokens.
+    /// Raises NotSupportedException for other or missing profiles. Null/malformed text
+    /// and vocabulary errors follow TekkenPreTokenizer.split and BpeTokenizer.Encode.
+    member this.EncodeText(text: string, addBoundaryTokens: bool) =
+        ArgumentNullException.ThrowIfNull(text)
+        match this.PreTokenizer with
+        | Some "tekken" ->
+            let segments = TekkenPreTokenizer.split text |> Array.map TokenizerSegment.TextPiece
+            this.Tokenizer.Encode(segments, addBoundaryTokens)
+        | _ -> raise (NotSupportedException("Raw-text encoding requires the tekken pre-tokenizer profile."))
+
 [<RequireQualifiedAccess>]
 module GgufTokenizer =
     /// Read gpt2-family metadata without reading weights. Supports absent/default/gpt-2
-    /// profiles and tekken; callers must supply pieces from the matching pre-tokenizer.
+    /// profiles and tekken; EncodeText splits text only for the tekken profile.
     /// Tekken enables whole-piece lookup and defaults BOS on; other profiles default
     /// BOS off. EOS defaults off. Explicit flags override defaults. Token types default
     /// to Normal. Missing merges mean no merges. No scores are used.

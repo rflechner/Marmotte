@@ -20,6 +20,7 @@
         <Compile Include="KeyValueCache.fs" />
         <Compile Include="Compute.fs" />
         <Compile Include="BpeTokenizer.fs" />
+        <Compile Include="TekkenPreTokenizer.fs" />
     </ItemGroup>
 
     <ItemGroup>

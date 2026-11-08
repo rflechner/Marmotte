@@ -7,8 +7,8 @@ No model download is needed for the worked example.
 
 **Status:** D.1 is implemented as `BpeTokenizer` in Core and
 `GgufTokenizer.read` in the GGUF library. Input must already be split into
-pieces; automatic Tekken pre-tokenization (D.2), streaming text decoding (D.3)
-and chat templates (D.4) remain unimplemented. The examples below use invented
+pieces; [Tekken pre-tokenization (D.2)](tekken.md) now supplies them automatically.
+Streaming text decoding (D.3) and chat templates (D.4) remain unimplemented. The examples below use invented
 vocabularies, not measured Ministral IDs.
 
 ## 1. Find the tokenizer's ingredients
@@ -96,7 +96,7 @@ Use a **second, invented tokenizer** for this walkthrough. Its vocabulary and
 merge rules are independent of the `catcat` example. These are not measured
 Ministral or Tekken results; real token IDs require the model's exact tokenizer.
 
-Assume this teaching pre-tokenizer produces the following pieces. Here `␠`
+Tekken produces the following pieces, as explained in the [D.2 tutorial](tekken.md). Here `␠`
 is a visible notation for one ordinary space, not a literal character inserted
 into the input or a prescribed byte-to-symbol encoding:
 
@@ -169,7 +169,7 @@ Tekken pre-tokenization; merges must stay within its pieces. D.3 reconstructs
 UTF-8 text, including sequences split between tokens. D.4 formats conversations.
 Implementing the worked merge loop alone will not make the target model usable.
 
-There is another compatibility detail to check with D.2: the reference Tekken
+There is another compatibility detail used with D.2: the reference Tekken
 profile enables a whole-piece vocabulary shortcut before ordinary merging
 (`ignore_merges`). A generic merge-only example does not capture that behavior.
 The profile also supplies defaults which explicit metadata may override. See
@@ -188,7 +188,7 @@ The Core and GGUF tests use small independently specified fixtures:
 - Reject invalid IDs, mismatched arrays and malformed merge entries; explicitly
   define how absent optional fields and unsupported token categories are handled.
 - Check whitespace, non-ASCII bytes, empty input and literal special-token text.
-- Once D.2 exists, compare exact token IDs for a fixed corpus against the target
+- To establish target-model compatibility, compare exact token IDs for a fixed corpus against the target
   tokenizer, including pieces already present in the vocabulary. A text round
   trip alone cannot prove that the segmentation matches.
 
@@ -200,7 +200,8 @@ From the repository root, without a local model:
 dotnet fsi examples/Tokenizer.fsx
 ```
 
-This runs the sentence example with its exact invented IDs and checks the result:
+This automatically splits the sentence with Tekken, then uses its exact invented
+IDs and checks the result:
 `[0; 20; 21; 22; 23; 24; 25; 22; 26]`. The actual stored spelling for the space
 byte is `Ġ`; the earlier tables use `␠` only for display.
 
@@ -214,7 +215,8 @@ let ids = loaded.Tokenizer.Encode(segments, true)
 
 Open `Marmotte.Core` and `Marmotte.Gguf` for that snippet. Supplying a whole
 sentence as one `TextPiece` bypasses pre-tokenization and is not a substitute
-for D.2. `Encode` wraps the complete segment sequence once when its second
+for D.2. Use `loaded.EncodeText(text, true)` for automatic Tekken splitting.
+`Encode` wraps the complete segment sequence once when its second
 argument is true; false disables boundary insertion.
 
 ### Supported contract and limits

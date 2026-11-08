@@ -56,3 +56,31 @@ let ``invalid typed metadata is rejected before encoding`` () =
     Assert.Throws<InvalidDataException>(fun () ->
         metadata |> Map.remove (key "bos_token_id") |> Map.add (key "add_bos_token") (GgufValue.Bool true)
         |> GgufTokenizer.read |> ignore) |> ignore
+
+[<Fact>]
+let ``raw text encoding applies the declared profile before BPE and wraps once`` () =
+    let values =
+        [ key "model", GgufValue.String "gpt2"
+          key "pre", GgufValue.String "tekken"
+          key "tokens", strings [| "<bos>"; "Hello"; ","; "Ġhow"; "Ġare"; "Ġyou"; "Ġ?"; "Hello," |]
+          key "token_type", GgufValue.Array(GgufValueType.Int32, Array.map GgufValue.Int32 [| 3; 1; 1; 1; 1; 1; 1; 1 |])
+          key "bos_token_id", GgufValue.UInt32 0u ] |> Map.ofList
+    let loaded = GgufTokenizer.read values
+    Assert.Equal<int>([| 0; 1; 2; 3; 4; 5; 6 |], loaded.EncodeText("Hello, how are you ?", true))
+    Assert.Equal<int>([| 1; 2 |], loaded.EncodeText("Hello,", false))
+    Assert.Equal<int>([| 7 |], loaded.Tokenizer.Encode([| TokenizerSegment.TextPiece "Hello," |], false))
+    Assert.Equal<int>([| 0 |], loaded.EncodeText("", true))
+    Assert.Empty(loaded.EncodeText("", false))
+
+[<Fact>]
+let ``raw text does not reinterpret control spellings or guess a missing profile`` () =
+    let loaded = metadata |> Map.add (key "pre") (GgufValue.String "tekken") |> GgufTokenizer.read
+    Assert.Throws<InvalidDataException>(fun () -> loaded.EncodeText("<bos>", false) |> ignore) |> ignore
+    Assert.Throws<System.ArgumentNullException>(fun () -> loaded.EncodeText(null, false) |> ignore) |> ignore
+    for profile in [ None; Some "default"; Some "gpt-2" ] do
+        let values =
+            match profile with
+            | None -> metadata
+            | Some value -> Map.add (key "pre") (GgufValue.String value) metadata
+        let unsupported = GgufTokenizer.read values
+        Assert.Throws<System.NotSupportedException>(fun () -> unsupported.EncodeText("cat", false) |> ignore) |> ignore
