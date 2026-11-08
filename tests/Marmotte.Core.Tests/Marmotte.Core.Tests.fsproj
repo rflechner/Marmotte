@@ -5,6 +5,7 @@
     <IsTestProject>true</IsTestProject>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="Jinja/JinjaParserTests.fs" />
     <Compile Include="BpeTokenizerTests.fs" />
     <Compile Include="TokenTextDecoderTests.fs" />
     <Compile Include="TekkenPreTokenizerTests.fs" />
