@@ -249,8 +249,6 @@ soft-capping.
 
 - [ ] **K.1** Test each kernel against a naive reference implementation.
 - [ ] **K.2** Run end-to-end tests with a tiny synthetic GGUF model.
-- [ ] **K.3** Compare with llama.cpp on the target model as an optional local check:
-  token IDs for sample texts, and logits or top tokens for a fixed prompt.
 
 ## L. Milestone 2: CUDA and Metal backends
 
