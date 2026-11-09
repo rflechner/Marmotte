@@ -2,7 +2,7 @@
 
 `Marmotte.Core` defines the compute contracts. `Marmotte.Cpu`, `Marmotte.Cuda`
 and `Marmotte.Metal` each reference Core; Core references none of the backends.
-The implemented operations are element-wise F32 addition, the SwiGLU
+The implemented operations are element-wise F32/F16 addition, the SwiGLU
 activation of the feed-forward layer, RMS normalization, embedding lookup from
 stored weights, matrix-vector and matrix-matrix products with stored weights,
 rotary position embedding, and the attention temperature applied to queries. A
@@ -48,8 +48,9 @@ use unrounded intermediates.
 | AttentionTemperature | One query value multiplied by a factor of its position block | [Scale queries](#attention-temperature) |
 | StoreKeyValues / ReadKeyValues | One cached key or value of a past position, encoded and decoded back to F32 | [Key-value cache](#key-value-cache) |
 
-All eight kernels and the key-value cache have CPU implementations; CUDA and
-Metal remain placeholders.
+All eight kernels and the key-value cache have CPU implementations. Metal
+implements Add, and the [Metal guide](metal.md) explains how; its other kernels
+and all of CUDA remain placeholders.
 Core implements YaRN parameter preparation. Attention temperature has a worked
 example in text. The eight walkthrough images were
 generated with the built-in `image_gen` tool, visually reviewed, and their
@@ -96,7 +97,7 @@ the matrix alive while the weight tensor is in use. Embedding lookup consumes
 an `IWeightTensor` and token IDs; `MatVec` consumes an `IWeightTensor` and F32
 `ITensor` values.
 
-`ITensor` represents an owned, writable, contiguous **F32 execution tensor**.
+`ITensor` represents an owned, writable, contiguous **F32 or F16 execution tensor**.
 Its `TensorShape` uses row-major dimensions: `[2; 3]` means two rows of three
 values. Shapes copy their dimension arrays and expose a read-only collection.
 An empty shape is a scalar with one value; any zero dimension makes an empty
@@ -105,23 +106,28 @@ rejected before allocating storage. Allocation still depends on available memory
 
 The tensor interface exposes shape, encoding and backend family, but no array,
 span or native pointer. Each implementation owns its storage. `Upload` accepts
-host `ReadOnlyMemory<single>` and copies it into new storage; `Download` copies
-into caller-provided `Memory<single>`. Both require an exact element count.
+host `ReadOnlyMemory<single>` or `ReadOnlyMemory<Half>` and copies it into new
+storage of the matching encoding; `Download` copies into caller-provided
+`Memory<single>` or `Memory<Half>` of that same encoding. Both require an exact
+element count. A mismatched download is rejected before writing; transfers do
+not convert precision. `Allocate(shape)` defaults to F32; the overload
+`Allocate(shape, encoding)` accepts F32 or F16 and rejects other encodings.
 This makes transfers explicit without requiring a GPU allocation to masquerade
 as a managed array. Model weights use `UploadWeights` instead; kernels decode
 them one row at a time.
 
 ## One Contract, Three Implementations
 
-| Concern | CPU today | CUDA placeholder | Metal placeholder |
+| Concern | CPU today | CUDA placeholder | Metal |
 | --- | --- | --- | --- |
 | Factory | `CpuBackend()` | `CudaBackend()` | `MetalBackend()` |
-| Owned tensor storage | Private `single array` | Future device allocation | Future Metal buffer |
-| `Allocate` | Zero-filled array | `NotImplementedException` | `NotImplementedException` |
-| `Upload` / `Download` | Explicit host copies | `NotImplementedException` | `NotImplementedException` |
+| Owned tensor storage | Private `single array` or `Half array` | Future device allocation | `MTLBuffer` in shared storage, F32 or F16 |
+| `Allocate` | Zero-filled array | `NotImplementedException` | Zero-filled buffer |
+| `Upload` / `Download` | Explicit host copies | `NotImplementedException` | Explicit host copies; `Download` waits for submitted work |
 | `UploadWeights` | Retains the payload without copying | `NotImplementedException` | `NotImplementedException` |
-| `Synchronize` | Nothing to wait for | `NotImplementedException` | `NotImplementedException` |
-| `IAddKernel.Add` | Safe `Vector<T>` loop with a scalar tail | `NotImplementedException` | `NotImplementedException` |
+| `Synchronize` | Nothing to wait for | `NotImplementedException` | Waits for submitted work and reports its failures |
+| `IAddKernel.Add` | F32: safe `Vector<T>` loop with a scalar tail; F16: scalar Half loop | `NotImplementedException` | Separate F32 and F16 MSL compute functions, one command buffer per call |
+| `IAddKernel.AddF32F16` | Scalar loop widening each F16 operand | `NotImplementedException` | MSL compute function, one command buffer per call |
 | `ISwiGluKernel.SwiGlu` | Safe `Vector<T>` loop with `Vector.Exp`, scalar tail with `MathF.Exp` | `NotImplementedException` | `NotImplementedException` |
 | `IRmsNormKernel.RmsNorm` | Safe `Vector<T>` loops, sum of squares in double precision | `NotImplementedException` | `NotImplementedException` |
 | `IEmbeddingKernel.EmbeddingLookup` | Decodes selected rows with `RowDecoder` directly into F32 output | `NotImplementedException` | `NotImplementedException` |
@@ -132,7 +138,7 @@ them one row at a time.
 | `IAttentionTemperatureKernel.ApplyAttentionTemperature` | One F32 factor per token, `Vector<T>` multiplication | `NotImplementedException` | `NotImplementedException` |
 | `AllocateKeyValueCache` | Whole capacity up front: one byte array per layer for keys, one for values | `NotImplementedException` | `NotImplementedException` |
 | `IKeyValueCacheKernel` | Encodes whole batches with `RowEncoder`, reads them back with `RowDecoder` | `NotImplementedException` | `NotImplementedException` |
-| SDK/driver required today | None | None | None |
+| SDK/driver required today | None | None | None for a managed build; Xcode and the Metal Toolchain for the native library |
 
 `ITensorBackend` inherits `IAddKernel`, `ISwiGluKernel`, `IRmsNormKernel`,
 `IEmbeddingKernel`, `IRowCopyKernel`, `IMatVecKernel`, `IMatMulKernel`, `IRopeKernel`,
@@ -176,12 +182,12 @@ let addExample () =
 ```
 
 `Add(left, right, destination)` writes `destination[i] = left[i] + right[i]`.
-All three tensors must have exactly the same dimensions, not just the same
-number of elements. There is no broadcasting, type promotion or strided view.
+All three tensors must have exactly the same dimensions and encoding, not just
+the same number of elements. There is no broadcasting, type promotion or strided view.
 Empty tensors are valid no-ops; scalars add to scalars. NaN and infinities follow
 ordinary F32 addition rather than being rejected as malformed model data.
 
-The CPU backend processes `Vector<single>.Count` values at a time: four with
+For F32, the CPU backend processes `Vector<single>.Count` values at a time: four with
 ARM64 NEON, eight with AVX2. It reinterprets its arrays as vectors with
 `MemoryMarshal.Cast`, without unsafe code, and adds the remaining values one by
 one. Each lane performs the same single-precision addition as a scalar loop, so
@@ -199,6 +205,53 @@ Every tensor must come from the **same backend instance** executing the kernel.
 different ownership domain. This leaves room for distinct devices and contexts
 without treating their allocations as interchangeable. An explicit download and
 upload is currently the only way to move values between instances.
+
+## Half Add and memory use
+
+F16 is IEEE binary16, represented by .NET's
+[`System.Half`](https://learn.microsoft.com/dotnet/api/system.half) and MSL's
+`half`. CPU and Metal implement Add for this format, including in-place Add. The
+same code works with either backend:
+
+```fsharp
+let addHalf (backend: ITensorBackend) =
+    let shape = TensorShape.Create [| 3 |]
+    let leftValues = [| 1.0f; 2.0f; 3.0f |] |> Array.map Half.op_Explicit
+    let rightValues = [| 10.0f; 20.0f; 30.0f |] |> Array.map Half.op_Explicit
+    use left = backend.Upload(shape, ReadOnlyMemory<Half>(leftValues))
+    use right = backend.Upload(shape, ReadOnlyMemory<Half>(rightValues))
+    use destination = backend.Allocate(shape, TensorEncoding.F16)
+    backend.Add(left, right, destination)
+    let result = Array.zeroCreate<Half> shape.ElementCount
+    backend.Download(destination, result.AsMemory())
+    result // Half values: 11, 22, 33
+```
+
+The conversion of literals above is explicit application code. Internally, an
+F16 tensor has **2 × element count bytes of payload**, compared with 4 × count
+for F32; allocator and object overhead are additional. Neither backend creates an
+F32 shadow tensor or F32 transfer buffer. Upload and Download preserve all bits,
+including signed zero and NaN payloads.
+
+Storage precision and arithmetic implementation are distinct. The safe CPU loop
+uses `Half` addition; the runtime can promote individual operands to scalar F32
+and round back to Half. Metal adds `half` values directly. Both paths round to
+nearest F16, ties to even, retain subnormal results, and produce infinity on
+overflow. Arithmetic NaN payloads are unspecified. This smaller format has less
+range and precision; it is not an automatic performance improvement.
+
+`AddF32F16(left, right, destination)` adds an F16 tensor into an F32 one, such as
+F16 projection output into an F32 residual stream. Left and destination are F32
+and right is F16. `Add` rejects mixed encodings, so this widening is always
+requested by name. Every F16 value converts exactly to F32, so the only rounding
+is that of the F32 sum.
+
+`HalfTests.fs` checks hand-specified results at rounding boundaries, overflow,
+normal/subnormal transitions, signed zero, infinities and NaNs, as well as transfer
+of all 65,536 bit patterns. It exercises the same cases on CPU and, when explicitly
+enabled, Metal. Other CPU kernels still require F32 and reject F16 with
+`NotSupportedException` before writing; mixed-format Add and incorrect Download
+overloads raise `ArgumentException`, including for empties.
 
 ## SwiGLU
 
@@ -1093,14 +1146,15 @@ dotnet fsi examples/Embedding.fsx
 dotnet fsi examples/KeyValueCache.fsx
 ```
 
-The Add script loads the library sources, runs the same function with each backend,
-prints the CPU result, and reports the GPU placeholders' exceptions at the first
-upload. The embedding script uses a tiny in-memory F32 vocabulary and prints
+The Add script loads the library sources, prints the CPU results, and reports the
+CUDA placeholder's exception at the first upload. `examples/MetalAdd.fsx` uses
+compiled assemblies and a native library to run Add on Metal; follow the
+[Metal guide](metal.md) first. The embedding script uses a tiny in-memory F32 vocabulary and prints
 the rows for IDs `[1; 0; 1]`. The key-value cache script prints the target
 model's cache size for each encoding, then stores random keys in a small CPU
 cache and prints the root mean square and largest errors after reading them
-back. Tests also call GPU allocation, download and each
-kernel directly to verify that all unfinished operations fail explicitly.
+back. Tests verify that unfinished GPU operations fail explicitly; optional Metal
+tests exercise Add, transfers, ordering and lifetime on a real GPU.
 
 
 ## Grouped-query attention

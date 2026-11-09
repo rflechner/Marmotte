@@ -18,15 +18,19 @@ type CudaBackend() =
 
     interface ITensorBackend with
         member _.Backend = BackendKind.Cuda
-        member _.Allocate(_) = notImplemented "tensor allocation"
-        member _.Upload(_, _) = notImplemented "tensor upload"
+        member _.Allocate(_: TensorShape): ITensor = notImplemented "tensor allocation"
+        member _.Allocate(_: TensorShape, _: TensorEncoding): ITensor = notImplemented "tensor allocation"
+        member _.Upload(_: TensorShape, _: ReadOnlyMemory<single>): ITensor = notImplemented "tensor upload"
+        member _.Upload(_: TensorShape, _: ReadOnlyMemory<Half>): ITensor = notImplemented "tensor upload"
         member _.UploadWeights(_) = notImplemented "weight upload"
         member _.AllocateKeyValueCache(_) = notImplemented "key-value cache allocation"
-        member _.Download(_, _) = notImplemented "tensor download"
+        member _.Download(_: ITensor, _: Memory<single>): unit = notImplemented "tensor download"
+        member _.Download(_: ITensor, _: Memory<Half>): unit = notImplemented "tensor download"
         member _.Synchronize() = notImplemented "synchronization"
 
     interface IAddKernel with
         member _.Add(_, _, _) = notImplemented "Add kernel"
+        member _.AddF32F16(_, _, _) = notImplemented "mixed F32/F16 Add kernel"
 
     interface ISwiGluKernel with
         member _.SwiGlu(_, _, _) = notImplemented "SwiGLU kernel"

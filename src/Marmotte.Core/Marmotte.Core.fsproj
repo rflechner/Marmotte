@@ -27,6 +27,7 @@
         <Compile Include="ModelTensorLayout.fs" />
         <Compile Include="KeyValueCache.fs" />
         <Compile Include="Compute.fs" />
+        <Compile Include="TensorBackend.fs" />
         <Compile Include="ModelLoading.fs" />
         <Compile Include="TransformerModel.fs" />
         <Compile Include="GenerationSession.fs" />

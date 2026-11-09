@@ -6,6 +6,7 @@
 #load "../src/Marmotte.Core/AttentionTemperature.fs"
 #load "../src/Marmotte.Core/KeyValueCache.fs"
 #load "../src/Marmotte.Core/Compute.fs"
+#load "../src/Marmotte.Core/TensorBackend.fs"
 #load "../src/Marmotte.Cpu/CpuKernels.fs"
 #load "../src/Marmotte.Cpu/CpuStorage.fs"
 #load "../src/Marmotte.Cpu/CpuTensor.fs"

@@ -43,6 +43,24 @@ module internal CpuKernels =
         for index = firstScalar to destination.Length - 1 do
             destination[index] <- left[index] + right[index]
 
+    /// F16 storage throughout. Half addition may promote individual operands to scalar F32,
+    /// then rounds the result to F16; it never materializes an F32 buffer. No SIMD speedup is assumed.
+    let addHalf (left: ReadOnlySpan<Half>, right: ReadOnlySpan<Half>, destination: Span<Half>) =
+        if left.Length <> destination.Length || right.Length <> destination.Length then
+            invalidArg (nameof destination) "Element-wise kernel spans must have the same length."
+
+        for index = 0 to destination.Length - 1 do
+            destination[index] <- left[index] + right[index]
+
+    /// destination[i] = left[i] + right[i], widening each F16 operand to F32, which is exact.
+    /// The sum is a scalar F32 addition, so destination may be left.
+    let addSingleHalf (left: ReadOnlySpan<single>, right: ReadOnlySpan<Half>, destination: Span<single>) =
+        if left.Length <> destination.Length || right.Length <> destination.Length then
+            invalidArg (nameof destination) "Element-wise kernel spans must have the same length."
+
+        for index = 0 to destination.Length - 1 do
+            destination[index] <- left[index] + single right[index]
+
     /// destination[i] = silu(gate[i]) × up[i], with silu(x) = x / (1 + e^-x). Vector lanes use
     /// Vector.Exp and the tail uses MathF.Exp; measured on ARM64, both stay within 2.2e-7 relative
     /// error of a double-precision SiLU above x = -87, and they differ by at most 4 units in the

@@ -2,12 +2,50 @@
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <MarmotteBuildMetal Condition="'$(MarmotteBuildMetal)' == ''">false</MarmotteBuildMetal>
+    <!-- Normalize into a private property: command-line global properties cannot be reassigned. -->
+    <_MarmotteMetalBuildRequested>false</_MarmotteMetalBuildRequested>
+    <_MarmotteMetalBuildRequested Condition="'$(MarmotteBuildMetal)' == 'true' or '$(MarmotteBuildMetal)' == '1'">true</_MarmotteMetalBuildRequested>
+  </PropertyGroup>
+  <!-- Keep native tools optional, including during IDE design-time builds. -->
+  <PropertyGroup Condition="'$(_MarmotteMetalBuildRequested)' == 'true'">
+    <DisableFastUpToDateCheck>true</DisableFastUpToDateCheck>
+    <MarmotteMetalBuildDirectory Condition="'$(MarmotteMetalBuildDirectory)' == ''">$(MSBuildProjectDirectory)/../../artifacts/metal/msbuild/$(Configuration)</MarmotteMetalBuildDirectory>
+    <_MarmotteMetalBuildEnabled Condition="'$(MarmotteMetalNativePath)' == ''">true</_MarmotteMetalBuildEnabled>
+    <MarmotteMetalNativePath Condition="'$(_MarmotteMetalBuildEnabled)' == 'true'">$(MarmotteMetalBuildDirectory)/native/libmarmotte_metal.dylib</MarmotteMetalNativePath>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="MetalNative.fs" />
     <Compile Include="MetalBackend.fs" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="native/**/*.metal" />
+    <None Include="native/**/*.mm" />
+    <None Include="native/**/*.h" />
+    <None Include="native/**/CMakeLists.txt" />
+    <None Include="native/**/*.md" />
+  </ItemGroup>
+  <!-- Both built and prebuilt native libraries propagate to consumers and publish output. -->
+  <ItemGroup Condition="'$(MarmotteMetalNativePath)' != ''">
+    <None Include="$(MarmotteMetalNativePath)" Link="%(Filename)%(Extension)"
+          CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="FSharp.Core" ExcludeAssets="contentFiles" />
     <ProjectReference Include="../Marmotte.Core/Marmotte.Core.fsproj" />
   </ItemGroup>
+  <!-- Let CMake track source/header dependencies on every real build, even if F# is unchanged. -->
+  <Target Name="BuildMetalNative" BeforeTargets="PrepareForBuild;GetCopyToOutputDirectoryItems"
+          Condition="'$(_MarmotteMetalBuildRequested)' == 'true' and '$(DesignTimeBuild)' != 'true'">
+    <Error Condition="!$([MSBuild]::IsOSPlatform('OSX'))"
+           Text="The native Metal build supports macOS only." />
+    <Error Condition="'$(_MarmotteMetalBuildEnabled)' != 'true'"
+           Text="Use either MarmotteBuildMetal=true or MarmotteMetalNativePath for a prebuilt library, not both." />
+    <Exec WorkingDirectory="$(MSBuildProjectDirectory)"
+          Command="cmake -S &quot;$(MSBuildProjectDirectory)/native&quot; -B &quot;$(MarmotteMetalBuildDirectory)&quot; &quot;-DCMAKE_BUILD_TYPE=$(Configuration)&quot;" />
+    <Exec WorkingDirectory="$(MSBuildProjectDirectory)"
+          Command="cmake --build &quot;$(MarmotteMetalBuildDirectory)&quot; --config &quot;$(Configuration)&quot; --parallel" />
+    <Error Condition="!Exists('$(MarmotteMetalNativePath)')"
+           Text="The Metal build did not produce the expected library: $(MarmotteMetalNativePath)" />
+  </Target>
 </Project>

@@ -267,7 +267,7 @@ yet.
 K-quants, the inverse of `RowDecoder`.
 The three backend projects share these contracts:
 
-- `Marmotte.Cpu`: owned F32 arrays, explicit upload/download, weight tensors that
+- `Marmotte.Cpu`: owned F32 or F16 arrays, explicit upload/download, weight tensors that
   retain the stored payload, `Add`, SwiGLU and RMS normalization kernels
   vectorized with `Vector<T>`, embedding lookup, and matrix-vector and
   matrix-matrix products with safe intrinsics and parallel weight rows (see
@@ -278,11 +278,21 @@ The three backend projects share these contracts:
   key-value cache and causal grouped-query attention. Online fused attention is
   the default; `CpuAttentionMode.Reference` preserves the score-buffer algorithm.
   See [H.3 measurements](docs/kernels.md#online-attention-and-h3-measurements).
-- `Marmotte.Cuda` and `Marmotte.Metal`: buildable placeholders whose allocation,
-  transfers and kernels raise `NotImplementedException`, without requiring a GPU SDK.
+- `Marmotte.Cuda`: a buildable placeholder whose allocation, transfers and kernels
+  raise `NotImplementedException`, without requiring a GPU SDK.
+- `Marmotte.Metal`: owned F32 or F16 tensors, transfers, Add and `AddF32F16` through a native library.
+  Build it with `dotnet build Marmotte.slnx -p:MarmotteBuildMetal=true`. Native
+  compilation and GPU tests are optional; see the [Metal guide](docs/metal.md).
+  Weight upload, caches and other kernels still raise `NotImplementedException`.
 
 `Add` writes into a preallocated destination and requires identical contiguous,
-row-major shapes. In-place addition is supported. Operations on one backend take
+row-major shapes and encodings (all F32 or all F16). `AddF32F16` adds an F16 tensor
+into an F32 one, the only mixed combination, requested by name. `Allocate(shape)`
+remains F32; use `Allocate(shape, TensorEncoding.F16)` and the `Half` overloads of
+`Upload` and `Download` for two-byte F16 storage on CPU or Metal. Transfers preserve
+the stored bits; no implicit conversion is performed. Other CPU kernels still
+require F32. See [Half Add and memory use](docs/kernels.md#half-add-and-memory-use).
+In-place addition is supported. Operations on one backend take
 effect in submission order and may return before they complete; `Download` and
 `Synchronize` wait for them. Tensors belong to the backend instance that created
 them, transfers are explicit, and disposing a backend releases the tensors it
@@ -507,6 +517,7 @@ block layouts, numerical limits and tensor selection policy.
 - [GGUF format and current implementation](docs/gguf.md)
 - [Safetensors format and current implementation](docs/safetensors.md)
 - [Execution tensors and kernels on CPU, CUDA and Metal](docs/kernels.md)
+- [Build and understand the Metal backend](docs/metal.md)
 - [Roadmap](ROADMAP.md): CPU inference first, then CUDA and Metal backends
 
 ## Build and tests
@@ -530,11 +541,12 @@ and output protection. Safetensors tests encode JSON headers and data buffers
 directly. CLI tests run the application against temporary GGUF and Safetensors
 fixtures and check both commands, argument handling, and errors. Core tests
 check tensor sources and weight matrices with an in-memory source and temporary
-files, and row decoding against blocks packed by hand. Backend tests check F32
+files, and row decoding against blocks packed by hand. Backend tests check F32/F16
 addition, SwiGLU, RMS normalization and matrix-vector products against scalar
 and double-precision references, embedding lookup against independently
 specified floating-point and quantized bytes, shape and ID validation, buffer
-ownership, transfers and disposal, plus explicit CUDA/Metal placeholder failures.
+ownership, transfers and disposal, plus explicit failures for unfinished GPU
+operations. Metal Add has optional GPU tests; see [how to run them](docs/metal.md#run-the-tests).
 No model or weight download is required.
 
 ## Coding guidelines

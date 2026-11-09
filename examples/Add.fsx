@@ -6,6 +6,7 @@
 #load "../src/Marmotte.Core/AttentionTemperature.fs"
 #load "../src/Marmotte.Core/KeyValueCache.fs"
 #load "../src/Marmotte.Core/Compute.fs"
+#load "../src/Marmotte.Core/TensorBackend.fs"
 #load "../src/Marmotte.Cpu/CpuKernels.fs"
 #load "../src/Marmotte.Cpu/CpuStorage.fs"
 #load "../src/Marmotte.Cpu/CpuTensor.fs"
@@ -16,13 +17,11 @@
 #load "../src/Marmotte.Cpu/CpuMatrixKernels.fs"
 #load "../src/Marmotte.Cpu/CpuBackend.fs"
 #load "../src/Marmotte.Cuda/CudaBackend.fs"
-#load "../src/Marmotte.Metal/MetalBackend.fs"
 
 open System
 open Marmotte.Core
 open Marmotte.Cpu
 open Marmotte.Cuda
-open Marmotte.Metal
 
 // The same orchestration uses opaque tensors on every backend. Only the factory changes.
 let runAdd (backend: ITensorBackend) =
@@ -37,15 +36,31 @@ let runAdd (backend: ITensorBackend) =
     backend.Download(destination, result.AsMemory())
     result
 
+// Half buffers stay at two bytes per element. Converting these small literals is explicit.
+let runHalfAdd (backend: ITensorBackend) =
+    let shape = TensorShape.Create [| 2; 3 |]
+    let leftValues = [| 1.0f; 2.0f; 3.0f; 4.0f; 5.0f; 6.0f |] |> Array.map Half.op_Explicit
+    let rightValues = [| 10.0f; 20.0f; 30.0f; 40.0f; 50.0f; 60.0f |] |> Array.map Half.op_Explicit
+    use left = backend.Upload(shape, ReadOnlyMemory<Half>(leftValues))
+    use right = backend.Upload(shape, ReadOnlyMemory<Half>(rightValues))
+    use destination = backend.Allocate(shape, TensorEncoding.F16)
+
+    backend.Add(left, right, destination)
+
+    let result = Array.zeroCreate<Half> shape.ElementCount
+    backend.Download(destination, result.AsMemory())
+    result
+
+// For Metal, examples/MetalAdd.fsx loads the compiled assembly and its native library.
 let backends =
     [ "CPU", (fun () -> new CpuBackend() :> ITensorBackend)
-      "CUDA", (fun () -> new CudaBackend() :> ITensorBackend)
-      "Metal", (fun () -> new MetalBackend() :> ITensorBackend) ]
+      "CUDA", (fun () -> new CudaBackend() :> ITensorBackend) ]
 
 for name, createBackend in backends do
     use backend = createBackend ()
     try
         printfn "%s Add: %A" name (runAdd backend)
+        printfn "%s Half Add: %A" name (runHalfAdd backend)
     with :? NotImplementedException as error ->
-        // GPU placeholders fail at the first transfer, before a tensor or kernel is created.
+        // The CUDA placeholder fails at the first transfer, before a tensor or kernel is created.
         printfn "%s: %s" name error.Message

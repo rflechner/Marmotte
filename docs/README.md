@@ -17,7 +17,8 @@ work. Illustrations are conceptual aids, not executable format specifications.
 | [Transformer layer tensors](transformer-layer-tensors.md) | Illustrated guide to the nine per-layer weight descriptors and their shapes | Dense mistral3 mapping, validation and forward pass implemented |
 | [Prompt processing and decoding](generation-session.md) | Batched prefill, incremental tokens, session cache and failure handling | GenerationSession, seeded sampling and TokenGenerator stopping implemented |
 | [Dense forward pass](forward-pass.md) | Runnable synthetic model, loading, logits and cache ownership | Dense mistral3 implemented through backend contracts |
-| [Execution tensors and kernels](kernels.md) | Eight illustrations covering kernels and YaRN, formula notation, GGUF-to-kernel diagram and backend contracts | Eight CPU kernels, a key-value cache and YaRN preparation implemented; CUDA/Metal placeholders |
+| [Execution tensors and kernels](kernels.md) | Eight illustrations covering kernels and YaRN, formula notation, GGUF-to-kernel diagram and backend contracts | Eight CPU kernels, a key-value cache, YaRN preparation and Metal Add implemented; other GPU operations are placeholders |
+| [Getting started with Metal](metal.md) | Installation, native builds, F# interop, GPU execution, memory and testing | Metal F32/F16 tensors, transfers, Add and AddF32F16 implemented |
 | [Q2_K, Q3_K and BitNet b1.58](quantization.md) | Three illustrations of code levels, `twoBitQuant` packing, storage cost and ternary training | Q2_K/Q3_K decoding implemented; BitNet execution not implemented |
 | Storage and strides below | Concepts for tensor access and execution | Copying tensor source and weight matrix rows implemented; no mapped storage or strided views |
 
@@ -29,12 +30,12 @@ inspecting a local GGUF file and [`quantize`](../README.md#quantize-a-gguf-file)
 for native conversion into a new file. The readers return an index; the tensor
 sources copy validated payloads on request, and the separate quantizer streams
 weight blocks. Mapped sources and the dense `mistral3` forward pass are implemented; generation
-and sampling remain planned. Separately, execution tensors now support contiguous F32 `Add`,
+and sampling remain planned. Separately, execution tensors now support contiguous F32/F16 `Add`,
 SwiGLU, RMS normalization, rotary position embedding and attention temperature
 on CPU, plus embedding lookup and matrix-vector and matrix-matrix products over
 stored weights, and a key-value cache with configurable key and value
-encodings, through shared contracts; CUDA and Metal expose explicit
-placeholders.
+encodings, through shared contracts. Metal implements F32/F16 device tensors,
+transfers, Add and `AddF32F16`; its remaining operations and CUDA expose explicit placeholders.
 
 ## From Model Files to Text
 

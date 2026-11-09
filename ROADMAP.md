@@ -267,7 +267,10 @@ the reference for results.
 - [ ] **L.5** CUDA backend: weight upload, quantized matrix products and the remaining
   kernels.
 - [ ] **L.6** Metal backend: Metal Shading Language kernels, sharing mapped weights
-  through unified memory without copies where alignment allows.
+  through unified memory without copies where alignment allows. Done so far: F32
+  and F16 shared-storage tensors, copying transfers, synchronization and native Add
+  and `AddF32F16` through P/Invoke, with optional GPU tests and a
+  [build guide](docs/metal.md).
 - [ ] **L.7** Compare each backend with the CPU reference within documented tolerances.
 - [ ] **L.8** Keep GPU tests optional, so that normal development does not require a GPU.
 - [ ] **L.9** Measure each backend with the same workloads as the CPU.
