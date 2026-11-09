@@ -16,6 +16,7 @@ endif()
 # Explicit source list: experimental shaders are never compiled by accident.
 set(METAL_KERNEL_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/kernels/Add.metal"
+    "${CMAKE_CURRENT_SOURCE_DIR}/kernels/SwiGlu.metal"
 )
 set(METAL_KERNEL_LIBRARY "${CMAKE_BINARY_DIR}/marmotte_kernels.metallib")
 
@@ -37,6 +38,7 @@ add_custom_target(marmotte_metal_kernels DEPENDS "${METAL_KERNEL_LIBRARY}")
 add_library(marmotte_metal SHARED
     MetalRuntime.mm
     kernels/Add.mm
+    kernels/SwiGlu.mm
 )
 add_dependencies(marmotte_metal marmotte_metal_kernels)
 

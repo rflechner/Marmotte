@@ -49,8 +49,8 @@ use unrounded intermediates.
 | StoreKeyValues / ReadKeyValues | One cached key or value of a past position, encoded and decoded back to F32 | [Key-value cache](#key-value-cache) |
 
 All eight kernels and the key-value cache have CPU implementations. Metal
-implements Add, and the [Metal guide](metal.md) explains how; its other kernels
-and all of CUDA remain placeholders.
+implements Add and SwiGLU (F32 and F16), and the [Metal guide](metal.md) explains
+how; its other kernels and all of CUDA remain placeholders.
 Core implements YaRN parameter preparation. Attention temperature has a worked
 example in text. The eight walkthrough images were
 generated with the built-in `image_gen` tool, visually reviewed, and their
@@ -128,7 +128,7 @@ them one row at a time.
 | `Synchronize` | Nothing to wait for | `NotImplementedException` | Waits for submitted work and reports its failures |
 | `IAddKernel.Add` | F32: safe `Vector<T>` loop with a scalar tail; F16: scalar Half loop | `NotImplementedException` | Separate F32 and F16 MSL compute functions, one command buffer per call |
 | `IAddKernel.AddF32F16` | Scalar loop widening each F16 operand | `NotImplementedException` | MSL compute function, one command buffer per call |
-| `ISwiGluKernel.SwiGlu` | Safe `Vector<T>` loop with `Vector.Exp`, scalar tail with `MathF.Exp` | `NotImplementedException` | `NotImplementedException` |
+| `ISwiGluKernel.SwiGlu` | Safe `Vector<T>` loop with `Vector.Exp`, scalar tail with `MathF.Exp`; F32 only, F16 raises `NotSupportedException` | `NotImplementedException` | MSL compute functions `swiGluF32` and `swiGluF16`, one command buffer per call |
 | `IRmsNormKernel.RmsNorm` | Safe `Vector<T>` loops, sum of squares in double precision | `NotImplementedException` | `NotImplementedException` |
 | `IEmbeddingKernel.EmbeddingLookup` | Decodes selected rows with `RowDecoder` directly into F32 output | `NotImplementedException` | `NotImplementedException` |
 | `IRowCopyKernel.CopyRows` | Validated contiguous row copy over safe spans | `NotImplementedException` | `NotImplementedException` |
@@ -249,9 +249,10 @@ is that of the F32 sum.
 `HalfTests.fs` checks hand-specified results at rounding boundaries, overflow,
 normal/subnormal transitions, signed zero, infinities and NaNs, as well as transfer
 of all 65,536 bit patterns. It exercises the same cases on CPU and, when explicitly
-enabled, Metal. Other CPU kernels still require F32 and reject F16 with
-`NotSupportedException` before writing; mixed-format Add and incorrect Download
-overloads raise `ArgumentException`, including for empties.
+enabled, Metal. On CPU every kernel except Add and `AddF32F16` requires F32 and
+rejects F16 with `NotSupportedException` before writing; on Metal, RMSNorm and
+the remaining kernels do, while SwiGLU also accepts F16. Mixed-format Add and
+incorrect Download overloads raise `ArgumentException`, including for empties.
 
 ## SwiGLU
 
@@ -282,7 +283,10 @@ relative error of a double-precision SiLU, and they differ from each other by
 at most four units in the last place. Tests therefore compare with a relative
 tolerance of 1e-6. Below about -88.7, `e^-x` overflows in F32 and the result is
 a signed zero instead of a value smaller than 1e-36. NaN gates stay NaN, and
-`silu(-∞)` is NaN, as the formula gives.
+`silu(-∞)` is NaN, as the formula gives. Metal's `exp` is another approximation
+in the same spirit, so its results are compared with the same 1e-6 relative
+tolerance in F32 (1e-2 in F16, plus absolute floors for flushed F32 subnormals
+and F16 subnormal results); see the [Metal guide](metal.md#swiglu).
 
 On an Apple M4 Max, single-threaded in Release, the vectorized kernel takes about
 0.63 ns per value, against 1.43 ns for a scalar loop with the same formula. One

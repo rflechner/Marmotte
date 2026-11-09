@@ -5,8 +5,8 @@ addition on your Mac's GPU, and be able to follow that call from F# to the
 compute function.
 
 The Metal backend implements contiguous F32 and F16 tensors, zero-initialized
-allocation, uploads, downloads, synchronization, element-wise Add and the mixed
-`AddF32F16`. It uses native
+allocation, uploads, downloads, synchronization, element-wise Add, the mixed
+`AddF32F16` and SwiGLU in F32 and F16. It uses native
 Objective-C++ and Metal Shading Language (MSL) through P/Invoke, with no
 additional NuGet dependency. Other kernels, weight upload and the key-value cache
 still throw `NotImplementedException`.
@@ -117,6 +117,8 @@ tensors and argument validation always run, because those paths load no native c
 | [`native/MetalRuntime.mm`](../src/Marmotte.Metal/native/MetalRuntime.mm) | Device initialization, shader loading, allocation, copies, synchronization and cleanup. |
 | [`native/kernels/Add.metal`](../src/Marmotte.Metal/native/kernels/Add.metal) | The F32, F16 and mixed compute functions that run on the GPU. |
 | [`native/kernels/Add.mm`](../src/Marmotte.Metal/native/kernels/Add.mm) | `marmotte_metal_add` and `marmotte_metal_add_f32_f16`: native validation, format dispatch, encoding and submission. |
+| [`native/kernels/SwiGlu.metal`](../src/Marmotte.Metal/native/kernels/SwiGlu.metal) | The F32 and F16 SwiGLU compute functions: `silu(gate[i]) * up[i]`. |
+| [`native/kernels/SwiGlu.mm`](../src/Marmotte.Metal/native/kernels/SwiGlu.mm) | `marmotte_metal_swi_glu`: native validation, encoding and submission. |
 | [`native/CMakeLists.txt`](../src/Marmotte.Metal/native/CMakeLists.txt) | Native sources, compiler settings and output location. |
 
 ```mermaid
@@ -246,9 +248,29 @@ Small additions are dominated by the cost of one command buffer per `Add`, so th
 CPU is faster for them. Batching several kernels into one command buffer is the
 obvious next step once the forward pass runs on Metal.
 
+## SwiGLU
+
+`SwiGlu(gate, up, destination)` computes `destination[i] = silu(gate[i]) × up[i]`
+with `silu(x) = x / (1 + e^-x)`. Metal accepts F32 and F16, with all three tensors
+in the same encoding; mixed encodings raise `ArgumentException` before any
+submission. (The CPU requires F32 and raises `NotSupportedException` for F16.)
+The destination may be `gate` or `up`, because each thread reads and writes only
+its own index.
+
+Metal's `exp` is a different approximation from the CPU's, so results may differ
+by a few units in the last place: compare F32 with a relative tolerance of about
+`1e-6`, and F16 with about `1e-2`, as `MetalTests.fs` does. The F16 function
+widens its operands, computes in F32 and rounds once to F16: in binary16, `e^-x`
+would overflow below -11.1 and turn representable results such as `silu(-12)`
+into zero. The special values follow the formula: `silu(-∞)` is NaN, `silu(+∞)`
+is `+∞`, and where `e^-x` overflows in F32 (gate below about -88.7) the result
+is a signed zero. The F32 subnormal
+flush described above also applies to F32 SwiGLU results, so the tests add an
+absolute floor of `1e-30`; F16 subnormals are kept exactly.
+
 ## Known limitations
 
-- Only Add and `AddF32F16` run on Metal; every other kernel is a placeholder.
+- Only Add, `AddF32F16` and SwiGLU (F32 and F16) run on Metal; every other kernel is a placeholder.
 - The default device only: there is no device selection for Macs with several GPUs.
 - Tested on Apple silicon only (M4 Max, macOS 27).
 - The [kernel development guide](../src/Marmotte.Metal/native/kernels/README.md)

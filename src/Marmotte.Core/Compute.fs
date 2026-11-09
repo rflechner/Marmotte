@@ -132,12 +132,13 @@ type IAddKernel =
 /// destination[i] = silu(gate[i]) × up[i], with silu(x) = x / (1 + e^-x).
 /// See "GLU Variants Improve Transformer", https://arxiv.org/abs/2002.05202.
 type ISwiGluKernel =
-    /// Currently requires F32 tensors; F16 raises NotSupportedException on CPU.
+    /// CPU requires F32 tensors and raises NotSupportedException for F16; Metal also accepts F16,
+    /// with all three tensors in the same encoding, like Add.
     /// Tensor rules, validation and ordering are those of IAddKernel.Add, with gate and up as the
     /// inputs. Implementations approximate the exponential differently, so results may differ by a
     /// few units in the last place: compare them with a relative tolerance. Where e^-x overflows
-    /// (x below about -88.7), the result is a signed zero instead of a value below 1e-36 in
-    /// magnitude, and silu(-∞) is NaN, as the formula gives.
+    /// (x below about -88.7; Metal computes F16 in F32), the result is a signed zero instead of a tiny
+    /// value, and silu(-∞) is NaN, as the formula gives.
     abstract SwiGlu: gate: ITensor * up: ITensor * destination: ITensor -> unit
 
 /// RMS normalization of each row along the last dimension, followed by a weight per column:

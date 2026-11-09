@@ -731,7 +731,6 @@ let ``unfinished GPU operations explicitly fail without requiring GPU hardware``
     let operations =
         [ (fun () -> backend.UploadWeights(weightMatrix ()) |> ignore)
           (fun () -> backend.AllocateKeyValueCache(cacheLayout ()) |> ignore)
-          (fun () -> backend.SwiGlu(tensor, tensor, tensor))
           (fun () -> backend.RmsNorm(tensor, tensor, 1e-5f, tensor))
           (fun () -> backend.EmbeddingLookup(weights, ReadOnlyMemory<int>([| 0 |]), tensor))
           (fun () -> backend.MatVec(weights, tensor, tensor))
@@ -754,6 +753,11 @@ let ``unfinished GPU operations explicitly fail without requiring GPU hardware``
         Assert.Throws<NotImplementedException>(fun () -> backend.Synchronize()) |> ignore
         Assert.Throws<NotImplementedException>(fun () -> backend.Add(tensor, tensor, tensor)) |> ignore
         Assert.Throws<NotImplementedException>(fun () -> backend.AddF32F16(tensor, tensor, tensor)) |> ignore
+        Assert.Throws<NotImplementedException>(fun () -> backend.SwiGlu(tensor, tensor, tensor)) |> ignore
+    else
+        // Metal implements SwiGLU: empty tensors make it a no-op that needs no GPU.
+        use empty = backend.Allocate(TensorShape.Create [| 0 |])
+        backend.SwiGlu(empty, empty, empty)
 
 [<Theory>]
 [<InlineData("CPU")>]

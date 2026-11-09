@@ -50,6 +50,9 @@ module private MetalApi =
     extern int marmotte_metal_add_f32_f16(SafeHandle context, nativeint left, nativeint right, nativeint destination, int count)
 
     [<DllImport(library, CallingConvention = CallingConvention.Cdecl)>]
+    extern int marmotte_metal_swi_glu(SafeHandle context, nativeint gate, nativeint up, nativeint destination, int count)
+
+    [<DllImport(library, CallingConvention = CallingConvention.Cdecl)>]
     extern int marmotte_metal_synchronize(SafeHandle context)
 
     let check operation status =
@@ -121,6 +124,9 @@ type internal MetalSession() =
 
     member _.AddF32F16(left, right, destination, count) =
         MetalApi.marmotte_metal_add_f32_f16(context, left, right, destination, count) |> MetalApi.check "AddF32F16 submission"
+
+    member _.SwiGlu(gate, up, destination, count) =
+        MetalApi.marmotte_metal_swi_glu(context, gate, up, destination, count) |> MetalApi.check "SwiGLU submission"
 
     member _.Synchronize() = MetalApi.marmotte_metal_synchronize(context) |> MetalApi.check "synchronization"
 

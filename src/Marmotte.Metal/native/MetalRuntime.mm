@@ -145,6 +145,30 @@ void commitCommandBuffer(MetalContext* context, id<MTLCommandBuffer> commandBuff
     releaseCompletedWork(context);
 }
 
+int submitElementWise(MetalContext* context, NSString* functionName, const MetalAllocation* first,
+                      const MetalAllocation* second, const MetalAllocation* destination, int count) {
+    id<MTLComputePipelineState> pipeline = nil;
+    const auto status = findPipeline(context, functionName, &pipeline);
+    if (status != MetalSuccess) return status;
+
+    id<MTLCommandBuffer> commandBuffer = [context->queue commandBuffer];
+    id<MTLComputeCommandEncoder> encoder = [commandBuffer computeCommandEncoder];
+    if (!encoder) return failWith(MetalExecutionFailure, "Metal could not create a compute encoder.");
+
+    [encoder setComputePipelineState:pipeline];
+    [encoder setBuffer:first->buffer offset:0 atIndex:0];
+    [encoder setBuffer:second->buffer offset:0 atIndex:1];
+    [encoder setBuffer:destination->buffer offset:0 atIndex:2];
+
+    // The last threadgroup may be smaller than the others: exactly count threads run.
+    [encoder dispatchThreads:MTLSizeMake(static_cast<NSUInteger>(count), 1, 1)
+       threadsPerThreadgroup:MTLSizeMake(pipeline.threadExecutionWidth, 1, 1)];
+    [encoder endEncoding];
+
+    commitCommandBuffer(context, commandBuffer);
+    return MetalSuccess;
+}
+
 // Native calls come from .NET threads that have no autorelease pool of their own, so each entry
 // point that reaches Metal drains its own.
 

@@ -280,14 +280,15 @@ The three backend projects share these contracts:
   See [H.3 measurements](docs/kernels.md#online-attention-and-h3-measurements).
 - `Marmotte.Cuda`: a buildable placeholder whose allocation, transfers and kernels
   raise `NotImplementedException`, without requiring a GPU SDK.
-- `Marmotte.Metal`: owned F32 or F16 tensors, transfers, Add and `AddF32F16` through a native library.
+- `Marmotte.Metal`: owned F32 or F16 tensors, transfers, Add, `AddF32F16` and SwiGLU (F32 and F16) through a native library.
   Build it with `dotnet build Marmotte.slnx -p:MarmotteBuildMetal=true`. Native
   compilation and GPU tests are optional; see the [Metal guide](docs/metal.md).
   Weight upload, caches and other kernels still raise `NotImplementedException`.
 
 `Add` writes into a preallocated destination and requires identical contiguous,
 row-major shapes and encodings (all F32 or all F16). `AddF32F16` adds an F16 tensor
-into an F32 one, the only mixed combination, requested by name. `Allocate(shape)`
+into an F32 one, the only mixed combination, requested by name. `SwiGlu` computes
+`silu(gate) * up` element-wise, F32-only on CPU and F32 or F16 on Metal. `Allocate(shape)`
 remains F32; use `Allocate(shape, TensorEncoding.F16)` and the `Half` overloads of
 `Upload` and `Download` for two-byte F16 storage on CPU or Metal. Transfers preserve
 the stored bits; no implicit conversion is performed. Other CPU kernels still

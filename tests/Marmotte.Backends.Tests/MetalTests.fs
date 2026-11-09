@@ -243,3 +243,188 @@ let ``Metal tensor disposal keeps queued work valid and backend disposal release
 
     otherBackend.Add(survivor, survivor, survivor)
     Assert.All(download otherBackend survivor, fun value -> Assert.Equal(14.0f, value))
+
+// SwiGLU in double precision, independent of both Metal's exp and the CPU's Vector.Exp.
+let private swiGluReference (gate: single) (up: single) =
+    let x = float gate
+    x / (1.0 + Math.Exp(-x)) * float up
+
+// A relative tolerance of about 8 units in the last place, plus an absolute floor for results
+// the GPU may flush to zero: F32 subnormals and e^-x overflow for gates below about -88.7.
+let private assertSwiGluClose (expected: float) (actual: single) =
+    let tolerance = 1e-6 * abs expected + 1e-30
+    Assert.True(abs (float actual - expected) <= tolerance, $"Expected {expected}, got {actual}.")
+
+[<Fact>]
+let ``Metal SwiGlu validates empty tensors and mixed encodings without loading the runtime`` () =
+    use backend = new MetalBackend() :> ITensorBackend
+    use otherBackend = new MetalBackend() :> ITensorBackend
+    let shape = TensorShape.Create [| 2; 0; 3 |]
+    use gate = backend.Allocate(shape)
+    use up = backend.Allocate(shape)
+    use destination = backend.Allocate(shape)
+    use halfGate = backend.Allocate(shape, TensorEncoding.F16)
+    use halfUp = backend.Allocate(shape, TensorEncoding.F16)
+    use halfDestination = backend.Allocate(shape, TensorEncoding.F16)
+    use foreign = otherBackend.Allocate(shape)
+
+    backend.SwiGlu(gate, up, destination)
+    backend.SwiGlu(gate, up, up)
+    backend.SwiGlu(gate, gate, gate)
+    backend.SwiGlu(halfGate, halfUp, halfDestination)
+    backend.SwiGlu(halfGate, halfUp, halfUp)
+    backend.Synchronize()
+    Assert.Empty(download backend destination)
+
+    // Mixed encodings are rejected before any submission, even for empty tensors.
+    for g, u, d in [ halfGate, up, destination; gate, halfUp, destination; gate, up, halfDestination ] do
+        Assert.Throws<ArgumentException>(fun () -> backend.SwiGlu(g, u, d)) |> ignore
+    for g, u, d in [ foreign, up, destination; gate, foreign, destination; gate, up, foreign ] do
+        Assert.Throws<ArgumentException>(fun () -> backend.SwiGlu(g, u, d)) |> ignore
+
+[<MetalFact>]
+[<Trait("Category", "Metal")>]
+let ``Metal SwiGlu matches a double-precision reference for every vector tail length`` () =
+    use backend = new MetalBackend() :> ITensorBackend
+    let random = Random(5678)
+    let randomValues length range = Array.init length (fun _ -> float32 ((random.NextDouble() * 2.0 - 1.0) * range))
+
+    // Lengths below, at and between multiples of 4, 8 and 16 lanes exercise vector blocks and tails.
+    for length in 0 .. 67 do
+        let shape = TensorShape.Create [| length |]
+        let gateValues = randomValues length 30.0
+        let upValues = randomValues length 5.0
+        let expected = Array.map2 swiGluReference gateValues upValues
+        use gate = upload backend shape gateValues
+        use up = upload backend shape upValues
+        use destination = backend.Allocate(shape)
+
+        backend.SwiGlu(gate, up, destination)
+        Array.iter2 assertSwiGluClose expected (download backend destination)
+        Assert.Equal<single>(gateValues, download backend gate)
+        Assert.Equal<single>(upValues, download backend up)
+
+        // Reuse either input as the destination; the other input is still the original operand.
+        backend.SwiGlu(gate, up, up)
+        Array.iter2 assertSwiGluClose expected (download backend up)
+
+        use upAgain = upload backend shape upValues
+        backend.SwiGlu(gate, upAgain, gate)
+        Array.iter2 assertSwiGluClose expected (download backend gate)
+
+[<MetalFact>]
+[<Trait("Category", "Metal")>]
+let ``Metal SwiGlu handles extreme gates in vector lanes and the tail`` () =
+    use backend = new MetalBackend() :> ITensorBackend
+    // 21 values cycle through each case in full threadgroups and in the partial tail.
+    let cases = [| -100.0f; 100.0f; 0.0f; Single.NaN; Single.PositiveInfinity; Single.NegativeInfinity; -0.001f |]
+    let gateValues = Array.init 21 (fun index -> cases[index % cases.Length])
+    let shape = TensorShape.Create [| 21 |]
+    use gate = upload backend shape gateValues
+    use up = upload backend shape (Array.create 21 2.0f)
+
+    backend.SwiGlu(gate, up, up)
+
+    let result = download backend up
+    for index in 0 .. 20 do
+        let value = result[index]
+        match gateValues[index] with
+        | gateValue when Single.IsNaN gateValue -> Assert.True(Single.IsNaN value)
+        | gateValue when Single.IsNegativeInfinity gateValue -> Assert.True(Single.IsNaN value)
+        | gateValue when Single.IsPositiveInfinity gateValue -> Assert.Equal(Single.PositiveInfinity, value)
+        | gateValue -> assertSwiGluClose (swiGluReference gateValue 2.0f) value
+
+[<MetalFact>]
+[<Trait("Category", "Metal")>]
+let ``Metal SwiGlu validates shapes encodings ownership and disposal before writing`` () =
+    use backend = new MetalBackend() :> ITensorBackend
+    use otherBackend = new MetalBackend() :> ITensorBackend
+    let shape = TensorShape.Create [| 2; 3 |]
+    use gate = upload backend shape (Array.create 6 1.0f)
+    use up = upload backend shape (Array.create 6 1.0f)
+    use destination = upload backend shape (Array.create 6 42.0f)
+    use transposed = backend.Allocate(TensorShape.Create [| 3; 2 |])
+    use foreign = otherBackend.Allocate(shape)
+    use half = backend.Allocate(shape, TensorEncoding.F16)
+    let disposed = backend.Allocate(shape)
+    disposed.Dispose()
+
+    let shapeError = Assert.Throws<ArgumentException>(fun () -> backend.SwiGlu(gate, transposed, destination))
+    Assert.Contains("[2; 3]", shapeError.Message)
+    Assert.Contains("[3; 2]", shapeError.Message)
+    Assert.Throws<ArgumentException>(fun () -> backend.SwiGlu(gate, up, transposed)) |> ignore
+    Assert.Throws<ArgumentException>(fun () -> backend.SwiGlu(foreign, up, destination)) |> ignore
+    Assert.Throws<ObjectDisposedException>(fun () -> backend.SwiGlu(gate, disposed, destination)) |> ignore
+    for g, u, d in [ half, up, destination; gate, half, destination; gate, up, half ] do
+        Assert.Throws<ArgumentException>(fun () -> backend.SwiGlu(g, u, d)) |> ignore
+    Assert.Equal<single>(Array.create 6 42.0f, download backend destination)
+
+let private halfBits bits = BitConverter.UInt16BitsToHalf(bits)
+let private bits (value: Half) = BitConverter.HalfToUInt16Bits(value)
+
+let private uploadHalf (backend: ITensorBackend) (shape: TensorShape) (values: Half array) =
+    backend.Upload(shape, ReadOnlyMemory<Half>(values))
+
+let private downloadHalf (backend: ITensorBackend) (tensor: ITensor) =
+    let values = Array.zeroCreate<Half> tensor.Shape.ElementCount
+    backend.Download(tensor, values.AsMemory())
+    values
+
+// The F16 kernel computes in F32 and rounds once, about 2^-11 relative, plus Metal's exp error;
+// an absolute floor covers subnormal results, which the GPU keeps exactly.
+let private assertSwiGluHalfClose (expected: float) (actual: Half) =
+    let tolerance = 1e-2 * abs expected + 1e-7
+    Assert.True(abs (float actual - expected) <= tolerance, $"Expected {expected}, got {float actual}.")
+
+[<MetalFact>]
+[<Trait("Category", "Metal")>]
+let ``Metal SwiGlu F16 matches a double-precision reference within F16 rounding`` () =
+    use backend = new MetalBackend() :> ITensorBackend
+    let random = Random(9012)
+    let shape = TensorShape.Create [| 257 |]
+    // Gates reach -20, beyond -11.1 where e^-x would overflow binary16: silu(-12) is about
+    // -7.4e-5, a normal F16 that the F32 computation must keep instead of rounding to zero.
+    let gateValues = Array.init 257 (fun _ -> Half.op_Explicit (float32 (random.NextDouble() * 50.0 - 20.0)))
+    let upValues = Array.init 257 (fun _ -> Half.op_Explicit (float32 (random.NextDouble() * 20.0 - 10.0)))
+    let expected = Array.map2 swiGluReference (Array.map float32 gateValues) (Array.map float32 upValues)
+    use gate = uploadHalf backend shape gateValues
+    use up = uploadHalf backend shape upValues
+    use destination = backend.Allocate(shape, TensorEncoding.F16)
+
+    backend.SwiGlu(gate, up, destination)
+    Array.iter2 assertSwiGluHalfClose expected (downloadHalf backend destination)
+    Assert.Equal<uint16>(Array.map bits gateValues, downloadHalf backend gate |> Array.map bits)
+    Assert.Equal<uint16>(Array.map bits upValues, downloadHalf backend up |> Array.map bits)
+
+    // Reuse either input as the destination, in F16 as well.
+    backend.SwiGlu(gate, up, up)
+    Array.iter2 assertSwiGluHalfClose expected (downloadHalf backend up)
+    use upAgain = uploadHalf backend shape upValues
+    backend.SwiGlu(gate, upAgain, gate)
+    Array.iter2 assertSwiGluHalfClose expected (downloadHalf backend gate)
+
+[<MetalFact>]
+[<Trait("Category", "Metal")>]
+let ``Metal SwiGlu F16 handles special gates and signed zero`` () =
+    use backend = new MetalBackend() :> ITensorBackend
+    let gateValues =
+        [| Half.op_Explicit Single.PositiveInfinity; Half.op_Explicit Single.NegativeInfinity; Half.op_Explicit Single.NaN
+           Half.op_Explicit 0.0f; Half.op_Explicit -0.0f; halfBits 0x0001us; halfBits 0x8001us; Half.op_Explicit 100.0f |]
+    let shape = TensorShape.Create [| gateValues.Length |]
+    use gate = uploadHalf backend shape gateValues
+    use up = uploadHalf backend shape (Array.create gateValues.Length (Half.op_Explicit 2.0f))
+
+    backend.SwiGlu(gate, up, up)
+
+    let result = downloadHalf backend up
+    Assert.Equal(0x7C00us, bits result[0]) // silu(+inf) = +inf, times 2
+    Assert.True(Half.IsNaN result[1])     // silu(-inf) = -inf / inf = NaN
+    Assert.True(Half.IsNaN result[2])     // NaN gate
+    Assert.Equal(0x0000us, bits result[3]) // silu(0) = 0
+    Assert.Equal(0x8000us, bits result[4]) // silu(-0) = -0, times 2
+    // Subnormal gates: the exact result is about ±2^-24, and Metal does not guarantee how the
+    // intermediate 2^-25 tie rounds, so accept either neighbour within the F16 tolerance.
+    assertSwiGluHalfClose (swiGluReference (float32 gateValues[5]) 2.0f) result[5]
+    assertSwiGluHalfClose (swiGluReference (float32 gateValues[6]) 2.0f) result[6]
+    Assert.Equal(bits (Half.op_Explicit 200.0f), bits result[7]) // e^-100 vanishes next to 1, so silu(100) = 100
+    Assert.Equal<uint16>(Array.map bits gateValues, downloadHalf backend gate |> Array.map bits)

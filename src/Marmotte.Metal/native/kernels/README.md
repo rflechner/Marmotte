@@ -3,7 +3,8 @@
 Metal separates GPU code from host code, so each operation has two files with
 the same name: `<Operation>.metal` for the compute function, and
 `<Operation>.mm` for its exported host entry point.
-[Add.metal](Add.metal) and [Add.mm](Add.mm) are the working example.
+[Add.metal](Add.metal)/[Add.mm](Add.mm) and
+[SwiGlu.metal](SwiGlu.metal)/[SwiGlu.mm](SwiGlu.mm) are the working examples.
 
 ```text
 native/
@@ -14,6 +15,8 @@ native/
     README.md                   Shared development guide
     Add.metal                   F32, F16 and mixed GPU functions, in Metal Shading Language
     Add.mm                      Host entry point: validation, encoding and submission
+    SwiGlu.metal                F32 and F16 SwiGLU GPU functions
+    SwiGlu.mm                   Host entry point: validation, encoding dispatch and submission
 ```
 
 These files appear in the F# project. CMake compiles the `.metal` sources into
@@ -38,7 +41,9 @@ and `device` for outputs, and read the element index from
 The exported `marmotte_metal_<operation>` function validates native allocations
 and their recorded encodings, selects the compute function from them, gets the
 pipeline with `findPipeline`, encodes one dispatch and calls
-`commitCommandBuffer`. Public shape and ownership checks remain in
+`commitCommandBuffer`. Element-wise operations with two inputs and one output,
+such as Add and SwiGLU, call `submitElementWise` from the runtime for these last
+three steps. Public shape and ownership checks remain in
 `MetalBackend.fs`. Keep allocation, transfers and synchronization in the runtime.
 
 Document element counts, dimensions, aliasing and queue semantics beside the
@@ -98,3 +103,20 @@ nearest, ties to even; see
 F32. [HalfTests.fs](../../../../tests/Marmotte.Backends.Tests/HalfTests.fs) shares
 independent F16 and mixed fixtures between the CPU and Metal, including all 65,536
 transfer bit patterns.
+
+## SwiGLU contract
+
+`SwiGlu` computes `destination[i] = silu(gate[i]) × up[i]` with
+`silu(x) = x / (1 + e^-x)`, in F32 and F16 on Metal (the CPU backend requires F32
+and rejects F16 with `NotSupportedException`). Like Add, every tensor must have
+the same shape and encoding and belong to the same backend instance, and the
+destination may be `gate` or `up` because each thread reads and writes only its
+own index. Empty tensors are valid no-ops.
+
+Metal's `exp` differs from the CPU's by a few units in the last place, so tests
+compare against a double-precision reference with a relative tolerance of about
+`1e-6` in F32 and `1e-2` in F16, plus absolute floors of `1e-30` and `1e-7` for
+the F32 subnormals the GPU may flush to zero and for F16 subnormal results. The
+F16 function computes in F32 and rounds once, because `e^-x` overflows binary16
+below -11.1. `silu(-∞)` is NaN, `silu(+∞)` is `+∞`, and where `e^-x` overflows
+F32 (gate below about -88.7) the result is a signed zero, as the formula gives.

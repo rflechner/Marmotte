@@ -65,3 +65,8 @@ int findPipeline(MetalContext* context, NSString* functionName, id<MTLComputePip
 
 // Commits without waiting. Completed work is released and its failures recorded for a later wait.
 void commitCommandBuffer(MetalContext* context, id<MTLCommandBuffer> commandBuffer);
+
+// Encodes and commits one dispatch of exactly count threads for an element-wise compute function
+// taking (first, second, destination) at buffer indices 0 to 2. Callers validate the allocations.
+int submitElementWise(MetalContext* context, NSString* functionName, const MetalAllocation* first,
+                      const MetalAllocation* second, const MetalAllocation* destination, int count);

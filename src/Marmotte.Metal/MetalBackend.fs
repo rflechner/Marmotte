@@ -27,7 +27,7 @@ type private MetalTensor(owner: obj, shape: TensorShape, encoding: TensorEncodin
                 try release this
                 finally disposed <- true
 
-/// Owned contiguous F32/F16 tensors, Add and AddF32F16, using one Metal command queue per instance on the
+/// Owned contiguous F32/F16 tensors, Add, AddF32F16 and SwiGLU (F32 and F16), using one Metal command queue per instance on the
 /// system's default device. Native loading and device initialization happen at the first
 /// non-empty allocation; construction, empty tensors and an unused Synchronize require no Metal
 /// installation. No CPU fallback is used.
@@ -190,7 +190,18 @@ type MetalBackend() =
                 getSession().AddF32F16(leftPointer, rightPointer, destinationPointer, left.Shape.ElementCount)
 
     interface ISwiGluKernel with
-        member _.SwiGlu(_, _, _) = notImplemented "SwiGLU kernel"
+        member _.SwiGlu(gate, up, destination) =
+            checkDisposed ()
+            let gatePointer = pointerOf (nameof gate) gate
+            let upPointer = pointerOf (nameof up) up
+            let destinationPointer = pointerOf (nameof destination) destination
+            requireSameShape gate (nameof up) up
+            requireSameShape gate (nameof destination) destination
+            requireEncoding gate.Encoding (nameof up) up
+            requireEncoding gate.Encoding (nameof destination) destination
+
+            if gate.Shape.ElementCount > 0 then
+                getSession().SwiGlu(gatePointer, upPointer, destinationPointer, gate.Shape.ElementCount)
 
     interface IRmsNormKernel with
         member _.RmsNorm(_, _, _, _) = notImplemented "RMS normalization kernel"
