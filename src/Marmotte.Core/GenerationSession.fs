@@ -29,15 +29,16 @@ type GenerationSession private (model: TransformerModel, layout: KeyValueCacheLa
         if token < 0 || token >= model.VocabularySize then
             raise (ArgumentOutOfRangeException("tokenIds", "Every token ID must belong to the vocabulary."))
 
-    // Synchronize every batch, including discarded prefill logits, so failures cannot be
+    // Synchronize every batch, including cache-only prefill, so failures cannot be
     // attributed to a later call after we have reported a successful prefix length.
     let execute (tokens: ReadOnlyMemory<int>) returnLastLogits =
-        use output = model.Forward(cache, processedTokens, tokens)
+        let selection = if returnLastLogits then LogitSelection.LastToken else LogitSelection.NoTokens
+        use output = model.Forward(cache, processedTokens, tokens, selection)
         let result =
             if returnLastLogits then
                 let host = Array.zeroCreate<single> output.Shape.ElementCount
                 backend.Download(output, host.AsMemory())
-                host.AsSpan(host.Length - model.VocabularySize).ToArray()
+                host
             else
                 backend.Synchronize()
                 Array.empty
@@ -55,7 +56,9 @@ type GenerationSession private (model: TransformerModel, layout: KeyValueCacheLa
 
     /// Processes a non-empty prompt from position zero in batches of at most BatchSize tokens.
     /// Requires a new or reset session. Returns a caller-owned F32 array of VocabularySize logits
-    /// predicting the first continuation token, from the final prompt position. All prompt IDs
+    /// predicting the first continuation token, from the final prompt position. Intermediate
+    /// batches request cache-only execution; the final batch requests only its last logits,
+    /// so vocabulary-sized outputs are not materialized/downloaded for earlier positions. All prompt IDs
     /// and total capacity are validated before execution. The input must not be mutated during
     /// the call and is no longer retained after return. Empty prompts/invalid state raise
     /// ArgumentException/InvalidOperationException; invalid IDs/capacity raise

@@ -6,6 +6,15 @@ open System.Numerics
 open System.Runtime.InteropServices
 open Marmotte.Core
 
+/// CPU attention algorithm. Online fuses score normalization and value accumulation;
+/// Reference retains the score-buffer implementation for numerical/performance checks.
+[<RequireQualifiedAccess>]
+type CpuAttentionMode =
+    /// Keep the prefix-length score buffer and original F32 accumulation.
+    | Reference
+    /// Fuse normalization and value accumulation with O(head dimension) scratch.
+    | Online
+
 /// The numerical part of the CPU backend: F32 kernels over host spans, with no tensors, ownership
 /// or lifetime. CpuBackend validates tensors, then calls these functions on the arrays it owns;
 /// each function still checks the span lengths it relies on. Safe and vectorized with Vector<T>,
@@ -238,3 +247,75 @@ module internal CpuKernels =
                     RowDecoder.decode (layout.ValueEncoding, values.Slice(offset, valueHeadBytes), decoded.AsSpan())
                     for channel = 0 to dimension - 1 do
                         output[channel] <- output[channel] + weight * decoded[channel]
+
+    let private accumulateValues (source: ReadOnlySpan<single>) (weight: double)
+                                 (rescale: double) (destination: Span<double>) =
+        let mutable firstScalar = 0
+        if Vector.IsHardwareAccelerated then
+            let sourceVectors = MemoryMarshal.Cast<single, Vector<single>>(source)
+            let destinationVectors = MemoryMarshal.Cast<double, Vector<double>>(destination)
+            let factor = Vector<double>(weight)
+            let previousScale = Vector<double>(rescale)
+            for index = 0 to sourceVectors.Length - 1 do
+                let low = Vector.WidenLower(sourceVectors[index])
+                let high = Vector.WidenUpper(sourceVectors[index])
+                destinationVectors[2 * index] <- destinationVectors[2 * index] * previousScale + factor * low
+                destinationVectors[2 * index + 1] <- destinationVectors[2 * index + 1] * previousScale + factor * high
+            firstScalar <- sourceVectors.Length * Vector<single>.Count
+        for index = firstScalar to destination.Length - 1 do
+            destination[index] <- destination[index] * rescale + weight * float source[index]
+
+    /// Online stable softmax: retain a running maximum, denominator and weighted values.
+    /// Scratch is O(head dimension), independent of prefix length. Scores/exp use F32;
+    /// running sums use double to avoid overflow before final normalization. Each visible
+    /// key/value is decoded once per query head; no score array or approximate attention is used.
+    let attentionOnline (layout: KeyValueCacheLayout, queryHeads: int, position: int,
+                         keys: ReadOnlySpan<byte>, values: ReadOnlySpan<byte>,
+                         queries: ReadOnlySpan<single>, destination: Span<single>) =
+        let dimension = layout.HeadDimension
+        let rowValues = queryHeads * dimension
+        if queries.Length <> destination.Length || queries.Length % rowValues <> 0 then
+            invalidArg (nameof destination) "Attention spans must contain the same whole query rows."
+        let tokens = queries.Length / rowValues
+        let prefixLength = position + tokens
+        if keys.Length / layout.KeyRowBytes < prefixLength || values.Length / layout.ValueRowBytes < prefixLength then
+            invalidArg (nameof keys) "Attention requires cached keys and values for every query position."
+
+        let decoded = Array.zeroCreate<single> dimension
+        // Unnormalized sums can exceed F32 even when the final average is finite.
+        let accumulated = Array.zeroCreate<double> dimension
+        let keyHeadBytes = layout.KeyRowBytes / layout.KeyValueHeads
+        let valueHeadBytes = layout.ValueRowBytes / layout.KeyValueHeads
+        let groupSize = queryHeads / layout.KeyValueHeads
+        let scale = 1.0f / MathF.Sqrt(single dimension)
+        for token = 0 to tokens - 1 do
+            let visible = position + token + 1
+            for head = 0 to queryHeads - 1 do
+                let cacheHead = head / groupSize
+                let query = queries.Slice(token * rowValues + head * dimension, dimension)
+                let output = destination.Slice(token * rowValues + head * dimension, dimension)
+                accumulated.AsSpan().Clear()
+                let mutable maximum = Single.NegativeInfinity
+                let mutable denominator = 0.0
+                for cachedPosition = 0 to visible - 1 do
+                    let keyOffset = cachedPosition * layout.KeyRowBytes + cacheHead * keyHeadBytes
+                    RowDecoder.decode (layout.KeyEncoding, keys.Slice(keyOffset, keyHeadBytes), decoded.AsSpan())
+                    let mutable dot = 0.0f
+                    for channel = 0 to dimension - 1 do
+                        dot <- dot + query[channel] * decoded[channel]
+                    let score = dot * scale
+                    let mutable rescale = 1.0
+                    if score > maximum then
+                        rescale <- float (MathF.Exp(maximum - score))
+                        maximum <- score
+                        denominator <- denominator * rescale
+                    // An initial -infinity has zero mass if a finite score follows.
+                    // All -infinity scores still produce NaN on final normalization;
+                    // +infinity and NaN propagate through the ordinary exponential.
+                    let weight = if Single.IsNegativeInfinity score then 0.0f else MathF.Exp(score - maximum)
+                    denominator <- denominator + float weight
+                    let valueOffset = cachedPosition * layout.ValueRowBytes + cacheHead * valueHeadBytes
+                    RowDecoder.decode (layout.ValueEncoding, values.Slice(valueOffset, valueHeadBytes), decoded.AsSpan())
+                    accumulateValues (ReadOnlySpan<single>(decoded)) (float weight) rescale (accumulated.AsSpan())
+                for channel = 0 to dimension - 1 do
+                    output[channel] <- single (accumulated[channel] / denominator)

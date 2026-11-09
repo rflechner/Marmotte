@@ -73,13 +73,15 @@ raw text can be encoded with `loadedTokenizer.EncodeText(prompt, true)` before
 prefill; chat formatting and explicit special-token segmentation remain the
 caller's responsibility, as described in [chat prompts](chat-prompts.md).
 
-The underlying forward pass still calculates logits for every token in each
-batch. Intermediate batch outputs are disposed without downloading them. The
-last batch is downloaded, its last row copied into the returned array, and its
-output tensor disposed. The host download therefore uses at most
-`min(batchSize, promptLength) × vocabularySize` F32 elements; the returned array
-uses another `vocabularySize` elements. Last-row-only projection/transfer is a
-future optimization, not part of this implementation.
+The session requests `LogitSelection.NoTokens` for intermediate batches and
+`LastToken` for the final batch. Every prompt token still enters every layer's
+KV cache, but intermediate batches skip the final block's unused query/attention,
+feed-forward and vocabulary projection. The final batch computes the last block's
+feed-forward and output projection only for its last token. The host download
+is exactly `vocabularySize` F32 elements, directly returned to the caller; there
+is no full-batch download or second host copy. Every cache-only batch still
+synchronizes before its processed count advances. See [selected logits](forward-pass.md#request-only-the-logits-you-need)
+for the standalone API and measurements.
 
 ## 4. Consume each selected token
 

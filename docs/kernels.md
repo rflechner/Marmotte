@@ -125,6 +125,7 @@ them one row at a time.
 | `ISwiGluKernel.SwiGlu` | Safe `Vector<T>` loop with `Vector.Exp`, scalar tail with `MathF.Exp` | `NotImplementedException` | `NotImplementedException` |
 | `IRmsNormKernel.RmsNorm` | Safe `Vector<T>` loops, sum of squares in double precision | `NotImplementedException` | `NotImplementedException` |
 | `IEmbeddingKernel.EmbeddingLookup` | Decodes selected rows with `RowDecoder` directly into F32 output | `NotImplementedException` | `NotImplementedException` |
+| `IRowCopyKernel.CopyRows` | Validated contiguous row copy over safe spans | `NotImplementedException` | `NotImplementedException` |
 | `IMatVecKernel.MatVec` | Parallel rows, safe intrinsics and double-precision dot products | `NotImplementedException` | `NotImplementedException` |
 | `IMatMulKernel.MatMul` | Each integer or decoded row shared by every token of the batch | `NotImplementedException` | `NotImplementedException` |
 | `IRopeKernel.Rope` | Angles in double precision once per token, shared by every head | `NotImplementedException` | `NotImplementedException` |
@@ -134,7 +135,7 @@ them one row at a time.
 | SDK/driver required today | None | None | None |
 
 `ITensorBackend` inherits `IAddKernel`, `ISwiGluKernel`, `IRmsNormKernel`,
-`IEmbeddingKernel`, `IMatVecKernel`, `IMatMulKernel`, `IRopeKernel`,
+`IEmbeddingKernel`, `IRowCopyKernel`, `IMatVecKernel`, `IMatMulKernel`, `IRopeKernel`,
 `IAttentionTemperatureKernel` and `IKeyValueCacheKernel`, so orchestration can
 call each kernel directly on the backend.
 A consumer needing a single operation can accept its kernel interface directly.
@@ -556,8 +557,8 @@ compiles but still needs execution on an accelerated x64 host.
 The intrinsic operations and feature guards follow the contracts in Microsoft's
 [SIMD and hardware intrinsics documentation](https://learn.microsoft.com/en-us/dotnet/standard/simd).
 The arithmetic and partitioning are original Marmotte code. H.2 adds the
-quantized-input policy below. H.3 (last-token projections and attention fusion)
-remains separate.
+quantized-input policy below. H.3 adds selected-logit execution and online
+attention; their measurements are separate from these matrix-product results.
 
 ## Quantize activations once for K-quant products
 
@@ -1152,9 +1153,10 @@ output[c] = sum(weight[j] × V[j,c])
 ```
 
 The maximum subtraction prevents exponential overflow for large finite scores.
-CPU reductions and output accumulation use F32. This is a reference kernel,
-not flash attention: scratch storage is one prefix-length score buffer plus
-one decoded head, reused across tokens and heads. K and V can independently
+CPU attention defaults to `CpuAttentionMode.Online`: scores use F32 and running
+value sums and the denominator use double precision, with O(head dimension)
+scratch. `Reference` retains the original F32 reduction and prefix-length score
+buffer. Both reuse scratch across tokens and heads. K and V can independently
 use any supported cache encoding. Each head slice contains whole encoding
 blocks, so no full-cache F32 copy is needed. Future rows are not decoded at all,
 including future rows containing NaN. Non-finite visible data or overflowing
@@ -1162,7 +1164,7 @@ scores can produce NaN; finite inputs are not a guarantee against F32 overflow.
 
 The example uses zero queries, hence equal scores and uniform probabilities.
 It prints the causal averages (two identical outputs per KV group), shown
-rounded below; F32 accumulation can print `60.00000381f` instead of `60.0f`:
+rounded below; the reference F32 accumulation can print `60.00000381f` instead of `60.0f`:
 
 ```text
 Position 0: [|2.0f; 4.0f; 2.0f; 4.0f; 20.0f; 40.0f; 20.0f; 40.0f|]
@@ -1177,6 +1179,93 @@ valid at any position from zero through `StoredPositions(layer)`. Validation
 finishes before writing output. A replaced/truncated cache immediately limits
 which positions can be attended to. CUDA and Metal expose the contract but
 still throw `NotImplementedException`.
+
+### Online attention and H.3 measurements
+
+To compare attention algorithms while keeping matrix arithmetic fixed:
+
+```fsharp
+use online = new CpuBackend(CpuMatrixProductMode.QuantizedK, CpuAttentionMode.Online)
+use reference = new CpuBackend(CpuMatrixProductMode.QuantizedK, CpuAttentionMode.Reference)
+```
+
+The parameterless and one-policy constructors both select online attention.
+`examples/InferencePerformance.fsx` runs both algorithms against identical F32
+and Q8_0 caches, without a local model:
+
+```sh
+dotnet build Marmotte.slnx -c Release
+DOTNET_TieredCompilation=0 dotnet fsi --optimize+ examples/InferencePerformance.fsx
+```
+
+For each query head, online attention scans visible positions once. It maintains
+a maximum `m`, a denominator `l` and a vector of weighted values `a`. For the next
+finite score `s`, update:
+
+```text
+mNext = max(m, s)
+r = exp(m - mNext)
+w = exp(s - mNext)
+lNext = r * l + w
+aNext = r * a + w * value
+output = a / l after the final visible position
+```
+
+Initially `m = -infinity`, `l = 0`, and `a = 0`. An initial negative-infinity
+score has zero mass; a later finite score can still produce valid output. An
+all-negative-infinity sequence normalizes to NaN, as does the reference.
+Positive-infinity/NaN scores propagate NaN. Masked positions are never decoded.
+
+This fuses score normalization and value accumulation without a prefix-sized
+score array. Every K/V head is still decoded once per visible position **per
+query head**; this implementation does not yet tile multiple queries or share
+those decodes across a query group. It is a CPU online fused attention kernel,
+not a GPU-tiled FlashAttention implementation. It does not alter the attention
+formula or introduce quantization. The online normalization principle is
+explained by [Milakov and Gimelshein (2018)](https://arxiv.org/abs/1805.02867);
+[FlashAttention (Dao et al., 2022)](https://arxiv.org/abs/2205.14135) applies
+memory-aware fusion and tiling to exact attention on GPUs. Marmotte's loops are
+original code, and those papers' GPU speedups are not predictions for this CPU.
+
+Scores and exponentials use F32. Running weighted values and the denominator
+use double precision because their unnormalized sums can overflow F32 even
+when the final weighted average is finite. Safe `Vector<T>` operations widen
+values and accumulate the sums, followed by one final F32 rounding per channel.
+The scalar fallback uses the same precision. The order of arithmetic differs
+from `Reference`, so compare with tolerances rather than bit equality.
+
+Recorded on 2026-11-08, ARM64, .NET 10.0.12, 14 logical processors; head width
+128, eight query heads, two KV heads. Three warmup calls precede seven groups
+of three timed calls; fixture/cache setup and transfers are excluded.
+
+| K/V encoding | Prefix | Query tokens | Reference | Online |
+| --- | ---: | ---: | ---: | ---: |
+| F32 | 128 | 8 | 2.180 ms | 1.826 ms |
+| F32 | 2,048 | 1 | 4.504 ms | 3.799 ms |
+| F32 | 2,048 | 8 | 35.906 ms | 30.734 ms |
+| Q8_0 | 128 | 8 | 1.796 ms | 1.482 ms |
+| Q8_0 | 2,048 | 1 | 3.742 ms | 3.114 ms |
+| Q8_0 | 2,048 | 8 | 30.102 ms | 24.780 ms |
+
+Maximum absolute differences in these cases are below 4.6e-6. Managed allocations
+per call are 1,584 bytes online, independent of prefix length, versus 1,072 bytes
+for the 128-position reference and 8,752 bytes for 2,048 positions. Online scratch
+can therefore be larger for short prefixes because it stores a double value
+vector. Neither algorithm reduces the allocated KV cache. These are attention
+kernel measurements, not full-generation throughput; see [selected-logit
+measurements](forward-pass.md#request-only-the-logits-you-need) for the other
+part of H.3.
+
+An optional real-model check on Ministral-3-3B-Instruct-2512-Q4_K_M used
+`La capitale de la France est`. The selected/full final logit rows were exactly
+equal within each attention mode. Comparing attention modes with `DecodedFloat`
+matrix products gave a maximum final-logit difference of 1.91e-6. With H.2's
+`QuantizedK` policy, that difference reached 0.361 and the top token changed:
+intermediate rounding can cross later activation-quantization thresholds.
+The default CLI still completed its eight-token budget, producing
+` Paris. C'est une ville très connue`. This single prompt is not a model-quality
+evaluation. To retain the previous H.2 arithmetic, construct
+`CpuBackend(CpuMatrixProductMode.QuantizedK, CpuAttentionMode.Reference)`.
 
 ### Validation and references
 

@@ -207,9 +207,13 @@ soft-capping.
   share it across row workers and accumulate integer products with block scales.
   All five K encodings are supported; `DecodedFloat` preserves the H.1 reference
   policy. See [error bounds, fallback rules and measurements](docs/kernels.md#quantize-activations-once-for-k-quant-products).
-- [ ] **H.3** Compute the last block's feed-forward layer and the LM head only for the
-  tokens whose logits are needed, and fuse attention into a single pass (flash
-  attention).
+- [x] **H.3** `LogitSelection` limits the final feed-forward and LM head to needed
+  positions; generation skips intermediate batch logits and downloads only the
+  last row. CPU online fused attention replaces the score buffer with running
+  softmax/value sums. Full-output and reference-attention paths remain available;
+  see [selected logits](docs/forward-pass.md#request-only-the-logits-you-need) and
+  [attention measurements](docs/kernels.md#online-attention-and-h3-measurements).
+  GPU tiling and sharing decoded K/V between query heads remain future work.
 
 ### I. Inference and generation
 

@@ -162,3 +162,58 @@ let ``GPU attention placeholders fail explicitly without drivers`` () =
         Assert.Throws<NotImplementedException>(Action attention) |> ignore
         backend.Dispose()
         Assert.Throws<ObjectDisposedException>(Action attention) |> ignore
+
+[<Theory>]
+[<InlineData(1)>]
+[<InlineData(7)>]
+[<InlineData(32)>]
+[<InlineData(128)>]
+let ``online attention matches score buffer reference for long changing maxima`` dimension =
+    let tokens = 257
+    let keys = Array.init (tokens * dimension) (fun i -> single (i / dimension % 23 - 11) / single dimension)
+    let values = Array.init (tokens * dimension) (fun i -> single (sin (float i * 0.13)))
+    let queries = Array.create (3 * 4 * dimension) 7.0f
+    let execute mode =
+        use backend = new CpuBackend(CpuMatrixProductMode.DecodedFloat, mode) :> ITensorBackend
+        use state = backend.AllocateKeyValueCache(KeyValueCacheLayout.Create(1, tokens, 1, dimension, TensorEncoding.F32, TensorEncoding.F32))
+        use k = upload backend [| tokens; dimension |] keys
+        use v = upload backend [| tokens; dimension |] values
+        backend.StoreKeyValues(state, 0, 0, k, v)
+        use q = upload backend [| 3; 4 * dimension |] queries
+        use output = backend.Allocate(q.Shape)
+        backend.Attention(state, 0, tokens - 3, q, output)
+        download backend output
+    close (execute CpuAttentionMode.Reference) (execute CpuAttentionMode.Online)
+
+[<Fact>]
+let ``online attention preserves nonfinite score behavior including initial negative infinity`` () =
+    for scores in [ [| Single.NegativeInfinity; 1.0f |]
+                    [| Single.NegativeInfinity; Single.NegativeInfinity |]
+                    [| Single.PositiveInfinity; 1.0f |]
+                    [| 1.0f; Single.NaN |] ] do
+        let execute mode =
+            use backend = new CpuBackend(CpuMatrixProductMode.DecodedFloat, mode) :> ITensorBackend
+            use state = backend.AllocateKeyValueCache(KeyValueCacheLayout.Create(1, 2, 1, 1, TensorEncoding.F32, TensorEncoding.F32))
+            use k = upload backend [| 2; 1 |] scores
+            use v = upload backend [| 2; 1 |] [| 2.0f; 3.0f |]
+            backend.StoreKeyValues(state, 0, 0, k, v)
+            use q = upload backend [| 1; 1 |] [| 1.0f |]
+            use output = backend.Allocate(q.Shape)
+            backend.Attention(state, 0, 1, q, output)
+            (download backend output)[0]
+        let expected = execute CpuAttentionMode.Reference
+        let actual = execute CpuAttentionMode.Online
+        if Single.IsNaN expected then Assert.True(Single.IsNaN actual)
+        else Assert.Equal(expected, actual)
+
+[<Fact>]
+let ``online numerator does not overflow for a finite large weighted average`` () =
+    use backend = new CpuBackend() :> ITensorBackend
+    use state = backend.AllocateKeyValueCache(KeyValueCacheLayout.Create(1, 64, 1, 4, TensorEncoding.F32, TensorEncoding.F32))
+    use keys = upload backend [| 64; 4 |] (Array.zeroCreate 256)
+    use values = upload backend [| 64; 4 |] (Array.create 256 1e38f)
+    backend.StoreKeyValues(state, 0, 0, keys, values)
+    use queries = upload backend [| 1; 4 |] (Array.create 4 1.0f)
+    use result = backend.Allocate(queries.Shape)
+    backend.Attention(state, 0, 63, queries, result)
+    Assert.Equal<single>(Array.create 4 1e38f, download backend result)

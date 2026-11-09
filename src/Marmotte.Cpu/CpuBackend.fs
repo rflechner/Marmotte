@@ -13,9 +13,10 @@ open Marmotte.Core
 /// satisfies the ordering contract; Synchronize has nothing to wait for.
 /// The parameterless constructor uses QuantizedK: K-quant products quantize each
 /// activation token once to transient Q8_K. Select DecodedFloat for the unquantized
-/// input reference. Other encodings are unchanged; see docs/kernels.md for error bounds.
+/// input reference. Attention defaults to Online, with Reference available through the
+/// two-policy constructor. Other encodings are unchanged; see docs/kernels.md for error bounds.
 [<Sealed>]
-type CpuBackend(matrixProductMode: CpuMatrixProductMode) =
+type CpuBackend(matrixProductMode: CpuMatrixProductMode, attentionMode: CpuAttentionMode) =
     let owner = obj()
     let liveStorage = HashSet<ICpuStorage>(HashIdentity.Reference)
     let mutable disposed = false
@@ -83,7 +84,10 @@ type CpuBackend(matrixProductMode: CpuMatrixProductMode) =
         tensor :> ITensor
 
     /// Use quantized activations for K-quant products, with decoded-F32 fallback.
-    new() = new CpuBackend(CpuMatrixProductMode.QuantizedK)
+    new() = new CpuBackend(CpuMatrixProductMode.QuantizedK, CpuAttentionMode.Online)
+
+    /// Choose matrix arithmetic while retaining online attention.
+    new(matrixProductMode: CpuMatrixProductMode) = new CpuBackend(matrixProductMode, CpuAttentionMode.Online)
 
     interface ITensorBackend with
         member _.Backend = BackendKind.Cpu
@@ -186,6 +190,19 @@ type CpuBackend(matrixProductMode: CpuMatrixProductMode) =
             for index = 0 to ids.Length - 1 do
                 let output = destinationValues.AsSpan(index * matrix.Columns, matrix.Columns)
                 matrix.DecodeRow(ids[index], output)
+
+    interface IRowCopyKernel with
+        member this.CopyRows(source, firstRow, destination) =
+            ObjectDisposedException.ThrowIf(disposed, this)
+            let sourceValues = valuesOf (nameof source) source
+            let destinationValues = valuesOf (nameof destination) destination
+            let sourceShape = source.Shape.Dimensions
+            let destinationShape = destination.Shape.Dimensions
+            if sourceShape.Count <> 2 || destinationShape.Count <> 2 || sourceShape[1] <> destinationShape[1] then
+                invalidArg (nameof destination) "Row copies require rank-2 tensors with equal column counts."
+            if firstRow < 0 || firstRow > sourceShape[0] || destinationShape[0] > sourceShape[0] - firstRow then
+                raise (ArgumentOutOfRangeException(nameof firstRow, "The copied rows must fit the source."))
+            sourceValues.AsSpan(firstRow * sourceShape[1], destinationValues.Length).CopyTo(destinationValues.AsSpan())
 
     interface IMatVecKernel with
         member this.MatVec(weights, input, destination) =
@@ -332,10 +349,17 @@ type CpuBackend(matrixProductMode: CpuMatrixProductMode) =
                 raise (ArgumentOutOfRangeException(nameof position, box position, "Every query position must already be stored in the layer."))
 
             if tokens > 0 then
-                CpuKernels.attention (
-                    layout, queryHeads, position, ReadOnlySpan<byte>(storage.KeyRows(layer)),
-                    ReadOnlySpan<byte>(storage.ValueRows(layer)), ReadOnlySpan<single>(queryValues),
-                    Span<single>(destinationValues))
+                match attentionMode with
+                | CpuAttentionMode.Reference ->
+                    CpuKernels.attention (
+                        layout, queryHeads, position, ReadOnlySpan<byte>(storage.KeyRows(layer)),
+                        ReadOnlySpan<byte>(storage.ValueRows(layer)), ReadOnlySpan<single>(queryValues),
+                        Span<single>(destinationValues))
+                | CpuAttentionMode.Online ->
+                    CpuKernels.attentionOnline (
+                        layout, queryHeads, position, ReadOnlySpan<byte>(storage.KeyRows(layer)),
+                        ReadOnlySpan<byte>(storage.ValueRows(layer)), ReadOnlySpan<single>(queryValues),
+                        Span<single>(destinationValues))
 
     interface IDisposable with
         member _.Dispose() =

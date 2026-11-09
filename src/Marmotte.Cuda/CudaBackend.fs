@@ -37,6 +37,9 @@ type CudaBackend() =
     interface IEmbeddingKernel with
         member _.EmbeddingLookup(_, _, _) = notImplemented "embedding lookup kernel"
 
+    interface IRowCopyKernel with
+        member _.CopyRows(_, _, _) = notImplemented "row copy"
+
     interface IMatVecKernel with
         member _.MatVec(_, _, _) = notImplemented "matrix-vector product"
 

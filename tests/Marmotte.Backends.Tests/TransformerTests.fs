@@ -294,11 +294,15 @@ type private TrackingBackend() =
     let caches = ResizeArray<IKeyValueCache>()
     let batches = ResizeArray<int>()
     let mutable onSynchronize = ignore
+    let productCalls = ResizeArray<string * int>()
+    let downloads = ResizeArray<int>()
     let mutable products = 0
     let mutable failProduct = -1
     let track tensor =
         tensors.Add tensor
         tensor
+    member _.ProductCalls = productCalls.ToArray()
+    member _.Downloads = downloads.ToArray()
     member _.Tensors = tensors.ToArray()
     member _.Weights = weights.ToArray()
     member _.FailProduct with set value = failProduct <- value
@@ -317,7 +321,9 @@ type private TrackingBackend() =
             let cache = inner.AllocateKeyValueCache layout
             caches.Add cache
             cache
-        member _.Download(tensor, data) = inner.Download(tensor, data)
+        member _.Download(tensor, data) =
+            downloads.Add data.Length
+            inner.Download(tensor, data)
         member _.Synchronize() =
             inner.Synchronize()
             onSynchronize ()
@@ -331,10 +337,13 @@ type private TrackingBackend() =
         member _.EmbeddingLookup(weight, ids, output) =
             batches.Add ids.Length
             inner.EmbeddingLookup(weight, ids, output)
+    interface IRowCopyKernel with
+        member _.CopyRows(source, firstRow, destination) = inner.CopyRows(source, firstRow, destination)
     interface IMatVecKernel with
         member _.MatVec(weight, input, output) = inner.MatVec(weight, input, output)
     interface IMatMulKernel with
         member _.MatMul(weight, input, output) =
+            productCalls.Add(weight.Name, input.Shape.Dimensions[0])
             products <- products + 1
             if products = failProduct then raise (InvalidOperationException("Injected matrix product failure."))
             inner.MatMul(weight, input, output)
@@ -672,3 +681,61 @@ let ``generation cancellation and callback exceptions do not trigger an extra fo
     Assert.Throws<ApplicationException>(fun () -> generator.Generate(ReadOnlyMemory<int>([| 1 |]), onToken = (fun _ -> raise (ApplicationException("Injected callback failure.")))) |> ignore) |> ignore
     Assert.Equal(1, sequence.ProcessedTokenCount)
     Assert.False(sequence.IsFaulted)
+
+[<Theory>]
+[<InlineData(false, false)>]
+[<InlineData(true, false)>]
+[<InlineData(false, true)>]
+let ``selected logits preserve full logits caches and subsequent decoding`` tied halfPrecision =
+    use fixture = new ModelFixture(tied, halfPrecision)
+    use backend = new CpuBackend() :> ITensorBackend
+    use model = TransformerModel.Load(backend, fixture, fixture.Layout)
+    let prompt = ReadOnlyMemory<int>([| 1; 3; 2 |])
+    use allCache = cache backend TensorEncoding.F16
+    use all = model.Forward(allCache, 0, prompt)
+    let allValues = download backend all
+    use nextAll = model.Forward(allCache, 3, ReadOnlyMemory<int>([| 4 |]))
+    let nextValues = download backend nextAll
+    for selection in [ LogitSelection.LastToken; LogitSelection.NoTokens ] do
+        use selectedCache = cache backend TensorEncoding.F16
+        use selected = model.Forward(selectedCache, 0, prompt, selection)
+        if selection = LogitSelection.LastToken then
+            Assert.Equal<single>(allValues[10..], download backend selected)
+        else Assert.Empty(download backend selected)
+        for layer = 0 to 1 do
+            Assert.Equal(3, selectedCache.StoredPositions layer)
+            let shape = TensorShape.Create [| 3; 4 |]
+            use expectedKeys = backend.Allocate shape
+            use expectedValues = backend.Allocate shape
+            use actualKeys = backend.Allocate shape
+            use actualValues = backend.Allocate shape
+            backend.ReadKeyValues(allCache, layer, 0, expectedKeys, expectedValues)
+            backend.ReadKeyValues(selectedCache, layer, 0, actualKeys, actualValues)
+            Assert.Equal<single>(download backend expectedKeys, download backend actualKeys)
+            Assert.Equal<single>(download backend expectedValues, download backend actualValues)
+        use next = model.Forward(selectedCache, 3, ReadOnlyMemory<int>([| 4 |]), LogitSelection.LastToken)
+        Assert.Equal<single>(nextValues, download backend next)
+        // Overwrite the suffix: no-output prefill must also truncate every layer.
+        use overwritten = model.Forward(selectedCache, 1, ReadOnlyMemory<int>([| 0 |]), selection)
+        for layer = 0 to 1 do Assert.Equal(2, selectedCache.StoredPositions layer)
+        use empty = model.Forward(selectedCache, 2, ReadOnlyMemory<int>.Empty, selection)
+        Assert.Empty(download backend empty)
+        for layer = 0 to 1 do Assert.Equal(2, selectedCache.StoredPositions layer)
+
+[<Fact>]
+let ``prefill only projects final logits and skips unused final feed forward rows`` () =
+    use fixture = new ModelFixture(false, false)
+    use tracking = new TrackingBackend()
+    use model = TransformerModel.Load(tracking, fixture, fixture.Layout)
+    use sequence = session model 8 2
+    sequence.Prefill(ReadOnlyMemory<int>([| 1; 2; 3; 4; 0 |])) |> ignore
+    let sizes name = tracking.ProductCalls |> Array.choose (fun (role, tokens) -> if role = name then Some tokens else None)
+    Assert.Equal<int>([| 2; 2; 1 |], sizes "layer0.gate")
+    Assert.Equal<int>([| 2; 2; 1 |], sizes "layer1.key")
+    Assert.Equal<int>([| 2; 2; 1 |], sizes "layer1.value")
+    for role in [ "layer1.gate"; "layer1.up"; "layer1.down"; "output" ] do
+        Assert.Equal<int>([| 1 |], sizes role)
+    Assert.Equal<int>([| model.VocabularySize |], tracking.Downloads)
+    Assert.DoesNotContain(tracking.Tensors, fun tensor ->
+        tensor.Shape.Dimensions.Count = 2 && tensor.Shape.Dimensions[1] = model.VocabularySize
+        && tensor.Shape.Dimensions[0] > 1)

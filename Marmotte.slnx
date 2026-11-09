@@ -47,6 +47,7 @@
     <File Path="examples/Yarn.fsx" />
     <File Path="examples\KeyValueCache.fsx" />
     <File Path="examples\MatrixProducts.fsx" />
+    <File Path="examples\InferencePerformance.fsx" />
     <File Path="examples\ParserCombinatorSample.fsx" />
     <File Path="examples\Tokenizer.fsx" />
   </Folder>

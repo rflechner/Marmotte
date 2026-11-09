@@ -162,6 +162,15 @@ type IEmbeddingKernel =
     /// keep the weights' tensor source alive while they are in use.
     abstract EmbeddingLookup: weights: IWeightTensor * tokenIds: ReadOnlyMemory<int> * destination: ITensor -> unit
 
+/// Copy consecutive rows without transferring tensor contents to the host.
+type IRowCopyKernel =
+    /// Source and destination are rank-2 F32 tensors with the same column count.
+    /// Copies destination.Rows rows starting at firstRow, validating the full range
+    /// before writing. Empty copies allow firstRow = source.Rows. Identity copies
+    /// are valid. Ownership, disposal and submission ordering follow IAddKernel.Add.
+    /// Invalid shapes raise ArgumentException; invalid ranges raise ArgumentOutOfRangeException.
+    abstract CopyRows: source: ITensor * firstRow: int * destination: ITensor -> unit
+
 /// Matrix-vector product with weights kept in their stored encoding:
 /// destination[r] = Σ weights[r, c] × input[c] over the Columns values c of row r.
 type IMatVecKernel =
@@ -252,8 +261,10 @@ type IAttentionKernel =
     /// must already be stored in the chosen layer. position is in [0, StoredPositions(layer)];
     /// an empty batch is a no-op. Neither queries nor cache is modified; destination must differ
     /// from queries. Scores are dot(Q, K) / sqrt(HeadDimension), normalized by softmax after
-    /// subtracting their maximum, then used to sum V. CPU uses F32 reductions and decodes one
-    /// cached head at a time. Compare backends with numerical tolerances. Non-finite inputs or
+    /// subtracting their maximum, then used to sum V. CPU scores use F32; its online
+    /// mode uses double-precision running value sums and denominator, while the reference
+    /// mode uses F32 reductions. Both decode one cached head at a time. Compare backends
+    /// with numerical tolerances. Non-finite inputs or
     /// overflowing scores may produce NaN; masking excludes future positions entirely.
     /// Ownership, validation and ordering follow IKeyValueCacheKernel; invalid head dimensions
     /// or aliasing raise ArgumentException. Validation completes before any destination write.
@@ -282,6 +293,7 @@ type ITensorBackend =
     inherit ISwiGluKernel
     inherit IRmsNormKernel
     inherit IEmbeddingKernel
+    inherit IRowCopyKernel
     inherit IMatVecKernel
     inherit IMatMulKernel
     inherit IRopeKernel

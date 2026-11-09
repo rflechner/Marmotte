@@ -24,7 +24,9 @@ weight shapes, including tied output embeddings. It does not load weights;
 forward pass. `Forward(cache, position, tokenIds)` returns logits for every token
 through the existing backend contracts. See the [walkthrough](docs/forward-pass.md)
 and `examples/Forward.fsx`. `GenerationSession` adds batched prompt prefill and
-single-token decoding with an owned cache; see the [session walkthrough](docs/generation-session.md)
+single-token decoding with an owned cache. Prefill now skips intermediate vocabulary
+projections and computes the final feed-forward/output only for the last token;
+see [selected logits](docs/forward-pass.md#request-only-the-logits-you-need) and the [session walkthrough](docs/generation-session.md)
 and `examples/Generation.fsx`. `TokenSampling.greedy` selects the largest finite logit with deterministic ties
 and explicit errors. `TokenSampler` adds temperature, top-k, top-p and seeded
 random selection; see [sampling](docs/sampling.md). `TokenGenerator` adds EOS and
@@ -255,7 +257,7 @@ yet.
 
 `Marmotte.Core` defines `TensorShape`, `ITensor`, `IWeightTensor`,
 `IKeyValueCache`, `IAddKernel`, `ISwiGluKernel`, `IRmsNormKernel`,
-`IEmbeddingKernel`, `IMatVecKernel`, `IMatMulKernel`, `IRopeKernel`,
+`IEmbeddingKernel`, `IRowCopyKernel`, `IMatVecKernel`, `IMatMulKernel`, `IRopeKernel`,
 `IAttentionTemperatureKernel`, `IKeyValueCacheKernel`, `IAttentionKernel` and `ITensorBackend`, plus
 `RotaryEmbedding`, `YarnParameters`, `AttentionTemperature` and
 `KeyValueCacheLayout`. `RowEncoder` writes rows of every encoding except the
@@ -270,7 +272,9 @@ The three backend projects share these contracts:
   products use Q8_K activations and integer arithmetic by default; other products
   use Core's `RowDecoder`. `CpuBackend(CpuMatrixProductMode.DecodedFloat)` retains
   the reference path. Also includes rotary position embedding, attention temperature and a
-  key-value cache and causal grouped-query attention.
+  key-value cache and causal grouped-query attention. Online fused attention is
+  the default; `CpuAttentionMode.Reference` preserves the score-buffer algorithm.
+  See [H.3 measurements](docs/kernels.md#online-attention-and-h3-measurements).
 - `Marmotte.Cuda` and `Marmotte.Metal`: buildable placeholders whose allocation,
   transfers and kernels raise `NotImplementedException`, without requiring a GPU SDK.
 

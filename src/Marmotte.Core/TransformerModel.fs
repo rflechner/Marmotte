@@ -3,6 +3,24 @@ namespace Marmotte.Core
 open System
 open System.IO
 
+/// Positions for which a forward pass produces vocabulary logits. Every mode
+/// still populates every layer's key/value cache for all supplied tokens.
+[<RequireQualifiedAccess>]
+type LogitSelection =
+    /// Return one vocabulary row for every input token.
+    | AllTokens
+    /// Return only the last input token's vocabulary row, or zero rows for empty input.
+    | LastToken
+    /// Populate the cache without computing vocabulary logits.
+    | NoTokens
+
+/// Borrowed buffers for one feed-forward execution, all with the same token count.
+type private FeedForwardScratch =
+    { Normalized: ITensor
+      Gate: ITensor
+      Up: ITensor
+      Residual: ITensor }
+
 /// Loaded dense transformer weights, executed through ITensorBackend. Currently supports the
 /// bias-free mistral3 layout with full-head adjacent-pair RoPE, optional YaRN and temperature.
 /// Owns uploaded weights and normalization tensors, but borrows the backend and tensor source.
@@ -16,6 +34,14 @@ type TransformerModel private (backend: ITensorBackend, configuration: ModelConf
                                layers: LoadedTransformerLayer array, storage: IDisposable array) =
     let mutable disposed = false
 
+    let feedForward (layer: LoadedTransformerLayer) hidden (scratch: FeedForwardScratch) =
+        backend.RmsNorm(hidden, layer.FeedForwardNormalization, configuration.RmsNormalizationEpsilon, scratch.Normalized)
+        backend.MatMul(layer.FeedForwardGate, scratch.Normalized, scratch.Gate)
+        backend.MatMul(layer.FeedForwardUp, scratch.Normalized, scratch.Up)
+        backend.SwiGlu(scratch.Gate, scratch.Up, scratch.Gate)
+        backend.MatMul(layer.FeedForwardDown, scratch.Gate, scratch.Residual)
+        backend.Add(hidden, scratch.Residual, hidden)
+
     member _.Configuration = configuration
     member _.VocabularySize = vocabularySize
 
@@ -24,8 +50,11 @@ type TransformerModel private (backend: ITensorBackend, configuration: ModelConf
     member internal this.EnsureAlive() = ObjectDisposedException.ThrowIf(disposed, this)
 
     /// Runs consecutive token IDs starting at absolute position, returning caller-owned F32
-    /// logits [tokens; VocabularySize] on the backend, without softmax or sampling. Empty batches
-    /// return an empty tensor and do not truncate the cache. All tokens receive logits.
+    /// logits [selected tokens; VocabularySize] on the backend, without softmax or sampling.
+    /// AllTokens returns every row; LastToken returns one row for a non-empty batch;
+    /// NoTokens only populates the cache. Empty batches return no rows in every mode
+    /// and do not truncate the cache. Omitted final feed-forward/output computations
+    /// cannot affect cached keys/values. Selection never changes cache positions.
     /// The caller supplies a cache from this backend with matching layers, KV heads and head
     /// dimension, capacity at most ContextLength, and equal stored counts in every layer.
     /// Use a separate cache for each sequence/model. position may replace an existing suffix,
@@ -37,7 +66,7 @@ type TransformerModel private (backend: ITensorBackend, configuration: ModelConf
     /// Allocation/backend failures propagate and can leave a partially updated cache: discard it
     /// after an execution failure. No rollback is promised. Results follow backend submission
     /// ordering; Download/Synchronize waits for completion. Input IDs are consumed before return.
-    member this.Forward(cache: IKeyValueCache, position: int, tokenIds: ReadOnlyMemory<int>) : ITensor =
+    member this.Forward(cache: IKeyValueCache, position: int, tokenIds: ReadOnlyMemory<int>, selection: LogitSelection) : ITensor =
         ObjectDisposedException.ThrowIf(disposed, this)
         ArgumentNullException.ThrowIfNull(cache)
         let cacheLayout = cache.Layout
@@ -51,6 +80,11 @@ type TransformerModel private (backend: ITensorBackend, configuration: ModelConf
             if cache.StoredPositions(layer) <> stored then
                 invalidArg (nameof cache) "Every layer must have the same stored position count."
         let tokens = tokenIds.Length
+        let outputTokens =
+            match selection with
+            | LogitSelection.AllTokens -> tokens
+            | LogitSelection.LastToken -> min 1 tokens
+            | LogitSelection.NoTokens -> 0
         if position < 0 || position > stored || tokens > cacheLayout.Capacity - position then
             raise (ArgumentOutOfRangeException(nameof position, "The batch must fit the cache without leaving a gap."))
         for token in tokenIds.Span do
@@ -61,7 +95,7 @@ type TransformerModel private (backend: ITensorBackend, configuration: ModelConf
         use emptyKeys = backend.Allocate(TensorShape.Create [| 0; keyValueWidth |])
         use emptyValues = backend.Allocate(emptyKeys.Shape)
         backend.ReadKeyValues(cache, 0, 0, emptyKeys, emptyValues)
-        let logits = backend.Allocate(TensorShape.Create [| tokens; vocabularySize |])
+        let logits = backend.Allocate(TensorShape.Create [| outputTokens; vocabularySize |])
         try
             if tokens > 0 then
                 // Scratch is reused across layers; weights remain in their stored encoding.
@@ -75,35 +109,57 @@ type TransformerModel private (backend: ITensorBackend, configuration: ModelConf
                 use attended = allocate queryWidth
                 use gate = allocate configuration.FeedForwardLength
                 use up = allocate configuration.FeedForwardLength
+                let scratch = { Normalized = normalized; Gate = gate; Up = up; Residual = residual }
+                let finish hidden normalized =
+                    backend.RmsNorm(hidden, outputNormalization, configuration.RmsNormalizationEpsilon, normalized)
+                    backend.MatMul(output, normalized, logits)
                 let positions = ReadOnlyMemory<int>(Array.init tokens (fun token -> position + token))
                 backend.EmbeddingLookup(embedding, tokenIds, hidden)
                 for index = 0 to layers.Length - 1 do
                     let layer = layers[index]
                     backend.RmsNorm(hidden, layer.AttentionNormalization, configuration.RmsNormalizationEpsilon, normalized)
-                    backend.MatMul(layer.Query, normalized, queries)
+                    let lastLayer = index = layers.Length - 1
+                    let needsOutput = not lastLayer || outputTokens > 0
+                    if needsOutput then
+                        backend.MatMul(layer.Query, normalized, queries)
+                        backend.Rope(queries, positions, rope, queries)
+                        match configuration.AttentionTemperature with
+                        | Some temperature -> backend.ApplyAttentionTemperature(queries, positions, temperature, queries)
+                        | None -> ()
                     backend.MatMul(layer.Key, normalized, keys)
                     backend.MatMul(layer.Value, normalized, values)
-                    backend.Rope(queries, positions, rope, queries)
                     backend.Rope(keys, positions, rope, keys)
-                    match configuration.AttentionTemperature with
-                    | Some temperature -> backend.ApplyAttentionTemperature(queries, positions, temperature, queries)
-                    | None -> ()
                     backend.StoreKeyValues(cache, index, position, keys, values)
-                    backend.Attention(cache, index, position, queries, attended)
-                    backend.MatMul(layer.AttentionOutput, attended, residual)
-                    backend.Add(hidden, residual, hidden)
-                    backend.RmsNorm(hidden, layer.FeedForwardNormalization, configuration.RmsNormalizationEpsilon, normalized)
-                    backend.MatMul(layer.FeedForwardGate, normalized, gate)
-                    backend.MatMul(layer.FeedForwardUp, normalized, up)
-                    backend.SwiGlu(gate, up, gate)
-                    backend.MatMul(layer.FeedForwardDown, gate, residual)
-                    backend.Add(hidden, residual, hidden)
-                backend.RmsNorm(hidden, outputNormalization, configuration.RmsNormalizationEpsilon, normalized)
-                backend.MatMul(output, normalized, logits)
+                    if needsOutput then
+                        backend.Attention(cache, index, position, queries, attended)
+                        backend.MatMul(layer.AttentionOutput, attended, residual)
+                        backend.Add(hidden, residual, hidden)
+                        if lastLayer && outputTokens < tokens then
+                            let allocateSelected width = backend.Allocate(TensorShape.Create [| outputTokens; width |])
+                            use selectedHidden = allocateSelected configuration.EmbeddingLength
+                            use selectedNormalized = allocateSelected configuration.EmbeddingLength
+                            use selectedResidual = allocateSelected configuration.EmbeddingLength
+                            use selectedGate = allocateSelected configuration.FeedForwardLength
+                            use selectedUp = allocateSelected configuration.FeedForwardLength
+                            backend.CopyRows(hidden, tokens - 1, selectedHidden)
+                            let selectedScratch =
+                                { Normalized = selectedNormalized; Gate = selectedGate
+                                  Up = selectedUp; Residual = selectedResidual }
+                            feedForward layer selectedHidden selectedScratch
+                            finish selectedHidden selectedNormalized
+                        else
+                            feedForward layer hidden scratch
+                            if lastLayer then finish hidden normalized
+
             logits
         with _ ->
             logits.Dispose()
             reraise ()
+
+    /// Forward pass returning logits for all tokens; equivalent to AllTokens selection.
+    /// Preserves the full-output contract for scoring and reference comparisons.
+    member this.Forward(cache: IKeyValueCache, position: int, tokenIds: ReadOnlyMemory<int>) : ITensor =
+        this.Forward(cache, position, tokenIds, LogitSelection.AllTokens)
 
     /// Validates configuration, role shapes, encodings and matching source descriptors, then loads
     /// weights once. Matrices retain stored encodings; only the small normalization vectors are

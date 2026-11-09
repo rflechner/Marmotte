@@ -3,7 +3,7 @@
 This walkthrough turns token IDs into logits using Marmotte's CPU backend.
 You need .NET 10 and the repository; no downloaded model is required for the
 first example. A logit is an unnormalized score for a vocabulary token. This
-step computes scores; choosing a token and generating text remain later work.
+step computes scores; [generation](generation-session.md) adds token selection and text continuation.
 
 ## 1. Run a model small enough to understand
 
@@ -93,8 +93,9 @@ backend.Download(logits, scores.AsMemory())
 ```
 
 The output is row-major `[tokenIds.Length; VocabularySize]`: row `t` predicts
-the token after input token `t`. All rows are returned, including during prompt
-processing. No softmax, token selection, stopping policy or text decoding is
+the token after input token `t`. This three-argument overload returns all rows.
+The selected-output overload below can skip unused rows. No softmax, token
+selection, stopping policy or text decoding is
 performed by `Forward`.
 
 ![Token IDs become embeddings, pass through repeated attention and feed-forward residual blocks, then final normalization and the output matrix produce logits.](images/forward-pass.svg)
@@ -116,6 +117,81 @@ The graph order was checked against the dense branch of
 on 2026-11-08. Marmotte's orchestration is original F# using its own contracts.
 Biases, mixture of experts, additional normalization, sliding windows, adapters
 and multimodal inputs are outside this supported layout.
+
+### Request only the logits you need
+
+For a prompt whose next token is all you need to predict, use:
+
+```fsharp
+use logits = model.Forward(cache, 0, ReadOnlyMemory<int>(tokenIds), LogitSelection.LastToken)
+let scores = Array.zeroCreate<single> logits.Shape.ElementCount
+backend.Download(logits, scores.AsMemory())
+```
+
+For a non-empty input, this returns `[1; VocabularySize]`. The original overload
+is equivalent to `AllTokens`. `NoTokens` returns `[0; VocabularySize]` while
+populating the cache; use it for prompt batches before the final one. Every mode
+returns zero rows for empty input. Returned tensors are caller-owned in all cases.
+All modes share the same validation, suffix replacement, cache ownership,
+submission ordering and partial-cache-on-failure contracts.
+
+```mermaid
+flowchart LR
+    P["Every prompt token"] --> E["Earlier blocks: full execution"]
+    E --> KV["Final block: store every K/V row"]
+    KV --> N["NoTokens: cache ready, no logits"]
+    KV --> A["AllTokens or LastToken: attention"]
+    A --> L["LastToken: copy last hidden row"]
+    A --> F["AllTokens: retain all hidden rows"]
+    L --> FF["Feed-forward + final norm + vocabulary projection"]
+    F --> FF
+```
+
+The last block's feed-forward output is not used to construct any later cache
+layer: all its keys and values have already been stored. Consequently discarded
+positions do not need that feed-forward computation or the LM head. Earlier
+blocks must still process every token. `LastToken` currently computes the final
+attention for all query positions and then selects its last hidden row;
+`NoTokens` skips the final query/attention path entirely after preparing K/V.
+
+`IRowCopyKernel.CopyRows(source, firstRow, destination)` performs that selection
+on the backend, without a host round trip. It copies consecutive rank-2 rows
+with identical column counts, validating shape/range/ownership before writing.
+An empty copy at the source end and an identity copy are valid. CPU implements
+it with safe spans; GPU backends retain explicit placeholders. No tensor views
+or aliased buffer lifetimes are introduced.
+
+Run the reproducible H.3 benchmark after a Release build:
+
+```sh
+dotnet build Marmotte.slnx -c Release
+DOTNET_TieredCompilation=0 dotnet fsi --optimize+ examples/InferencePerformance.fsx
+```
+
+On 2026-11-08, ARM64, .NET 10.0.12, 14 logical processors, an invented two-layer
+F32 model (width 128, feed-forward width 256, vocabulary 8,192) gives these results
+for 32 prompt tokens, using online attention in every mode:
+
+| Selection | Median forward time | Returned logits storage |
+| --- | ---: | ---: |
+| AllTokens | 1.870 ms | 1,048,576 bytes |
+| LastToken | 1.009 ms | 32,768 bytes |
+| NoTokens | 0.529 ms | 0 bytes |
+
+The script warms up three calls and reports the median/range of seven groups of
+three calls. Measurements include execution and scratch allocation, exclude
+model/cache loading and downloads, and reuse a cache by replacing its prefix.
+The selected logits match the final full-output row exactly in this CPU fixture.
+The storage column describes logits only: hidden scratch and the full KV cache
+remain. This is not a claimed speedup for the real Ministral model. Single-token
+decoding already needs its only logits row, so selection mainly helps prefill.
+
+Tests compare selected/full logits, tied/separate output, F32/F16 weights,
+exact cache contents, subsequent decoding, cache-only batches, suffix truncation
+and empty inputs.
+A recording backend verifies actual per-role token counts and that prefill
+performs only one vocabulary-row download, rather than merely slicing a large
+output afterward. The session automatically uses this optimization.
 
 ## 5. Continue or replace a prefix
 

@@ -1007,3 +1007,44 @@ let ``quantized policy leaves non K encodings unchanged`` () =
         let matrix = matrixOf encoding 17 96 (randomPayload random encoding 17 96)
         let values = Array.init (3 * 96) (fun _ -> single (random.NextDouble() - 0.5))
         assertMatMul backend matrix 3 values
+
+[<Fact>]
+let ``row copies select contiguous rows and preserve their source`` () =
+    use backend = new CpuBackend() :> ITensorBackend
+    let values = Array.init 15 single
+    use source = backend.Upload(TensorShape.Create [| 5; 3 |], ReadOnlyMemory<single>(values))
+    use destination = backend.Allocate(TensorShape.Create [| 2; 3 |])
+    backend.CopyRows(source, 2, destination)
+    Assert.Equal<single>(values[6..11], download backend destination)
+    backend.CopyRows(source, 0, source)
+    Assert.Equal<single>(values, download backend source)
+    use empty = backend.Allocate(TensorShape.Create [| 0; 3 |])
+    backend.CopyRows(source, 5, empty)
+    Assert.Empty(download backend empty)
+
+[<Fact>]
+let ``row copies validate ranges shapes ownership and disposal before writing`` () =
+    use backend = new CpuBackend() :> ITensorBackend
+    use other = new CpuBackend() :> ITensorBackend
+    use source = backend.Allocate(TensorShape.Create [| 3; 2 |])
+    use result = backend.Upload(TensorShape.Create [| 2; 2 |], ReadOnlyMemory<single>(Array.create 4 42.0f))
+    for offset in [ -1; 2; Int32.MaxValue ] do
+        Assert.Throws<ArgumentOutOfRangeException>(fun () -> backend.CopyRows(source, offset, result)) |> ignore
+    use vector = backend.Allocate(TensorShape.Create [| 6 |])
+    use narrow = backend.Allocate(TensorShape.Create [| 3; 1 |])
+    use foreign = other.Allocate(source.Shape)
+    Assert.Throws<ArgumentException>(fun () -> backend.CopyRows(vector, 0, result)) |> ignore
+    Assert.Throws<ArgumentException>(fun () -> backend.CopyRows(narrow, 0, result)) |> ignore
+    Assert.Throws<ArgumentException>(fun () -> backend.CopyRows(foreign, 0, result)) |> ignore
+    Assert.Throws<ArgumentNullException>(fun () -> backend.CopyRows(Unchecked.defaultof<ITensor>, 0, result)) |> ignore
+    let disposed = backend.Allocate(source.Shape)
+    disposed.Dispose()
+    Assert.Throws<ObjectDisposedException>(fun () -> backend.CopyRows(disposed, 0, result)) |> ignore
+    Assert.Equal<single>(Array.create 4 42.0f, download backend result)
+
+[<Theory>]
+[<InlineData("CUDA")>]
+[<InlineData("Metal")>]
+let ``GPU row copies remain explicit placeholders`` name =
+    use backend = createBackend name
+    Assert.Throws<NotImplementedException>(fun () -> backend.CopyRows(Unchecked.defaultof<ITensor>, 0, Unchecked.defaultof<ITensor>)) |> ignore
