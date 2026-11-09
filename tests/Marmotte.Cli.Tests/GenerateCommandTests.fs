@@ -98,3 +98,25 @@ let ``oversized prompt fails without emitting text`` () =
     Assert.NotEqual(0, result.ExitCode)
     Assert.Empty(result.Output)
     Assert.Contains("encoded prompt", result.Error)
+
+[<Fact>]
+let ``reports load time before the stop summary and generation metrics after`` () =
+    use model = new ModelFile(modelBytes 3u)
+    let result = run [ "generate"; model.Path; "a"; "--max-tokens"; "3" ]
+    Assert.Equal(0, result.ExitCode)
+    Assert.Equal("aaa", result.Output)
+    Assert.Matches(@"Load: \d+\.\d{3} s", result.Error)
+    Assert.Matches(@"Timing: prompt processing \d+\.\d{3} s \(1 prompt tokens\); generation \d+\.\d{3} s for 3 tokens \(\d+\.\d tokens/s\)\.",
+                   result.Error)
+    Assert.True(result.Error.IndexOf("Load:") < result.Error.IndexOf("Stopped:"),
+                "The load time must be reported before prompt processing starts.")
+
+[<Fact>]
+let ``reports zero generated tokens without a rate when the budget is zero`` () =
+    use model = new ModelFile(modelBytes 3u)
+    let result = run [ "generate"; model.Path; "a"; "--max-tokens"; "0" ]
+    Assert.Equal(0, result.ExitCode)
+    Assert.Empty(result.Output)
+    Assert.Matches(@"Load: \d+\.\d{3} s", result.Error)
+    Assert.Matches(@"Timing: prompt processing \d+\.\d{3} s \(1 prompt tokens\); generation 0 tokens\.",
+                   result.Error)

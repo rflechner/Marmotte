@@ -67,7 +67,10 @@ character, its incomplete trailing bytes are omitted with a stderr diagnostic.
 Invalid UTF-8 during generation remains an error. Exit codes are 0 for EOS/budget/
 context stops, 1 for errors (including sampling failure), and 130 for cancellation.
 The first Ctrl+C requests cancellation between execution steps; a second terminates
-immediately. Load/prefill/generation timing remains roadmap item J.2.
+immediately. Stderr reports the load time as soon as loading finishes, before prompt
+processing starts (`Load: 1.234 s`); the stop summary then reports prompt-processing
+time and generation throughput separately (`Timing: prompt processing 0.567 s
+(12 prompt tokens); generation 0.890 s for 8 tokens (9.0 tokens/s).`).
 
 Small synthetic GGUF tests check exact output, literal brackets, EOS, token and
 context limits, and invalid arguments without requiring a local model.

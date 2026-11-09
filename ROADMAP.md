@@ -241,7 +241,9 @@ soft-capping.
 - [x] **J.1** `generate` streams a greedy CPU continuation of a literal prompt from
   a dense `mistral3` GGUF with a `tekken` tokenizer. Includes EOS, token/context
   limits, incremental UTF-8 decoding and cancellation; see [Try a prompt](README.md#try-a-prompt).
-- [ ] **J.2** Report load time, prompt processing and generation throughput separately.
+- [x] **J.2** Report load time (as soon as loading finishes), prompt processing and
+  generation throughput separately in the `generate` stderr output; see
+  [Try a prompt](README.md#try-a-prompt).
 
 ### K. Validation
 

@@ -59,3 +59,11 @@ module internal ConsoleDsl =
             size <- size / 1024M
             unitIndex <- unitIndex + 1
         sprintf "%s %s" (size.ToString("N2", CultureInfo.InvariantCulture)) units[unitIndex]
+
+    /// Format a duration in seconds with invariant numeric formatting.
+    let formatSeconds (elapsed: TimeSpan) =
+        elapsed.TotalSeconds.ToString("F3", CultureInfo.InvariantCulture) + " s"
+
+    /// Format a per-second token rate with invariant numeric formatting.
+    let formatRate (tokensPerSecond: float) =
+        tokensPerSecond.ToString("F1", CultureInfo.InvariantCulture) + " tokens/s"

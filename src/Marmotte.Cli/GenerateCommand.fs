@@ -2,6 +2,7 @@ namespace Marmotte.Cli
 
 open System
 open System.ComponentModel
+open System.Diagnostics
 open System.IO
 open Marmotte.Core
 open Marmotte.Cpu
@@ -53,6 +54,7 @@ type GenerateCommand() =
 
     override _.Execute(_, settings, cancellationToken) =
         cancellationToken.ThrowIfCancellationRequested()
+        let loadWatch = Stopwatch.StartNew()
         let index = Gguf.readFile settings.ModelPath
         let layout = GgufModelTensorLayout.read index
         let tokenizer = GgufTokenizer.read index.Metadata
@@ -69,15 +71,24 @@ type GenerateCommand() =
         use model = TransformerModel.Load(backend, source, layout)
         use session = GenerationSession.Create(model, capacity, min settings.BatchSize capacity,
                                                TensorEncoding.F32, TensorEncoding.F32)
+        loadWatch.Stop()
+        // Report the load time as soon as it is known, before prompt processing starts.
+        Console.Error.WriteLine($"Load: {ConsoleDsl.formatSeconds loadWatch.Elapsed}")
         let endIds = tokenizer.Tokenizer.Boundaries.EosTokenId |> Option.toArray
         let chooseToken (logits: ReadOnlyMemory<single>) = TokenSampling.greedy logits.Span
         let generator = TokenGenerator(session, settings.MaximumTokens, ReadOnlyMemory<int>(endIds), chooseToken)
         let decoder = tokenizer.Tokenizer.CreateDecoder SpecialTokenDecoding.Skip
+        // The first emitted token arrives right after prompt processing, so it marks
+        // the prefill/generation boundary. With no emitted token the whole run is prefill.
+        let runWatch = Stopwatch.StartNew()
+        let mutable prefillEnd = None
         let writeToken token =
+            if prefillEnd.IsNone then prefillEnd <- Some runWatch.Elapsed
             Console.Out.Write(decoder.Append token)
             Console.Out.Flush()
         let result = generator.Generate(ReadOnlyMemory<int>(promptIds), onToken = writeToken,
                                         cancellationToken = cancellationToken)
+        runWatch.Stop()
         // A token budget can cut through a multibyte character. Preserve complete text
         // and report that truncation rather than inserting a replacement character.
         try Console.Out.Write(decoder.Complete())
@@ -85,6 +96,18 @@ type GenerateCommand() =
             Console.Error.WriteLine("Generation ended with an incomplete UTF-8 character; trailing bytes were omitted.")
         Console.Out.Flush()
         Console.Error.WriteLine($"Stopped: {result.StopReason}; generated {result.Tokens.Length} tokens.")
+        let prefill = match prefillEnd with Some elapsed -> elapsed | None -> runWatch.Elapsed
+        let generation = runWatch.Elapsed - prefill
+        let generationReport =
+            if result.Tokens.Length > 0 then
+                let rate =
+                    if generation.TotalSeconds > 0.0 then
+                        sprintf " (%s)" (ConsoleDsl.formatRate (float result.Tokens.Length / generation.TotalSeconds))
+                    else ""
+                $"generation {ConsoleDsl.formatSeconds generation} for {result.Tokens.Length} tokens{rate}"
+            else
+                "generation 0 tokens"
+        Console.Error.WriteLine($"Timing: prompt processing {ConsoleDsl.formatSeconds prefill} ({promptIds.Length} prompt tokens); {generationReport}.")
         match result.StopReason with
         | GenerationStopReason.SamplingFailed _ -> 1
         | _ -> 0
