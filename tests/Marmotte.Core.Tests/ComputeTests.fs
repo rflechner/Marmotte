@@ -128,13 +128,19 @@ let ``key-value cache layouts size the target model's cache for each encoding`` 
     Assert.Equal(212992L, f32.BytesPerPosition)
     Assert.Equal(832L * 1024L * 1024L, f32.TotalBytes)
 
-    // A row holds 32 blocks of 32 values: 34 bytes each in Q8_0 and 18 in Q4_0.
+    // A row holds 32 blocks of 32 values: 34 bytes each in Q8_0, 24 in Q5_1, 22 in Q5_0, 20 in
+    // Q4_1, and 18 in Q4_0 and IQ4_NL.
     let cases =
         [ TensorEncoding.F16, TensorEncoding.F16, 2048, 2048, 106496L
           TensorEncoding.BF16, TensorEncoding.BF16, 2048, 2048, 106496L
           TensorEncoding.Q8_0, TensorEncoding.Q8_0, 1088, 1088, 56576L
+          TensorEncoding.Q5_1, TensorEncoding.Q5_1, 768, 768, 39936L
+          TensorEncoding.Q5_0, TensorEncoding.Q5_0, 704, 704, 36608L
+          TensorEncoding.Q4_1, TensorEncoding.Q4_1, 640, 640, 33280L
+          TensorEncoding.IQ4_NL, TensorEncoding.IQ4_NL, 576, 576, 29952L
           TensorEncoding.Q4_0, TensorEncoding.Q4_0, 576, 576, 29952L
-          TensorEncoding.Q8_0, TensorEncoding.Q4_0, 1088, 576, 43264L ]
+          TensorEncoding.Q8_0, TensorEncoding.Q4_0, 1088, 576, 43264L
+          TensorEncoding.Q5_0, TensorEncoding.IQ4_NL, 704, 576, 33280L ]
 
     for keyEncoding, valueEncoding, keyRowBytes, valueRowBytes, bytesPerPosition in cases do
         let layout = ministralCache keyEncoding valueEncoding

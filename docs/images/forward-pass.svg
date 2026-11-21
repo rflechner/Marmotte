@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="640" viewBox="0 0 900 640" role="img" aria-labelledby="title desc">
+<title id="title">Dense mistral3 forward pass</title>
+<desc id="desc">Token IDs select embeddings. Each block applies RMS normalization, Q K V projections, rotary embedding on Q and K, optional query temperature, cached causal attention, output projection and a residual addition. A second normalization precedes gate and up projections, SwiGLU, down projection and another residual. Final normalization and the output matrix give logits.</desc>
+<defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8" fill="#475569"/></marker></defs>
+<rect width="900" height="640" fill="#f8fafc"/>
+<g font-family="sans-serif" text-anchor="middle" fill="#0f172a">
+<text x="450" y="30" font-size="23" font-weight="bold">Dense mistral3: token IDs → logits</text>
+<rect x="90" y="60" width="720" height="44" rx="8" fill="#dbeafe" stroke="#2563eb"/>
+<text x="450" y="88" font-size="17">Token IDs → embedding lookup → hidden [tokens; E]</text>
+<rect x="50" y="125" width="800" height="400" rx="14" fill="#fff" stroke="#94a3b8" stroke-dasharray="6 4"/>
+<text x="260" y="150" font-size="17" font-weight="bold">Repeat for each transformer block</text>
+<g stroke="#475569" stroke-width="2" fill="none" marker-end="url(#arrow)">
+<path d="M450 104 V167"/><path d="M450 207 V232"/><path d="M450 292 V317"/><path d="M450 357 V382"/><path d="M450 422 V447"/><path d="M450 487 V545"/>
+<path d="M450 158 H100 V337 H285"/><path d="M450 369 H135 V467 H285"/>
+</g>
+<g font-size="16">
+<rect x="205" y="167" width="490" height="40" rx="7" fill="#e0e7ff"/>
+<text x="450" y="193">RMSNorm → Q / K / V projections</text>
+<rect x="205" y="232" width="490" height="60" rx="7" fill="#dbeafe"/>
+<text x="450" y="256">RoPE(Q, K) → optional temperature(Q)</text>
+<text x="450" y="279">Store K/V → causal attention → output projection</text>
+<rect x="290" y="317" width="320" height="40" rx="7" fill="#dcfce7"/>
+<text x="450" y="343">+ original hidden (residual)</text>
+<rect x="205" y="382" width="490" height="40" rx="7" fill="#fef3c7"/>
+<text x="450" y="408">RMSNorm → gate / up → SwiGLU → down</text>
+<rect x="290" y="447" width="320" height="40" rx="7" fill="#dcfce7"/>
+<text x="450" y="473">+ attention residual</text>
+<rect x="90" y="545" width="720" height="45" rx="8" fill="#dbeafe" stroke="#2563eb"/>
+<text x="450" y="573">Final RMSNorm → output matrix → logits [tokens; vocabulary]</text>
+<text x="450" y="620" font-size="15">Output weights may share embeddings. No sampling or text generation in this step.</text>
+</g></g></svg>

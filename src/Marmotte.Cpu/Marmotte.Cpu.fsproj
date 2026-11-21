@@ -4,7 +4,15 @@
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="AssemblyInfo.fs" />
     <Compile Include="CpuKernels.fs" />
+    <Compile Include="CpuQ8Activations.fs" />
+    <Compile Include="CpuKQuantBlocks.fs" />
+    <Compile Include="CpuMatrixKernels.fs" />
+    <Compile Include="CpuStorage.fs" />
+    <Compile Include="CpuTensor.fs" />
+    <Compile Include="CpuWeightTensor.fs" />
+    <Compile Include="CpuKeyValueCache.fs" />
     <Compile Include="CpuBackend.fs" />
   </ItemGroup>
   <ItemGroup>

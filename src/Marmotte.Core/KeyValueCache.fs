@@ -8,9 +8,10 @@ open System
 /// the projections of every earlier token.
 ///
 /// Keys and values have separate encodings, because keys usually tolerate quantization less well.
-/// F16 halves an F32 cache; Q8_0 stores 34 bytes per 32 values and Q4_0 18 bytes, at the cost of
-/// precision. Every position is a row of whole blocks of its own, for values as for keys, so
-/// quantizing the value cache does not depend on how attention is computed.
+/// F16 halves an F32 cache. Per block of 32 values, Q8_0 stores 34 bytes, Q5_1 24, Q5_0 22, Q4_1
+/// 20, and Q4_0 and IQ4_NL 18, at the cost of precision. Every position is a row of whole blocks
+/// of its own, for values as for keys, so quantizing the value cache does not depend on how
+/// attention is computed.
 ///
 /// Encoding is lossy except in F32: see RowEncoder for rounding and non-finite values.
 /// Quantization blocks never span two heads, so that attention can decode one head at a time.
@@ -54,8 +55,9 @@ type KeyValueCacheLayout private (layers: int, capacity: int, keyValueHeads: int
 
     /// Raises ArgumentOutOfRangeException for a dimension that is not positive, NotSupportedException
     /// for an encoding that RowEncoder cannot write, and ArgumentException for a head dimension that
-    /// is not a multiple of an encoding's block (32 values for Q8_0 and Q4_0), or for a layer's keys or
-    /// values beyond the managed array limit that execution tensors currently share.
+    /// is not a multiple of an encoding's block (32 values for every quantized encoding it accepts),
+    /// or for a layer's keys or values beyond the managed array limit that execution tensors
+    /// currently share.
     static member Create(layers: int, capacity: int, keyValueHeads: int, headDimension: int,
                          keyEncoding: TensorEncoding, valueEncoding: TensorEncoding) =
         let requirePositive (name: string) (value: int) =
@@ -69,7 +71,7 @@ type KeyValueCacheLayout private (layers: int, capacity: int, keyValueHeads: int
 
         let requireEncoding (name: string) (encoding: TensorEncoding) =
             if not (RowEncoder.canEncode encoding) then
-                raise (NotSupportedException($"A key-value cache cannot store {encoding}; use F32, F16, BF16, Q8_0 or Q4_0."))
+                raise (NotSupportedException($"A key-value cache cannot store {encoding}, which RowEncoder cannot write."))
             if headDimension % encoding.BlockElements <> 0 then
                 invalidArg name $"Heads of {headDimension} values do not hold whole {encoding} blocks of {encoding.BlockElements}."
 

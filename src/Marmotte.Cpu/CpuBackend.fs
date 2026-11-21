@@ -4,6 +4,10 @@ open System
 open System.Collections.Generic
 open Marmotte.Core
 
+/// Safe CPU implementation of the tensor and kernel contracts. This type is the plumbing:
+/// ownership, lifetime and argument validation over the storage of CpuTensor, CpuWeightTensor and
+/// CpuKeyValueCache, while CpuKernels and CpuMatrixKernels do the arithmetic. Core's
+/// RowEncoder and RowDecoder handle stored rows outside the integer K-quant product path. It owns no native resources. Each instance
 /// Storage that its backend releases when the backend itself is disposed.
 type private ICpuStorage =
     /// Marks the storage disposed and drops its buffer, without notifying the backend.
@@ -132,8 +136,12 @@ type private CpuKeyValueCache(owner: obj, layout: KeyValueCacheLayout, onDispose
 /// accepts only tensors and key-value caches that it created, and tracks the live ones so that
 /// disposing the backend releases them. Operations complete before returning, which
 /// satisfies the ordering contract; Synchronize has nothing to wait for.
+/// The parameterless constructor uses QuantizedK: K-quant products quantize each
+/// activation token once to transient Q8_K. Select DecodedFloat for the unquantized
+/// input reference. Attention defaults to Online, with Reference available through the
+/// two-policy constructor. Other encodings are unchanged; see docs/kernels.md for error bounds.
 [<Sealed>]
-type CpuBackend() =
+type CpuBackend(matrixProductMode: CpuMatrixProductMode, attentionMode: CpuAttentionMode) =
     let owner = obj()
     let liveStorage = HashSet<ICpuStorage>(HashIdentity.Reference)
     let mutable disposed = false
@@ -205,6 +213,12 @@ type CpuBackend() =
         let tensor = new CpuTensor(owner, shape, values, forget)
         track tensor
         tensor :> ITensor
+
+    /// Use quantized activations for K-quant products, with decoded-F32 fallback.
+    new() = new CpuBackend(CpuMatrixProductMode.QuantizedK, CpuAttentionMode.Online)
+
+    /// Choose matrix arithmetic while retaining online attention.
+    new(matrixProductMode: CpuMatrixProductMode) = new CpuBackend(matrixProductMode, CpuAttentionMode.Online)
 
     interface ITensorBackend with
         member _.Backend = BackendKind.Cpu
@@ -343,6 +357,19 @@ type CpuBackend() =
                 let output = destinationValues.AsSpan(index * matrix.Columns, matrix.Columns)
                 matrix.DecodeRow(ids[index], output)
 
+    interface IRowCopyKernel with
+        member this.CopyRows(source, firstRow, destination) =
+            ObjectDisposedException.ThrowIf(disposed, this)
+            let sourceValues = valuesOf (nameof source) source
+            let destinationValues = valuesOf (nameof destination) destination
+            let sourceShape = source.Shape.Dimensions
+            let destinationShape = destination.Shape.Dimensions
+            if sourceShape.Count <> 2 || destinationShape.Count <> 2 || sourceShape[1] <> destinationShape[1] then
+                invalidArg (nameof destination) "Row copies require rank-2 tensors with equal column counts."
+            if firstRow < 0 || firstRow > sourceShape[0] || destinationShape[0] > sourceShape[0] - firstRow then
+                raise (ArgumentOutOfRangeException(nameof firstRow, "The copied rows must fit the source."))
+            sourceValues.AsSpan(firstRow * sourceShape[1], destinationValues.Length).CopyTo(destinationValues.AsSpan())
+
     interface IMatVecKernel with
         member this.MatVec(weights, input, destination) =
             ObjectDisposedException.ThrowIf(disposed, this)
@@ -356,7 +383,7 @@ type CpuBackend() =
             if Object.ReferenceEquals(input, destination) then
                 invalidArg (nameof destination) "MatVec destination must differ from its input, which every output reads in full."
 
-            CpuKernels.matMul (matrix, ReadOnlySpan<single>(inputValues), Span<single>(destinationValues))
+            CpuMatrixKernels.matMul matrixProductMode (matrix, ReadOnlyMemory<single>(inputValues), Memory<single>(destinationValues))
 
     interface IMatMulKernel with
         member this.MatMul(weights, input, destination) =
@@ -377,7 +404,7 @@ type CpuBackend() =
             if Object.ReferenceEquals(input, destination) then
                 invalidArg (nameof destination) "MatMul destination must differ from its input, which every weight row reads in full."
 
-            CpuKernels.matMul (matrix, ReadOnlySpan<single>(inputValues), Span<single>(destinationValues))
+            CpuMatrixKernels.matMul matrixProductMode (matrix, ReadOnlyMemory<single>(inputValues), Memory<single>(destinationValues))
 
     interface IRopeKernel with
         member this.Rope(input, positions, embedding, destination) =
@@ -462,6 +489,43 @@ type CpuBackend() =
             let valueRows = ReadOnlySpan<byte>(storage.ValueRows(layer), position * valueRowBytes, tokens * valueRowBytes)
             RowDecoder.decode (layout.KeyEncoding, keyRows, Span<single>(keyValues))
             RowDecoder.decode (layout.ValueEncoding, valueRows, Span<single>(valueValues))
+
+    interface IAttentionKernel with
+        member this.Attention(cache, layer, position, queries, destination) =
+            ObjectDisposedException.ThrowIf(disposed, this)
+            let storage = cacheOf (nameof cache) cache
+            let queryValues = valuesOf (nameof queries) queries
+            let destinationValues = valuesOf (nameof destination) destination
+            let stored = cache.StoredPositions(layer)
+            let layout = cache.Layout
+            let dimensions = queries.Shape.Dimensions
+            let queryHeads =
+                match dimensions.Count with
+                | 2 when dimensions[1] % layout.HeadDimension = 0 -> dimensions[1] / layout.HeadDimension
+                | 3 when dimensions[2] = layout.HeadDimension -> dimensions[1]
+                | _ -> invalidArg (nameof queries) "Attention requires [tokens; queryHeads × HeadDimension] or [tokens; queryHeads; HeadDimension]."
+
+            if queryHeads <= 0 || queryHeads % layout.KeyValueHeads <> 0 then
+                invalidArg (nameof queries) "Query head count must be positive and divisible by the cache's KV head count."
+            requireSameShape "Attention" queries (nameof destination) destination
+            if Object.ReferenceEquals(queries, destination) then
+                invalidArg (nameof destination) "Attention destination must differ from queries."
+            let tokens = dimensions[0]
+            if position < 0 || position > stored || tokens > stored - position then
+                raise (ArgumentOutOfRangeException(nameof position, box position, "Every query position must already be stored in the layer."))
+
+            if tokens > 0 then
+                match attentionMode with
+                | CpuAttentionMode.Reference ->
+                    CpuKernels.attention (
+                        layout, queryHeads, position, ReadOnlySpan<byte>(storage.KeyRows(layer)),
+                        ReadOnlySpan<byte>(storage.ValueRows(layer)), ReadOnlySpan<single>(queryValues),
+                        Span<single>(destinationValues))
+                | CpuAttentionMode.Online ->
+                    CpuKernels.attentionOnline (
+                        layout, queryHeads, position, ReadOnlySpan<byte>(storage.KeyRows(layer)),
+                        ReadOnlySpan<byte>(storage.ValueRows(layer)), ReadOnlySpan<single>(queryValues),
+                        Span<single>(destinationValues))
 
     interface IDisposable with
         member _.Dispose() =

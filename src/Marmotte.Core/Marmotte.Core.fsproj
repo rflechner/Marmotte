@@ -7,15 +7,35 @@
 
     <ItemGroup>
         <Compile Include="Helpers.fs" />
+        <Compile Include="FastStack.fs" />
+        <Compile Include="ParserCombinator.fs" />
+        <Compile Include="Jinja/JinjaSyntax.fs" />
+        <Compile Include="Jinja/JinjaExpressionParser.fs" />
+        <Compile Include="Jinja/JinjaParser.fs" />
+        <Compile Include="Jinja/JinjaValue.fs" />
+        <Compile Include="Jinja/JinjaRuntime.fs" />
+        <Compile Include="Jinja/ChatPrompt.fs" />
         <Compile Include="Tensors.fs" />
         <Compile Include="RowDecoder.fs" />
         <Compile Include="RowEncoder.fs" />
         <Compile Include="FileTensorSource.fs" />
+        <Compile Include="MappedTensorSource.fs" />
         <Compile Include="WeightMatrix.fs" />
         <Compile Include="RotaryEmbedding.fs" />
         <Compile Include="AttentionTemperature.fs" />
+        <Compile Include="ModelConfiguration.fs" />
+        <Compile Include="ModelTensorLayout.fs" />
         <Compile Include="KeyValueCache.fs" />
         <Compile Include="Compute.fs" />
+        <Compile Include="ModelLoading.fs" />
+        <Compile Include="TransformerModel.fs" />
+        <Compile Include="GenerationSession.fs" />
+        <Compile Include="TokenSampling.fs" />
+        <Compile Include="TokenGenerator.fs" />
+        <Compile Include="BpeVocabulary.fs" />
+        <Compile Include="TokenTextDecoder.fs" />
+        <Compile Include="BpeTokenizer.fs" />
+        <Compile Include="TekkenPreTokenizer.fs" />
     </ItemGroup>
 
     <ItemGroup>

@@ -1,6 +1,111 @@
 # Marmotte
 
-F# libraries for local inference, targeting .NET 10.
+Marmotte is a proof of concept exploring what a local model inference engine
+implemented in F# could look like. It targets .NET 10 and aims to keep as much
+code managed as possible, while exploring the capabilities and tradeoffs of
+this approach. A central goal is to learn how model inference works by
+implementing its building blocks, from reading model files to executing the
+operations that generate text.
+
+I am developing this project with assistance from Codex (ChatGPT), Claude and
+Mistral.
+
+This is an experimental project and is not production-ready.
+
+## Model configuration
+
+`GgufModelConfiguration.read model.Metadata` reads validated `mistral3`
+hyperparameters into Core's `ModelConfiguration`, including head dimensions,
+RoPE/YaRN and attention temperature. It rejects missing, mistyped or inconsistent
+values without reading weights. See the [supported metadata contract and example](docs/model-configuration.md).
+`GgufModelTensorLayout.read model` maps the index to typed layer roles and checks
+weight shapes, including tied output embeddings. It does not load weights;
+`TransformerModel.Load(backend, source, layout)` loads them for a dense `mistral3`
+forward pass. `Forward(cache, position, tokenIds)` returns logits for every token
+through the existing backend contracts. See the [walkthrough](docs/forward-pass.md)
+and `examples/Forward.fsx`. `GenerationSession` adds batched prompt prefill and
+single-token decoding with an owned cache. Prefill now skips intermediate vocabulary
+projections and computes the final feed-forward/output only for the last token;
+see [selected logits](docs/forward-pass.md#request-only-the-logits-you-need) and the [session walkthrough](docs/generation-session.md)
+and `examples/Generation.fsx`. `TokenSampling.greedy` selects the largest finite logit with deterministic ties
+and explicit errors. `TokenSampler` adds temperature, top-k, top-p and seeded
+random selection; see [sampling](docs/sampling.md). `TokenGenerator` adds EOS and
+new-token limits, callbacks and explicit stop reasons; see [generation stopping](docs/token-generation.md).
+The `generate` CLI streams a greedy CPU continuation; see [Try a prompt](#try-a-prompt).
+
+## Try a prompt
+
+Build with .NET 10 and provide a dense `mistral3` GGUF with a `tekken` tokenizer.
+For the local model described below, run from the repository root:
+
+```sh
+dotnet build Marmotte.slnx
+dotnet run --no-build --project src/Marmotte.Cli -- generate \
+  "$LM_STUDIO_MODELS_FOLDER/lmstudio-community/Ministral-3-3B-Instruct-2512-GGUF/Ministral-3-3B-Instruct-2512-Q4_K_M.gguf" \
+  "La capitale de la France est" --max-tokens 8 --context-size 64
+```
+
+The command writes only the continuation to stdout and flushes after each token.
+The prompt is literal text: tokenizer boundary flags apply once, but chat templates
+and special spellings inside the text are not interpreted. This is a completion
+interface, not an instruction/chat interface. Selection is greedy and configured
+EOS stops generation without being printed. Missing EOS metadata disables that stop.
+
+`--max-tokens` defaults to 128 (zero runs prefill only), `--context-size` to 2048
+(capped at the model context), and `--batch-size` to 32 (capped at the selected
+context). Prompts must fit the selected context. The F32 key/value cache is
+allocated up front; keep the context small for initial CPU experiments. Weights
+are memory-mapped read-only. K-quant matrix products now use transient Q8_K
+activations by default; this introduces small additional rounding (see
+[H.2 arithmetic policies](docs/kernels.md#quantize-activations-once-for-k-quant-products)).
+CPU execution still processes every weight row, so a
+large model can take substantial time before the first token.
+
+A stop summary goes to stderr; stdout has no added newline, prompt echo or markup.
+UTF-8 characters split across tokens are buffered. If stopping cuts through a
+character, its incomplete trailing bytes are omitted with a stderr diagnostic.
+Invalid UTF-8 during generation remains an error. Exit codes are 0 for EOS/budget/
+context stops, 1 for errors (including sampling failure), and 130 for cancellation.
+The first Ctrl+C requests cancellation between execution steps; a second terminates
+immediately. Stderr reports the load time as soon as loading finishes, before prompt
+processing starts (`Load: 1.234 s`); the stop summary then reports prompt-processing
+time and generation throughput separately (`Timing: prompt processing 0.567 s
+(12 prompt tokens); generation 0.890 s for 8 tokens (9.0 tokens/s).`).
+
+Small synthetic GGUF tests check exact output, literal brackets, EOS, token and
+context limits, and invalid arguments without requiring a local model.
+
+## BPE tokenizer
+
+`GgufTokenizer.read model.Metadata` builds Core's `BpeTokenizer` from a `gpt2`
+vocabulary, merge ranks, token categories and BOS/EOS policy. `Encode` takes
+explicit `TokenizerSegment.TextPiece` or `SpecialToken` segments. It does not
+split sentences itself. For a `tekken` profile, `loaded.EncodeText(text, true)`
+automatically splits text with `TekkenPreTokenizer.split` before BPE.
+`loaded.Tokenizer.Decode(ids, SpecialTokenDecoding.Skip)` reconstructs UTF-8 text;
+`CreateDecoder` exposes incremental `Append`/`Complete` for streaming. See the
+[decoding tutorial](docs/token-decoding.md), the [Tekken tutorial](docs/tekken.md)
+and the [BPE contract and tutorial](docs/tokenizer.md). See [chat prompt rendering (D.4)](docs/chat-prompts.md).
+Run the independent sentence example without a model:
+
+```sh
+dotnet fsi examples/Tokenizer.fsx
+```
+
+`JinjaParser.parse` builds a reusable syntax tree for a documented Jinja subset:
+text, expressions, comments, nested loops and `if`/`elif`/`else` conditions.
+Expressions include literals, comparisons and boolean operators. Syntax errors
+include source positions. See the [parser tutorial](docs/jinja-parser-sample.md)
+for the grammar and limits. `JinjaRuntime.render` evaluates the AST with an immutable
+context. `ChatPrompt.render` preserves raw prompts or formats conversations;
+`GgufTokenizer.RenderPrompt` uses `tokenizer.chat_template` and configured BOS/EOS
+spellings. These APIs return text, not token IDs; special-token insertion remains
+explicit. See the [runtime and prompt tutorial](docs/chat-prompts.md).
+Run the example without a model:
+
+```sh
+dotnet fsi examples/ParserCombinatorSample.fsx
+```
 
 ## GGUF reader
 
@@ -142,34 +247,43 @@ the tensor's validated byte range into a managed array with positional reads,
 which can run concurrently. A payload must therefore fit in one array, and
 loaded weights occupy as much memory as in the file. `matrix.DecodeRow(row, span)`
 decodes one row of any `TensorEncoding` into F32 values, and CPU embedding lookup
-decodes selected rows on demand. Memory mapping, architecture-specific tensor
-names and model configuration are not implemented yet.
+decodes selected rows on demand.
+
+`GgufTensorSource.openMappedFile` returns the same `ITensorSource` over a
+memory-mapped file instead: payload requests are zero-copy views of the mapping,
+so loaded weights occupy no managed heap and the operating system pages them in
+on demand; see [the measurement](docs/gguf.md#memory-mapped-tensor-source).
+Architecture-specific tensor names and model configuration are not implemented
+yet.
 
 ## Execution tensors and kernels
 
 `Marmotte.Core` defines `TensorShape`, `ITensor`, `IWeightTensor`,
 `IKeyValueCache`, `IAddKernel`, `ISwiGluKernel`, `IRmsNormKernel`,
-`IEmbeddingKernel`, `IMatVecKernel`, `IMatMulKernel`, `IRopeKernel`,
-`IAttentionTemperatureKernel`, `IKeyValueCacheKernel` and `ITensorBackend`, plus
+`IEmbeddingKernel`, `IRowCopyKernel`, `IMatVecKernel`, `IMatMulKernel`, `IRopeKernel`,
+`IAttentionTemperatureKernel`, `IKeyValueCacheKernel`, `IAttentionKernel` and `ITensorBackend`, plus
 `RotaryEmbedding`, `YarnParameters`, `AttentionTemperature` and
-`KeyValueCacheLayout`. `RowEncoder` writes F32, F16, BF16, Q8_0 and Q4_0 rows,
-the inverse of `RowDecoder`.
+`KeyValueCacheLayout`. `RowEncoder` writes rows of every encoding except the
+K-quants, the inverse of `RowDecoder`.
 The three backend projects share these contracts:
 
-- `Marmotte.Cpu`: owned F32 or F16 arrays, explicit upload/download, weight tensors that
-  retain the stored payload, F32 `Add`, SwiGLU and RMS normalization kernels
-  vectorized with `Vector<T>`, scalar Half `Add`, embedding lookup, and matrix-vector and
-  matrix-matrix products over stored weights, which all decode rows with Core's
-  `RowDecoder`, rotary position embedding, attention temperature and a
-  key-value cache.
+- `Marmotte.Cpu`: owned F32 arrays, explicit upload/download, weight tensors that
+  retain the stored payload, `Add`, SwiGLU and RMS normalization kernels
+  vectorized with `Vector<T>`, embedding lookup, and matrix-vector and
+  matrix-matrix products with safe intrinsics and parallel weight rows (see
+  [H.1 measurements](docs/kernels.md#measure-parallel-matrix-products)). K-quant
+  products use Q8_K activations and integer arithmetic by default; other products
+  use Core's `RowDecoder`. `CpuBackend(CpuMatrixProductMode.DecodedFloat)` retains
+  the reference path. Also includes rotary position embedding, attention temperature and a
+  key-value cache and causal grouped-query attention. Online fused attention is
+  the default; `CpuAttentionMode.Reference` preserves the score-buffer algorithm.
+  See [H.3 measurements](docs/kernels.md#online-attention-and-h3-measurements).
 - `Marmotte.Cuda`: owned F32 or F16 device tensors, transfers and Add through a native
   CUDA library. Build it automatically with `dotnet build Marmotte.slnx -p:MarmotteBuildCuda=true`.
   Native compilation and GPU tests are optional; see the
   [CUDA guide](docs/cuda.md) for prerequisites, builds and how the backend works.
   Add has separate [F32 and F16 implementations](docs/cuda.md#kernel-formats-and-file-layout).
   Weight upload, caches and other kernels still raise `NotImplementedException`.
-- `Marmotte.Metal`: a buildable placeholder whose operations raise
-  `NotImplementedException`, without requiring a GPU SDK.
 
 `Add` writes into a preallocated destination and requires identical contiguous,
 row-major shapes and encodings (all F32 or all F16). `Allocate(shape)` remains F32;
@@ -206,14 +320,20 @@ V cache quantization. `StoreKeyValues(cache, layer, position, keys, values)`
 appends positions to a layer, or replaces them and discards the later ones;
 `ReadKeyValues` decodes them back into F32 tensors. For the target model and a
 4,096-token context, the cache takes 832 MiB in F32, 416 MiB in F16 or BF16,
-221 MiB in Q8_0 and 117 MiB in Q4_0. Q8_0 and Q4_0 are lossy: see the
-[precision notes](docs/kernels.md#key-value-cache). Attention does not read the
-cache yet.
+221 MiB in Q8_0, 156 MiB in Q5_1, 143 MiB in Q5_0, 130 MiB in Q4_1, and 117 MiB
+in IQ4_NL or Q4_0. Quantized encodings are lossy: see the
+[precision notes](docs/kernels.md#key-value-cache).
+`Attention(cache, layer, position, queries, destination)` reads cached heads directly,
+scales scores, applies a causal mask and computes a stable softmax with F32
+accumulation. See the [grouped-query attention walkthrough](docs/kernels.md#grouped-query-attention).
 
 `EmbeddingLookup(weights, tokenIds, destination)` decodes selected vocabulary
 rows into a preallocated F32 tensor of shape `[tokenIds.Length; weights.Columns]`,
-without scaling. It supports F32, F16, BF16, Q4_0, Q8_0, Q4_K and Q6_K weights,
-including the target model's `token_embd.weight`. IDs may repeat; an empty batch
+without scaling. It supports every runtime encoding: F32, F16, BF16, Q4_0, Q4_1,
+Q5_0, Q5_1, Q8_0, IQ4_NL, Q2_K, Q3_K, Q4_K, Q5_K and Q6_K, including the target
+model's `token_embd.weight`. The K-quants cover the tensors of the Q2_K to Q6_K
+file profiles, such as Q3_K_M, which mix several of them; IQ2 and IQ3 encodings
+are not supported. IDs may repeat; an empty batch
 is valid. All IDs and tensor arguments are validated before writing, so invalid
 input leaves the destination unchanged. The caller may reuse the ID buffer when
 the call returns. Keep the weights' tensor source alive while they are in use.
@@ -226,6 +346,7 @@ dotnet fsi examples/Add.fsx
 dotnet fsi examples/Embedding.fsx
 dotnet fsi examples/Yarn.fsx
 dotnet fsi examples/KeyValueCache.fsx
+dotnet fsi examples/Attention.fsx
 ```
 
 ## Inspect a local GGUF file
@@ -389,6 +510,9 @@ block layouts, numerical limits and tensor selection policy.
 
 - [Format comparison, tensor storage, strides, and illustration notes](docs/README.md)
 - [Illustrated inference pipeline: model files, embeddings, KV cache and generation](docs/inference-pipeline.md)
+- [Token decoding: UTF-8 reconstruction and streaming (D.3)](docs/token-decoding.md)
+- [Tekken pre-tokenization: from raw text to BPE pieces (D.2)](docs/tekken.md)
+- [BPE tokenizer tutorial: metadata, ranked merges and special tokens (D.1)](docs/tokenizer.md)
 - [GGUF format and current implementation](docs/gguf.md)
 - [Safetensors format and current implementation](docs/safetensors.md)
 - [Execution tensors and kernels on CPU, CUDA and Metal](docs/kernels.md)

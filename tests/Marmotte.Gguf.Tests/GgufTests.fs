@@ -485,13 +485,20 @@ module TensorSource =
               GgmlType.F16, TensorEncoding.F16
               GgmlType.BF16, TensorEncoding.BF16
               GgmlType.Q4_0, TensorEncoding.Q4_0
+              GgmlType.Q4_1, TensorEncoding.Q4_1
+              GgmlType.Q5_0, TensorEncoding.Q5_0
+              GgmlType.Q5_1, TensorEncoding.Q5_1
               GgmlType.Q8_0, TensorEncoding.Q8_0
+              GgmlType.IQ4_NL, TensorEncoding.IQ4_NL
+              GgmlType.Q2_K, TensorEncoding.Q2_K
+              GgmlType.Q3_K, TensorEncoding.Q3_K
               GgmlType.Q4_K, TensorEncoding.Q4_K
+              GgmlType.Q5_K, TensorEncoding.Q5_K
               GgmlType.Q6_K, TensorEncoding.Q6_K ]
         for tensorType, encoding in supported do
             Assert.Equal(Some encoding, GgufTensorSource.tryEncoding tensorType)
 
-        for tensorType in [ GgmlType.Q4_1; GgmlType.Q3_K; GgmlType.Q5_K; GgmlType.I32; GgmlType.F64 ] do
+        for tensorType in [ GgmlType.Q8_1; GgmlType.IQ2_XS; GgmlType.IQ4_XS; GgmlType.I32; GgmlType.F64 ] do
             Assert.Equal(None, GgufTensorSource.tryEncoding tensorType)
 
     [<Fact>]
@@ -504,6 +511,49 @@ module TensorSource =
         for bytes, expected in [ bigEndian, "Big-endian"; split, "Split" ] do
             withFile bytes (fun path ->
                 let error = Assert.Throws<InvalidDataException>(fun () -> GgufTensorSource.openFile path |> ignore)
+                Assert.Contains(expected, error.Message)
+                use exclusive = File.Open(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None)
+                Assert.True(exclusive.CanWrite))
+
+    [<Fact>]
+    let ``mapped source reads the same payloads and decodes the same rows as the copying source`` () =
+        // A Q8_0 matrix of two 34-byte rows, then an F32 vector at the next 32-byte boundary.
+        let payload = Array.init 104 byte
+        let descriptors =
+            [ tensor false "blk.0.attn_q.weight" [ 32UL; 2UL ] 8u 0UL
+              tensor false "blk.0.attn_norm.weight" [ 2UL ] 0u 96UL ]
+
+        withFile (file false 3u 32 [] descriptors payload) (fun path ->
+            use mapped = GgufTensorSource.openMappedFile path
+            use copied = GgufTensorSource.openFile path
+
+            Assert.Equal<string>([| "blk.0.attn_q.weight"; "blk.0.attn_norm.weight" |],
+                                 mapped.Tensors |> Seq.map (fun tensor -> tensor.Name))
+            for name in [ "blk.0.attn_q.weight"; "blk.0.attn_norm.weight" ] do
+                Assert.Equal<byte>(copied.ReadPayload(name).ToArray(), mapped.ReadPayload(name).ToArray())
+
+            let fromMapped = WeightMatrix.Read(mapped, "blk.0.attn_q.weight")
+            let fromCopied = WeightMatrix.Read(copied, "blk.0.attn_q.weight")
+            Assert.Equal(TensorEncoding.Q8_0, fromMapped.Encoding)
+            Assert.Equal(34, fromMapped.RowBytes)
+            Assert.Equal<byte>(payload[34..67], fromMapped.Row(1).ToArray())
+
+            let mappedRow = Array.zeroCreate<single> fromMapped.Columns
+            let copiedRow = Array.zeroCreate<single> fromCopied.Columns
+            fromMapped.DecodeRow(1, Span<single>(mappedRow))
+            fromCopied.DecodeRow(1, Span<single>(copiedRow))
+            Assert.Equal<single>(copiedRow, mappedRow))
+
+    [<Fact>]
+    let ``mapped source rejects big-endian and split files and closes them`` () =
+        let bigEndian = file true 3u 32 [] [ tensor true "weight" [ 1UL ] 0u 0UL ] (Array.zeroCreate 4)
+        let split =
+            let metadata = [ kv false "split.count" 2u (number false 2 2UL) ]
+            file false 3u 32 metadata [ tensor false "weight" [ 1UL ] 0u 0UL ] (Array.zeroCreate 4)
+
+        for bytes, expected in [ bigEndian, "Big-endian"; split, "Split" ] do
+            withFile bytes (fun path ->
+                let error = Assert.Throws<InvalidDataException>(fun () -> GgufTensorSource.openMappedFile path |> ignore)
                 Assert.Contains(expected, error.Message)
                 use exclusive = File.Open(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None)
                 Assert.True(exclusive.CanWrite))

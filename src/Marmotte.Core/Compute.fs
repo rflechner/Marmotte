@@ -155,7 +155,7 @@ type IEmbeddingKernel =
     /// including [1; Columns] for one token and [0; Columns] for an empty, no-op lookup.
     /// IDs are zero-based, must be in [0, weights.Rows), and may repeat or arrive in any order.
     /// Weights and destination must belong to this backend instance. Only selected rows are decoded;
-    /// weights stay unchanged. CPU supports F32, F16, BF16, Q4_0, Q8_0, Q4_K and Q6_K.
+    /// weights stay unchanged. CPU supports every TensorEncoding.
     /// Floating-point special values follow ordinary F32 conversion and arithmetic.
     ///
     /// All arguments, including every ID, are validated before submission or any destination write:
@@ -167,6 +167,15 @@ type IEmbeddingKernel =
     /// keep the weights' tensor source alive while they are in use.
     abstract EmbeddingLookup: weights: IWeightTensor * tokenIds: ReadOnlyMemory<int> * destination: ITensor -> unit
 
+/// Copy consecutive rows without transferring tensor contents to the host.
+type IRowCopyKernel =
+    /// Source and destination are rank-2 F32 tensors with the same column count.
+    /// Copies destination.Rows rows starting at firstRow, validating the full range
+    /// before writing. Empty copies allow firstRow = source.Rows. Identity copies
+    /// are valid. Ownership, disposal and submission ordering follow IAddKernel.Add.
+    /// Invalid shapes raise ArgumentException; invalid ranges raise ArgumentOutOfRangeException.
+    abstract CopyRows: source: ITensor * firstRow: int * destination: ITensor -> unit
+
 /// Matrix-vector product with weights kept in their stored encoding:
 /// destination[r] = Σ weights[r, c] × input[c] over the Columns values c of row r.
 type IMatVecKernel =
@@ -176,7 +185,9 @@ type IMatVecKernel =
     /// Each output sums Columns products, and implementations decode blocks and sum in different
     /// orders: compare results with a tolerance relative to Σ |weights[r, c] × input[c]|, not to
     /// the result, which cancellation can make small. Raises NotSupportedException for a weight
-    /// encoding this backend cannot multiply.
+    /// encoding this backend cannot multiply. A backend may expose an explicit arithmetic
+    /// policy that quantizes activations; its documented quantization error is additional
+    /// to summation error. Such a policy must not mutate the caller's F32 input.
     abstract MatVec: weights: IWeightTensor * input: ITensor * destination: ITensor -> unit
 
 /// Matrix product of several tokens with the same stored weights, for prompt processing:
@@ -247,6 +258,25 @@ type IKeyValueCacheKernel =
     /// same. Reading an empty batch is a valid no-op.
     abstract ReadKeyValues: cache: IKeyValueCache * layer: int * position: int * keys: ITensor * values: ITensor -> unit
 
+/// Causal grouped-query attention over the stored keys and values of one layer.
+type IAttentionKernel =
+    /// Queries and destination have identical F32 shapes: [tokens; queryHeads; HeadDimension]
+    /// or [tokens; queryHeads × HeadDimension]. queryHeads must be positive and divisible by
+    /// the cache's KeyValueHeads. Consecutive groups of queryHeads / KeyValueHeads query heads
+    /// share one KV head. Queries already include RoPE and any attention temperature scaling.
+    /// Token t attends only to positions 0 through position + t, inclusive. All of these positions
+    /// must already be stored in the chosen layer. position is in [0, StoredPositions(layer)];
+    /// an empty batch is a no-op. Neither queries nor cache is modified; destination must differ
+    /// from queries. Scores are dot(Q, K) / sqrt(HeadDimension), normalized by softmax after
+    /// subtracting their maximum, then used to sum V. CPU scores use F32; its online
+    /// mode uses double-precision running value sums and denominator, while the reference
+    /// mode uses F32 reductions. Both decode one cached head at a time. Compare backends
+    /// with numerical tolerances. Non-finite inputs or
+    /// overflowing scores may produce NaN; masking excludes future positions entirely.
+    /// Ownership, validation and ordering follow IKeyValueCacheKernel; invalid head dimensions
+    /// or aliasing raise ArgumentException. Validation completes before any destination write.
+    abstract Attention: cache: IKeyValueCache * layer: int * position: int * queries: ITensor * destination: ITensor -> unit
+
 /// Creates and operates on its own tensors. Separate instances are separate ownership domains,
 /// even when their Backend values match.
 ///
@@ -271,11 +301,13 @@ type ITensorBackend =
     inherit ISwiGluKernel
     inherit IRmsNormKernel
     inherit IEmbeddingKernel
+    inherit IRowCopyKernel
     inherit IMatVecKernel
     inherit IMatMulKernel
     inherit IRopeKernel
     inherit IAttentionTemperatureKernel
     inherit IKeyValueCacheKernel
+    inherit IAttentionKernel
 
     abstract Backend: BackendKind
 

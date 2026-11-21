@@ -7,6 +7,16 @@ open System.Runtime.InteropServices
 open Marmotte.Core
 
 /// The numerical part of the CPU backend: F32 kernels and F16 Add over host spans, with no tensors, ownership
+/// CPU attention algorithm. Online fuses score normalization and value accumulation;
+/// Reference retains the score-buffer implementation for numerical/performance checks.
+[<RequireQualifiedAccess>]
+type CpuAttentionMode =
+    /// Keep the prefix-length score buffer and original F32 accumulation.
+    | Reference
+    /// Fuse normalization and value accumulation with O(head dimension) scratch.
+    | Online
+
+/// The numerical part of the CPU backend: F32 kernels over host spans, with no tensors, ownership
 /// or lifetime. CpuBackend validates tensors, then calls these functions on the arrays it owns;
 /// each function still checks the span lengths it relies on. Safe and vectorized with Vector<T>,
 /// most kernels process Vector<single>.Count lanes at a time (4 with ARM64 NEON, 8 with AVX2),
@@ -119,53 +129,6 @@ module internal CpuKernels =
                 let scale = float32 (1.0 / Math.Sqrt(mean + float epsilon))
                 scaleRow inputRow scale weight (destination.Slice(row * columns, columns))
 
-    /// Multiplies left[i] by right[i] at every position of two equal-length spans and returns the
-    /// sum of those products (their dot product). Products are formed and summed in double
-    /// precision, in two vector accumulators, so long rows keep F32 accuracy even when terms cancel.
-    let private sumOfProducts (left: ReadOnlySpan<single>) (right: ReadOnlySpan<single>) =
-        let mutable sum = 0.0
-        let mutable firstScalar = 0
-        if Vector.IsHardwareAccelerated then
-            let leftVectors = MemoryMarshal.Cast<single, Vector<single>>(left)
-            let rightVectors = MemoryMarshal.Cast<single, Vector<single>>(right)
-            let mutable lowSum = Vector<double>.Zero
-            let mutable highSum = Vector<double>.Zero
-            for index = 0 to leftVectors.Length - 1 do
-                let leftVector = leftVectors[index]
-                let rightVector = rightVectors[index]
-                lowSum <- lowSum + Vector.WidenLower(leftVector) * Vector.WidenLower(rightVector)
-                highSum <- highSum + Vector.WidenUpper(leftVector) * Vector.WidenUpper(rightVector)
-            sum <- Vector.Sum(lowSum + highSum)
-            firstScalar <- leftVectors.Length * Vector<single>.Count
-
-        for index = firstScalar to left.Length - 1 do
-            sum <- sum + float left[index] * float right[index]
-        sum
-
-    /// destination[t, r] = Σ weights[r, c] × input[t, c], for consecutive token rows of Columns input
-    /// values and Rows output values. Decodes each weight row once into a pooled F32 buffer, then
-    /// sums its products with the input row of every token, so the whole batch shares the decoding
-    /// cost; one token is a matrix-vector product, and an empty batch decodes nothing. Destination
-    /// must not overlap input, which every weight row reads in full.
-    let matMul (weights: WeightMatrix, input: ReadOnlySpan<single>, destination: Span<single>) =
-        let columns = weights.Columns
-        let rows = weights.Rows
-        let tokens = input.Length / columns
-        if input.Length % columns <> 0 || int64 destination.Length <> int64 tokens * int64 rows then
-            invalidArg (nameof destination) "Matrix product spans must hold whole token rows of the weight matrix."
-
-        if tokens > 0 then
-            let buffer = ArrayPool<single>.Shared.Rent(columns)
-            try
-                for row = 0 to rows - 1 do
-                    weights.DecodeRow(row, Span<single>(buffer, 0, columns))
-                    let decodedRow = ReadOnlySpan<single>(buffer, 0, columns)
-                    for token = 0 to tokens - 1 do
-                        let tokenInput = input.Slice(token * columns, columns)
-                        destination[token * rows + row] <- float32 (sumOfProducts decodedRow tokenInput)
-            finally
-                ArrayPool<single>.Shared.Return(buffer)
-
     /// Rotates every head of consecutive token rows: pair j of the token at positions[t] turns by
     /// positions[t] × frequency j. The cosine and sine of each angle are computed once per token in
     /// double precision, multiplied by the magnitude, rounded once to F32 and shared by every head.
@@ -242,3 +205,127 @@ module internal CpuKernels =
             for token = 0 to tokens - 1 do
                 let row = input.Slice(token * valuesPerToken, valuesPerToken)
                 multiplyRow row factors[token] (destination.Slice(token * valuesPerToken, valuesPerToken))
+
+    /// Reference attention uses O(prefix length + head dimension) scratch, independent of the
+    /// number of heads and tokens. Future cache rows are never decoded, even if they contain NaN.
+    let attention (layout: KeyValueCacheLayout, queryHeads: int, position: int,
+                   keys: ReadOnlySpan<byte>, values: ReadOnlySpan<byte>,
+                   queries: ReadOnlySpan<single>, destination: Span<single>) =
+        let dimension = layout.HeadDimension
+        let rowValues = queryHeads * dimension
+        if queries.Length <> destination.Length || queries.Length % rowValues <> 0 then
+            invalidArg (nameof destination) "Attention spans must contain the same whole query rows."
+        let tokens = queries.Length / rowValues
+        let prefixLength = position + tokens
+        if keys.Length / layout.KeyRowBytes < prefixLength || values.Length / layout.ValueRowBytes < prefixLength then
+            invalidArg (nameof keys) "Attention requires cached keys and values for every query position."
+
+        let scores = Array.zeroCreate<single> prefixLength
+        let decoded = Array.zeroCreate<single> dimension
+        let keyHeadBytes = layout.KeyRowBytes / layout.KeyValueHeads
+        let valueHeadBytes = layout.ValueRowBytes / layout.KeyValueHeads
+        let groupSize = queryHeads / layout.KeyValueHeads
+        let scale = 1.0f / MathF.Sqrt(single dimension)
+
+        for token = 0 to tokens - 1 do
+            let visible = position + token + 1
+            for head = 0 to queryHeads - 1 do
+                let cacheHead = head / groupSize
+                let query = queries.Slice(token * rowValues + head * dimension, dimension)
+                let output = destination.Slice(token * rowValues + head * dimension, dimension)
+                let mutable maximum = Single.NegativeInfinity
+                for cachedPosition = 0 to visible - 1 do
+                    let offset = cachedPosition * layout.KeyRowBytes + cacheHead * keyHeadBytes
+                    RowDecoder.decode (layout.KeyEncoding, keys.Slice(offset, keyHeadBytes), decoded.AsSpan())
+                    let mutable dot = 0.0f
+                    for channel = 0 to dimension - 1 do
+                        dot <- dot + query[channel] * decoded[channel]
+                    let score = dot * scale
+                    scores[cachedPosition] <- score
+                    maximum <- MathF.Max(maximum, score)
+
+                let mutable denominator = 0.0f
+                for cachedPosition = 0 to visible - 1 do
+                    let weight = MathF.Exp(scores[cachedPosition] - maximum)
+                    scores[cachedPosition] <- weight
+                    denominator <- denominator + weight
+
+                output.Clear()
+                for cachedPosition = 0 to visible - 1 do
+                    let weight = scores[cachedPosition] / denominator
+                    let offset = cachedPosition * layout.ValueRowBytes + cacheHead * valueHeadBytes
+                    RowDecoder.decode (layout.ValueEncoding, values.Slice(offset, valueHeadBytes), decoded.AsSpan())
+                    for channel = 0 to dimension - 1 do
+                        output[channel] <- output[channel] + weight * decoded[channel]
+
+    let private accumulateValues (source: ReadOnlySpan<single>) (weight: double)
+                                 (rescale: double) (destination: Span<double>) =
+        let mutable firstScalar = 0
+        if Vector.IsHardwareAccelerated then
+            let sourceVectors = MemoryMarshal.Cast<single, Vector<single>>(source)
+            let destinationVectors = MemoryMarshal.Cast<double, Vector<double>>(destination)
+            let factor = Vector<double>(weight)
+            let previousScale = Vector<double>(rescale)
+            for index = 0 to sourceVectors.Length - 1 do
+                let low = Vector.WidenLower(sourceVectors[index])
+                let high = Vector.WidenUpper(sourceVectors[index])
+                destinationVectors[2 * index] <- destinationVectors[2 * index] * previousScale + factor * low
+                destinationVectors[2 * index + 1] <- destinationVectors[2 * index + 1] * previousScale + factor * high
+            firstScalar <- sourceVectors.Length * Vector<single>.Count
+        for index = firstScalar to destination.Length - 1 do
+            destination[index] <- destination[index] * rescale + weight * float source[index]
+
+    /// Online stable softmax: retain a running maximum, denominator and weighted values.
+    /// Scratch is O(head dimension), independent of prefix length. Scores/exp use F32;
+    /// running sums use double to avoid overflow before final normalization. Each visible
+    /// key/value is decoded once per query head; no score array or approximate attention is used.
+    let attentionOnline (layout: KeyValueCacheLayout, queryHeads: int, position: int,
+                         keys: ReadOnlySpan<byte>, values: ReadOnlySpan<byte>,
+                         queries: ReadOnlySpan<single>, destination: Span<single>) =
+        let dimension = layout.HeadDimension
+        let rowValues = queryHeads * dimension
+        if queries.Length <> destination.Length || queries.Length % rowValues <> 0 then
+            invalidArg (nameof destination) "Attention spans must contain the same whole query rows."
+        let tokens = queries.Length / rowValues
+        let prefixLength = position + tokens
+        if keys.Length / layout.KeyRowBytes < prefixLength || values.Length / layout.ValueRowBytes < prefixLength then
+            invalidArg (nameof keys) "Attention requires cached keys and values for every query position."
+
+        let decoded = Array.zeroCreate<single> dimension
+        // Unnormalized sums can exceed F32 even when the final average is finite.
+        let accumulated = Array.zeroCreate<double> dimension
+        let keyHeadBytes = layout.KeyRowBytes / layout.KeyValueHeads
+        let valueHeadBytes = layout.ValueRowBytes / layout.KeyValueHeads
+        let groupSize = queryHeads / layout.KeyValueHeads
+        let scale = 1.0f / MathF.Sqrt(single dimension)
+        for token = 0 to tokens - 1 do
+            let visible = position + token + 1
+            for head = 0 to queryHeads - 1 do
+                let cacheHead = head / groupSize
+                let query = queries.Slice(token * rowValues + head * dimension, dimension)
+                let output = destination.Slice(token * rowValues + head * dimension, dimension)
+                accumulated.AsSpan().Clear()
+                let mutable maximum = Single.NegativeInfinity
+                let mutable denominator = 0.0
+                for cachedPosition = 0 to visible - 1 do
+                    let keyOffset = cachedPosition * layout.KeyRowBytes + cacheHead * keyHeadBytes
+                    RowDecoder.decode (layout.KeyEncoding, keys.Slice(keyOffset, keyHeadBytes), decoded.AsSpan())
+                    let mutable dot = 0.0f
+                    for channel = 0 to dimension - 1 do
+                        dot <- dot + query[channel] * decoded[channel]
+                    let score = dot * scale
+                    let mutable rescale = 1.0
+                    if score > maximum then
+                        rescale <- float (MathF.Exp(maximum - score))
+                        maximum <- score
+                        denominator <- denominator * rescale
+                    // An initial -infinity has zero mass if a finite score follows.
+                    // All -infinity scores still produce NaN on final normalization;
+                    // +infinity and NaN propagate through the ordinary exponential.
+                    let weight = if Single.IsNegativeInfinity score then 0.0f else MathF.Exp(score - maximum)
+                    denominator <- denominator + float weight
+                    let valueOffset = cachedPosition * layout.ValueRowBytes + cacheHead * valueHeadBytes
+                    RowDecoder.decode (layout.ValueEncoding, values.Slice(valueOffset, valueHeadBytes), decoded.AsSpan())
+                    accumulateValues (ReadOnlySpan<single>(decoded)) (float weight) rescale (accumulated.AsSpan())
+                for channel = 0 to dimension - 1 do
+                    output[channel] <- single (accumulated[channel] / denominator)

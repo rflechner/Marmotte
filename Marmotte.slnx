@@ -31,13 +31,27 @@
     <File Path="docs\tensor-storage-modes.png" />
     <File Path="docs\tensor-strides.png" />
     <File Path="docs\tensor-transpose-strides.png" />
+    <File Path="docs/chat-prompts.md" />
+    <File Path="docs/forward-pass.md" />
+    <File Path="docs/generation-session.md" />
+    <File Path="docs/sampling.md" />
+    <File Path="docs/token-generation.md" />
+    <File Path="ROADMAP.md" />
   </Folder>
   <Folder Name="/examples/">
     <File Path="examples/Add.fsx" />
+    <File Path="examples/Forward.fsx" />
+    <File Path="examples/Generation.fsx" />
+    <File Path="examples/SyntheticModel.fsx" />
+    <File Path="examples\Attention.fsx" />
     <File Path="examples/CudaAdd.fsx" />
     <File Path="examples\Embedding.fsx" />
     <File Path="examples/Yarn.fsx" />
     <File Path="examples\KeyValueCache.fsx" />
+    <File Path="examples\MatrixProducts.fsx" />
+    <File Path="examples\InferencePerformance.fsx" />
+    <File Path="examples\ParserCombinatorSample.fsx" />
+    <File Path="examples\Tokenizer.fsx" />
   </Folder>
   <Folder Name="/src/">
     <Project Path="src/Marmotte.Cli/Marmotte.Cli.fsproj" />

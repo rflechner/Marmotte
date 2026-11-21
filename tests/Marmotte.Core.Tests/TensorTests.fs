@@ -48,15 +48,22 @@ let private stored name encoding shape (payload: byte array) =
 
 let private sourceOf tensors = new InMemoryTensorSource(tensors)
 
-// Block sizes from the Q4_0, Q8_0, Q4_K and Q6_K block layouts cited in docs/gguf.md.
+// Block sizes from the quantized block layouts cited in docs/gguf.md.
 let private encodingNamed name =
     match name with
     | "F32" -> TensorEncoding.F32
     | "F16" -> TensorEncoding.F16
     | "BF16" -> TensorEncoding.BF16
     | "Q4_0" -> TensorEncoding.Q4_0
+    | "Q4_1" -> TensorEncoding.Q4_1
+    | "Q5_0" -> TensorEncoding.Q5_0
+    | "Q5_1" -> TensorEncoding.Q5_1
     | "Q8_0" -> TensorEncoding.Q8_0
+    | "IQ4_NL" -> TensorEncoding.IQ4_NL
+    | "Q2_K" -> TensorEncoding.Q2_K
+    | "Q3_K" -> TensorEncoding.Q3_K
     | "Q4_K" -> TensorEncoding.Q4_K
+    | "Q5_K" -> TensorEncoding.Q5_K
     | "Q6_K" -> TensorEncoding.Q6_K
     | _ -> failwith $"Unknown test encoding {name}"
 
@@ -79,8 +86,15 @@ let ``reads matrix rows in row-major order`` () =
 [<InlineData("F16", 3, 6)>]
 [<InlineData("BF16", 5, 10)>]
 [<InlineData("Q4_0", 64, 36)>]
+[<InlineData("Q4_1", 64, 40)>]
+[<InlineData("Q5_0", 32, 22)>]
+[<InlineData("Q5_1", 64, 48)>]
 [<InlineData("Q8_0", 32, 34)>]
+[<InlineData("IQ4_NL", 96, 54)>]
+[<InlineData("Q2_K", 256, 84)>]
+[<InlineData("Q3_K", 512, 220)>]
 [<InlineData("Q4_K", 256, 144)>]
+[<InlineData("Q5_K", 256, 176)>]
 [<InlineData("Q6_K", 512, 420)>]
 let ``rows hold whole quantization blocks`` encodingName columns rowBytes =
     let payload = Array.init (3 * rowBytes) byte
@@ -219,3 +233,110 @@ let ``file source reports a file truncated after it was opened`` () =
             writer.SetLength(10L)
 
         Assert.Throws<EndOfStreamException>(fun () -> source.ReadPayload("matrix") |> ignore) |> ignore)
+
+[<Fact>]
+let ``mapped source serves payloads from absolute offsets`` () =
+    let bytes = Array.init 64 byte
+    let locations =
+        [| location "matrix" (Some TensorEncoding.F32) [ 2UL; 2UL ] 16 8L
+           location "indices" None [ 1UL ] 4 32L |]
+
+    withFile bytes (fun path ->
+        use source = new MappedTensorSource(File.OpenRead(path), locations) :> ITensorSource
+
+        Assert.Equal<string>([| "matrix"; "indices" |], source.Tensors |> Seq.map (fun tensor -> tensor.Name))
+        Assert.Equal(Some [| 1UL |], source.TryFindTensor("indices") |> Option.map (fun tensor -> tensor.Shape))
+        Assert.Equal(None, source.TryFindTensor("Matrix"))
+        let payload = source.ReadPayload("matrix")
+        Assert.Equal(16, payload.Length)
+        Assert.Equal<byte>(bytes[8..23], payload.ToArray())
+
+        let error = Assert.Throws<InvalidDataException>(fun () -> source.ReadPayload("indices") |> ignore)
+        Assert.Contains("I32", error.Message)
+        Assert.Throws<KeyNotFoundException>(fun () -> source.ReadPayload("missing") |> ignore) |> ignore)
+
+[<Fact>]
+let ``mapped source payloads are views of the file, not copies`` () =
+    let bytes = Array.init 32 byte
+    let locations = [| location "matrix" (Some TensorEncoding.F32) [ 1UL; 2UL ] 8 0L |]
+
+    withFile bytes (fun path ->
+        let file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite)
+        use source = new MappedTensorSource(file, locations) :> ITensorSource
+        let payload = source.ReadPayload("matrix")
+        Assert.Equal<byte>(bytes[0..7], payload.ToArray())
+
+        // A copied payload would keep the old byte; a mapped one observes the write.
+        do
+            use writer = new FileStream(path, FileMode.Open, FileAccess.Write, FileShare.ReadWrite)
+            writer.WriteByte(255uy)
+
+        Assert.Equal(255uy, payload.Span[0]))
+
+[<Fact>]
+let ``mapped source rejects duplicate names, ranges outside the file and empty files`` () =
+    let matrix = location "matrix" (Some TensorEncoding.F32) [ 1UL; 2UL ] 8 0L
+    let invalidLocations =
+        [ [| matrix; matrix |]
+          [| { matrix with AbsoluteOffset = 9L } |]
+          [| { matrix with AbsoluteOffset = -1L } |] ]
+
+    withFile (Array.zeroCreate 16) (fun path ->
+        for locations in invalidLocations do
+            use file = File.OpenRead(path)
+            Assert.Throws<ArgumentException>(fun () -> new MappedTensorSource(file, locations) |> ignore) |> ignore)
+
+    withFile [||] (fun path ->
+        use file = File.OpenRead(path)
+        Assert.Throws<ArgumentException>(fun () -> new MappedTensorSource(file, [||]) |> ignore) |> ignore)
+
+[<Fact>]
+let ``mapped source unmaps on dispose and returned payloads outlive it`` () =
+    let locations = [| location "matrix" (Some TensorEncoding.F32) [ 1UL; 2UL ] 8 0L |]
+
+    withFile (Array.init 8 byte) (fun path ->
+        let file = File.OpenRead(path)
+        let source = new MappedTensorSource(file, locations) :> ITensorSource
+        let payload = source.ReadPayload("matrix")
+        source.Dispose()
+
+        Assert.False(file.CanRead)
+        Assert.Throws<ObjectDisposedException>(fun () -> source.ReadPayload("matrix") |> ignore) |> ignore
+        // The payload memory holds a reference on the view, so it stays readable.
+        Assert.Equal<byte>([| 0uy; 1uy; 2uy; 3uy; 4uy; 5uy; 6uy; 7uy |], payload.ToArray())
+        use exclusive = File.Open(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None)
+        Assert.True(exclusive.CanWrite))
+
+[<Fact>]
+let ``mapped source reports a file truncated after it was opened`` () =
+    let locations = [| location "matrix" (Some TensorEncoding.F32) [ 2UL; 2UL ] 16 0L |]
+
+    withFile (Array.zeroCreate 16) (fun path ->
+        let file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite)
+        use source = new MappedTensorSource(file, locations) :> ITensorSource
+
+        do
+            use writer = new FileStream(path, FileMode.Open, FileAccess.Write, FileShare.ReadWrite)
+            writer.SetLength(10L)
+
+        Assert.Throws<EndOfStreamException>(fun () -> source.ReadPayload("matrix") |> ignore) |> ignore)
+
+[<Fact>]
+let ``weight matrices read and decode rows straight from the mapped file`` () =
+    // Two Q8_0 rows of 32 values, 34 bytes each.
+    let payload = Array.init 68 byte
+    let locations = [| location "matrix" (Some TensorEncoding.Q8_0) [ 2UL; 32UL ] 68 0L |]
+
+    withFile payload (fun path ->
+        use source = new MappedTensorSource(File.OpenRead(path), locations) :> ITensorSource
+        let matrix = WeightMatrix.Read(source, "matrix")
+
+        Assert.Equal(TensorEncoding.Q8_0, matrix.Encoding)
+        Assert.Equal(34, matrix.RowBytes)
+        Assert.Equal<byte>(payload[34..], matrix.Row(1).ToArray())
+
+        let decoded = Array.zeroCreate<single> matrix.Columns
+        let expected = Array.zeroCreate<single> matrix.Columns
+        matrix.DecodeRow(1, Span<single>(decoded))
+        RowDecoder.decode(TensorEncoding.Q8_0, payload.AsSpan(34, 34), Span<single>(expected))
+        Assert.Equal<single>(expected, decoded))

@@ -9,7 +9,9 @@ open Marmotte.Cuda
 open Marmotte.Metal
 open Xunit
 
-let private cpu () = new CpuBackend() :> ITensorBackend
+// Keep the original strict numerical tests on the decoded-input reference policy.
+// The default quantized-input policy has separate approximation tests below.
+let private cpu () = new CpuBackend(CpuMatrixProductMode.DecodedFloat) :> ITensorBackend
 
 let private download (backend: ITensorBackend) (tensor: ITensor) =
     let values = Array.zeroCreate<single> tensor.Shape.ElementCount
@@ -483,10 +485,15 @@ let private randomPayload (random: Random) (encoding: TensorEncoding) rows colum
         let bytes = Array.zeroCreate<byte> (valueCount / encoding.BlockElements * blockBytes)
         random.NextBytes(bytes)
         // Super-block scale offsets from the block layouts cited in docs/kernels.md: d first, plus
-        // dmin for Q4_K; d last for Q6_K.
+        // dmin for Q4_K and Q5_K; d and dmin last for Q2_K, d last for Q3_K and Q6_K.
         let scaleOffsets =
             match encoding with
-            | TensorEncoding.Q4_K -> [ 0; 2 ]
+            | TensorEncoding.Q4_1
+            | TensorEncoding.Q5_1
+            | TensorEncoding.Q4_K
+            | TensorEncoding.Q5_K -> [ 0; 2 ]
+            | TensorEncoding.Q2_K -> [ 80; 82 ]
+            | TensorEncoding.Q3_K -> [ 108 ]
             | TensorEncoding.Q6_K -> [ 208 ]
             | _ -> [ 0 ]
         for block in 0 .. bytes.Length / blockBytes - 1 do
@@ -537,8 +544,15 @@ let ``MatVec matches decoded rows in double precision for every encoding`` () =
           TensorEncoding.F16, [ 5; 64 ]
           TensorEncoding.BF16, [ 7; 64 ]
           TensorEncoding.Q4_0, [ 32; 96 ]
+          TensorEncoding.Q4_1, [ 32; 96 ]
+          TensorEncoding.Q5_0, [ 32; 96 ]
+          TensorEncoding.Q5_1, [ 32; 96 ]
           TensorEncoding.Q8_0, [ 32; 96 ]
+          TensorEncoding.IQ4_NL, [ 32; 96 ]
+          TensorEncoding.Q2_K, [ 256; 512 ]
+          TensorEncoding.Q3_K, [ 256; 512 ]
           TensorEncoding.Q4_K, [ 256; 512 ]
+          TensorEncoding.Q5_K, [ 256; 512 ]
           TensorEncoding.Q6_K, [ 256; 512 ] ]
 
     for encoding, widths in cases do
@@ -617,8 +631,15 @@ let ``MatMul matches decoded rows in double precision for every encoding and bat
           TensorEncoding.F16, 64
           TensorEncoding.BF16, 64
           TensorEncoding.Q4_0, 96
+          TensorEncoding.Q4_1, 96
+          TensorEncoding.Q5_0, 96
+          TensorEncoding.Q5_1, 96
           TensorEncoding.Q8_0, 96
+          TensorEncoding.IQ4_NL, 96
+          TensorEncoding.Q2_K, 512
+          TensorEncoding.Q3_K, 512
           TensorEncoding.Q4_K, 512
+          TensorEncoding.Q5_K, 512
           TensorEncoding.Q6_K, 512 ]
 
     for encoding, columns in cases do
@@ -631,20 +652,20 @@ let ``MatMul matches decoded rows in double precision for every encoding and bat
 let ``MatMul gives each token exactly its MatVec result`` () =
     use backend = cpu ()
     let random = Random(2021)
-    let matrix = matrixOf TensorEncoding.Q4_K 16 3072 (randomPayload random TensorEncoding.Q4_K 16 3072)
+    let matrix = matrixOf TensorEncoding.Q4_K 257 3072 (randomPayload random TensorEncoding.Q4_K 257 3072)
     let inputValues = Array.init (4 * 3072) (fun _ -> float32 (random.NextDouble() * 2.0 - 1.0))
     use weights = backend.UploadWeights(matrix)
     use input = backend.Upload(TensorShape.Create [| 4; 3072 |], ReadOnlyMemory<single>(inputValues))
-    use destination = backend.Allocate(TensorShape.Create [| 4; 16 |])
+    use destination = backend.Allocate(TensorShape.Create [| 4; 257 |])
 
     backend.MatMul(weights, input, destination)
 
     let batched = download backend destination
     for token in 0 .. 3 do
         use vector = backend.Upload(TensorShape.Create [| 3072 |], ReadOnlyMemory<single>(inputValues, token * 3072, 3072))
-        use output = backend.Allocate(TensorShape.Create [| 16 |])
+        use output = backend.Allocate(TensorShape.Create [| 257 |])
         backend.MatVec(weights, vector, output)
-        Assert.Equal<single>(download backend output, batched[token * 16 .. token * 16 + 15])
+        Assert.Equal<single>(download backend output, batched[token * 257 .. token * 257 + 256])
 
 [<Fact>]
 let ``MatMul accepts an empty batch as a no-op`` () =
@@ -763,3 +784,269 @@ let ``disposed backends reject all operations and allow repeated disposal`` name
     Assert.Throws<ObjectDisposedException>(fun () -> backend.AllocateKeyValueCache(cacheLayout ()) |> ignore) |> ignore
     Assert.Throws<ObjectDisposedException>(fun () -> backend.StoreKeyValues(cache, 0, 0, tensor, tensor)) |> ignore
     Assert.Throws<ObjectDisposedException>(fun () -> backend.ReadKeyValues(cache, 0, 0, tensor, tensor)) |> ignore
+
+[<Fact>]
+let ``large matrix products match scalar references for every encoding`` () =
+    use backend = cpu ()
+    let random = Random(8128)
+    // Uneven row partitions and enough work to exercise row parallelism on multi-core hosts.
+    for encoding in [ TensorEncoding.F32; TensorEncoding.F16; TensorEncoding.BF16
+                      TensorEncoding.Q4_0; TensorEncoding.Q4_1; TensorEncoding.Q5_0
+                      TensorEncoding.Q5_1; TensorEncoding.Q8_0; TensorEncoding.IQ4_NL
+                      TensorEncoding.Q2_K; TensorEncoding.Q3_K; TensorEncoding.Q4_K
+                      TensorEncoding.Q5_K; TensorEncoding.Q6_K ] do
+        let columns = if encoding.BlockElements = 1 then 515 else 512
+        let matrix = matrixOf encoding 257 columns (randomPayload random encoding 257 columns)
+        let values = Array.init (3 * columns) (fun _ -> float32 (random.NextDouble() - 0.5))
+        assertMatVec backend matrix values[..columns - 1]
+        assertMatMul backend matrix 3 values
+
+[<Theory>]
+[<InlineData(1)>]
+[<InlineData(3)>]
+[<InlineData(4)>]
+[<InlineData(7)>]
+[<InlineData(8)>]
+[<InlineData(15)>]
+[<InlineData(16)>]
+[<InlineData(17)>]
+[<InlineData(65)>]
+let ``matrix products handle SIMD boundaries and repeated execution`` columns =
+    use backend = cpu ()
+    let random = Random(columns)
+    let matrix = matrixOf TensorEncoding.F32 257 columns (randomPayload random TensorEncoding.F32 257 columns)
+    let tokens = 9
+    let values = Array.init (tokens * columns) (fun _ -> float32 (random.NextDouble() - 0.5))
+    assertMatMul backend matrix tokens values
+    use weights = backend.UploadWeights matrix
+    use input = backend.Upload(TensorShape.Create [| tokens; columns |], ReadOnlyMemory<single>(values))
+    use output = backend.Allocate(TensorShape.Create [| tokens; 257 |])
+    backend.MatMul(weights, input, output)
+    let expected = download backend output
+    for _ in 1 .. 4 do
+        backend.MatMul(weights, input, output)
+        Assert.Equal<single>(expected, download backend output)
+
+[<Fact>]
+let ``matrix products widen before multiplying large cancelling terms`` () =
+    use backend = cpu ()
+    let columns = 1024
+    let values = Array.init columns (fun i -> if i % 2 = 0 then 1e20f else -1e20f)
+    let payload = Array.init (257 * columns) (fun i -> values[i % columns]) |> Array.collect BitConverter.GetBytes
+    let matrix = matrixOf TensorEncoding.F32 257 columns payload
+    use weights = backend.UploadWeights matrix
+    use input = backend.Upload(TensorShape.Create [| columns |], ReadOnlyMemory<single>(Array.create columns 1e20f))
+    use output = backend.Allocate(TensorShape.Create [| 257 |])
+    backend.MatVec(weights, input, output)
+    Assert.Equal<single>(Array.zeroCreate 257, download backend output)
+
+let private kEncodings =
+    [ TensorEncoding.Q2_K; TensorEncoding.Q3_K; TensorEncoding.Q4_K
+      TensorEncoding.Q5_K; TensorEncoding.Q6_K ]
+
+[<Fact>]
+let ``activation quantization has explicit signed scales ties sums and zero blocks`` () =
+    let values = Array.zeroCreate<single> 768
+    // The first largest magnitude is positive, so its scale is -1.
+    Array.blit [| 127.0f; -127.0f; 0.5f; 1.5f; 2.5f; -1.5f |] 0 values 0 6
+    values[256] <- -254.0f
+    let quantized = CpuQ8Activations.create values.Length (ReadOnlySpan<single>(values))
+    Assert.Equal<single>([| -1.0f; 2.0f; 0.0f |], quantized.Scales)
+    Assert.Equal<int16>([| -127s; 127s; 0s; -2s; -2s; 2s |], quantized.Quants[..5])
+    Assert.Equal(-2, quantized.Sums[0])
+    Assert.Equal(-127, quantized.Sums[16])
+    Assert.All(quantized.Quants[512..], fun value -> Assert.Equal(0s, value))
+    Assert.All(quantized.Sums[32..], fun value -> Assert.Equal(0, value))
+
+[<Fact>]
+let ``activation quantization declines nonfinite and unrepresentable scales`` () =
+    for value in [ Single.NaN; Single.PositiveInfinity; Single.NegativeInfinity; Single.Epsilon ] do
+        Assert.False((CpuQ8Activations.create 256 (ReadOnlySpan<single>(Array.create 256 value))).ValidTokens[0])
+    let values = Array.create 256 Single.MaxValue
+    let quantized = CpuQ8Activations.create values.Length (ReadOnlySpan<single>(values))
+    Assert.True(Single.IsFinite quantized.Scales[0])
+    Assert.Equal(-127s, quantized.Quants[0])
+
+[<Fact>]
+let ``integer K views reconstruct every value of independently packed rows`` () =
+    let random = Random(901)
+    for encoding in kEncodings do
+        let matrix = matrixOf encoding 3 768 (randomPayload random encoding 3 768)
+        let quants = Array.zeroCreate<int16> 768
+        let unpacked = CpuKQuantBlocks.createRow 768 quants
+        let decoded = Array.zeroCreate<single> 768
+        for row = 0 to 2 do
+            Assert.True(CpuKQuantBlocks.unpack matrix row unpacked)
+            matrix.DecodeRow(row, decoded.AsSpan())
+            for column = 0 to 767 do
+                let actual = unpacked.BlockScales[column / 256] * single unpacked.GroupScales[column / 16] * single quants[column]
+                             - unpacked.BlockMinimums[column / 256] * single unpacked.GroupMinimums[column / 16]
+                Assert.Equal(decoded[column], actual)
+
+/// Independently reconstruct quantized activations for a scalar dot-product oracle.
+let private quantizedInput (values: single array) =
+    values
+    |> Array.chunkBySize 256
+    |> Array.collect (fun block ->
+        let extreme = block |> Array.fold (fun best value -> if abs value > abs best then value else best) 0.0f
+        if extreme = 0.0f then Array.zeroCreate<double> 256
+        else
+            let inverse = -127.0f / extreme
+            let scale = float (1.0f / inverse)
+            block |> Array.map (fun value -> scale * Math.Round(float (value * inverse), MidpointRounding.ToEven)))
+
+[<Fact>]
+let ``quantized K products agree with a scalar oracle and obey activation error bounds`` () =
+    use backend = new CpuBackend() :> ITensorBackend
+    let random = Random(902)
+    for encoding in kEncodings do
+        for rows, columns, tokens in [ 3, 256, 1; 257, 768, 3 ] do
+            let matrix = matrixOf encoding rows columns (randomPayload random encoding rows columns)
+            let values = Array.init (tokens * columns) (fun i -> if i / 256 = 0 then 0.0f else single (random.NextDouble() - 0.5))
+            let reconstructed = quantizedInput values
+            use weights = backend.UploadWeights matrix
+            use input = backend.Upload(TensorShape.Create [| tokens; columns |], ReadOnlyMemory<single>(values))
+            use output = backend.Allocate(TensorShape.Create [| tokens; rows |])
+            backend.MatMul(weights, input, output)
+            let actual = download backend output
+            let decoded = Array.zeroCreate<single> columns
+            for row = 0 to rows - 1 do
+                matrix.DecodeRow(row, decoded.AsSpan())
+                for token = 0 to tokens - 1 do
+                    let mutable reference = 0.0
+                    let mutable quantized = 0.0
+                    let mutable errorBound = 0.0
+                    let mutable magnitude = 0.0
+                    for column = 0 to columns - 1 do
+                        let index = token * columns + column
+                        let weight = float decoded[column]
+                        reference <- reference + weight * float values[index]
+                        quantized <- quantized + weight * reconstructed[index]
+                        errorBound <- errorBound + abs weight * abs (float values[index] - reconstructed[index])
+                        magnitude <- magnitude + abs (weight * reconstructed[index])
+                    let rounding = 1e-6 * magnitude + 1e-25
+                    Assert.True(abs (float actual[token * rows + row] - quantized) <= rounding,
+                                $"{encoding}, row {row}, token {token}: integer product differs from scalar oracle.")
+                    Assert.True(abs (float actual[token * rows + row] - reference) <= errorBound + rounding)
+            Assert.Equal<single>(values, download backend input)
+            for token = 0 to tokens - 1 do
+                use vector = backend.Upload(TensorShape.Create [| columns |], ReadOnlyMemory<single>(values, token * columns, columns))
+                use result = backend.Allocate(TensorShape.Create [| rows |])
+                backend.MatVec(weights, vector, result)
+                Assert.Equal<single>(actual[token * rows .. (token + 1) * rows - 1], download backend result)
+            backend.MatMul(weights, input, output)
+            Assert.Equal<single>(actual, download backend output)
+
+[<Fact>]
+let ``quantized policy preserves reference handling of nonfinite input and scales`` () =
+    use reference = cpu ()
+    use optimized = new CpuBackend() :> ITensorBackend
+    let random = Random(903)
+    for encoding in kEncodings do
+        let payload = randomPayload random encoding 2 256
+        for invalidWeight in [ false; true ] do
+            if invalidWeight then
+                let offset =
+                    match encoding with
+                    | TensorEncoding.Q2_K -> 80
+                    | TensorEncoding.Q3_K -> 108
+                    | TensorEncoding.Q6_K -> 208
+                    | _ -> 0
+                BinaryPrimitives.WriteUInt16LittleEndian(payload.AsSpan(offset, 2), 0x7c00us)
+            let matrix = matrixOf encoding 2 256 payload
+            for value in [ 1.0f; Single.Epsilon; Single.PositiveInfinity; Single.NaN ] do
+                let run (backend: ITensorBackend) =
+                    use weights = backend.UploadWeights matrix
+                    use input = backend.Upload(TensorShape.Create [| 256 |], ReadOnlyMemory<single>(Array.create 256 value))
+                    use result = backend.Allocate(TensorShape.Create [| 2 |])
+                    backend.MatVec(weights, input, result)
+                    download backend result
+                let expected = run reference
+                let actual = run optimized
+                for row = 0 to 1 do
+                    if Single.IsNaN expected[row] then Assert.True(Single.IsNaN actual[row])
+                    elif Single.IsInfinity expected[row] then Assert.Equal(expected[row], actual[row])
+                    else Assert.True(abs (actual[row] - expected[row]) <= abs expected[row] * 1e-5f + 1e-30f)
+
+[<Fact>]
+let ``fallback is per token and batch results equal individual vector products`` () =
+    use backend = new CpuBackend() :> ITensorBackend
+    let random = Random(904)
+    let columns = 512
+    for encoding in kEncodings do
+        let matrix = matrixOf encoding 17 columns (randomPayload random encoding 17 columns)
+        let values = Array.init (3 * columns) (fun _ -> single (random.NextDouble() - 0.5))
+        values[columns + 17] <- Single.NaN
+        use weights = backend.UploadWeights matrix
+        use batch = backend.Upload(TensorShape.Create [| 3; columns |], ReadOnlyMemory<single>(values))
+        use output = backend.Allocate(TensorShape.Create [| 3; 17 |])
+        backend.MatMul(weights, batch, output)
+        let actual = download backend output
+        for token = 0 to 2 do
+            use vector = backend.Upload(TensorShape.Create [| columns |], ReadOnlyMemory<single>(values, token * columns, columns))
+            use result = backend.Allocate(TensorShape.Create [| 17 |])
+            backend.MatVec(weights, vector, result)
+            let expected = download backend result
+            for row = 0 to 16 do
+                if Single.IsNaN expected[row] then Assert.True(Single.IsNaN actual[token * 17 + row])
+                else Assert.Equal(expected[row], actual[token * 17 + row])
+
+[<Fact>]
+let ``integer block accumulation handles the largest signed K products`` () =
+    let row = CpuKQuantBlocks.createRow 256 (Array.create 256 -32s)
+    Array.fill row.GroupScales 0 16 -128
+    row.BlockScales[0] <- 1.0f
+    let input = CpuQ8Activations.create 256 (ReadOnlySpan<single>(Array.create 256 -127.0f))
+    Assert.Equal(-133169152.0f, CpuKQuantBlocks.dot row input 0)
+
+[<Fact>]
+let ``quantized policy leaves non K encodings unchanged`` () =
+    use backend = new CpuBackend() :> ITensorBackend
+    let random = Random(905)
+    for encoding in [ TensorEncoding.F32; TensorEncoding.F16; TensorEncoding.BF16
+                      TensorEncoding.Q4_0; TensorEncoding.Q4_1; TensorEncoding.Q5_0
+                      TensorEncoding.Q5_1; TensorEncoding.Q8_0; TensorEncoding.IQ4_NL ] do
+        let matrix = matrixOf encoding 17 96 (randomPayload random encoding 17 96)
+        let values = Array.init (3 * 96) (fun _ -> single (random.NextDouble() - 0.5))
+        assertMatMul backend matrix 3 values
+
+[<Fact>]
+let ``row copies select contiguous rows and preserve their source`` () =
+    use backend = new CpuBackend() :> ITensorBackend
+    let values = Array.init 15 single
+    use source = backend.Upload(TensorShape.Create [| 5; 3 |], ReadOnlyMemory<single>(values))
+    use destination = backend.Allocate(TensorShape.Create [| 2; 3 |])
+    backend.CopyRows(source, 2, destination)
+    Assert.Equal<single>(values[6..11], download backend destination)
+    backend.CopyRows(source, 0, source)
+    Assert.Equal<single>(values, download backend source)
+    use empty = backend.Allocate(TensorShape.Create [| 0; 3 |])
+    backend.CopyRows(source, 5, empty)
+    Assert.Empty(download backend empty)
+
+[<Fact>]
+let ``row copies validate ranges shapes ownership and disposal before writing`` () =
+    use backend = new CpuBackend() :> ITensorBackend
+    use other = new CpuBackend() :> ITensorBackend
+    use source = backend.Allocate(TensorShape.Create [| 3; 2 |])
+    use result = backend.Upload(TensorShape.Create [| 2; 2 |], ReadOnlyMemory<single>(Array.create 4 42.0f))
+    for offset in [ -1; 2; Int32.MaxValue ] do
+        Assert.Throws<ArgumentOutOfRangeException>(fun () -> backend.CopyRows(source, offset, result)) |> ignore
+    use vector = backend.Allocate(TensorShape.Create [| 6 |])
+    use narrow = backend.Allocate(TensorShape.Create [| 3; 1 |])
+    use foreign = other.Allocate(source.Shape)
+    Assert.Throws<ArgumentException>(fun () -> backend.CopyRows(vector, 0, result)) |> ignore
+    Assert.Throws<ArgumentException>(fun () -> backend.CopyRows(narrow, 0, result)) |> ignore
+    Assert.Throws<ArgumentException>(fun () -> backend.CopyRows(foreign, 0, result)) |> ignore
+    Assert.Throws<ArgumentNullException>(fun () -> backend.CopyRows(Unchecked.defaultof<ITensor>, 0, result)) |> ignore
+    let disposed = backend.Allocate(source.Shape)
+    disposed.Dispose()
+    Assert.Throws<ObjectDisposedException>(fun () -> backend.CopyRows(disposed, 0, result)) |> ignore
+    Assert.Equal<single>(Array.create 4 42.0f, download backend result)
+
+[<Theory>]
+[<InlineData("CUDA")>]
+[<InlineData("Metal")>]
+let ``GPU row copies remain explicit placeholders`` name =
+    use backend = createBackend name
+    Assert.Throws<NotImplementedException>(fun () -> backend.CopyRows(Unchecked.defaultof<ITensor>, 0, Unchecked.defaultof<ITensor>)) |> ignore

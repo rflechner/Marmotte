@@ -131,8 +131,9 @@ them one row at a time.
 | `ISwiGluKernel.SwiGlu` | Safe `Vector<T>` loop with `Vector.Exp`, scalar tail with `MathF.Exp` | `NotImplementedException` | `NotImplementedException` |
 | `IRmsNormKernel.RmsNorm` | Safe `Vector<T>` loops, sum of squares in double precision | `NotImplementedException` | `NotImplementedException` |
 | `IEmbeddingKernel.EmbeddingLookup` | Decodes selected rows with `RowDecoder` directly into F32 output | `NotImplementedException` | `NotImplementedException` |
-| `IMatVecKernel.MatVec` | One decoded row at a time, `Vector<T>` dot product in double precision | `NotImplementedException` | `NotImplementedException` |
-| `IMatMulKernel.MatMul` | Each decoded row shared by every token of the batch | `NotImplementedException` | `NotImplementedException` |
+| `IRowCopyKernel.CopyRows` | Validated contiguous row copy over safe spans | `NotImplementedException` | `NotImplementedException` |
+| `IMatVecKernel.MatVec` | Parallel rows, safe intrinsics and double-precision dot products | `NotImplementedException` | `NotImplementedException` |
+| `IMatMulKernel.MatMul` | Each integer or decoded row shared by every token of the batch | `NotImplementedException` | `NotImplementedException` |
 | `IRopeKernel.Rope` | Angles in double precision once per token, shared by every head | `NotImplementedException` | `NotImplementedException` |
 | `IAttentionTemperatureKernel.ApplyAttentionTemperature` | One F32 factor per token, `Vector<T>` multiplication | `NotImplementedException` | `NotImplementedException` |
 | `AllocateKeyValueCache` | Whole capacity up front: one byte array per layer for keys, one for values | `NotImplementedException` | `NotImplementedException` |
@@ -140,7 +141,7 @@ them one row at a time.
 | SDK/driver required today | None | Toolkit for native builds, driver/GPU for non-empty tensors | None |
 
 `ITensorBackend` inherits `IAddKernel`, `ISwiGluKernel`, `IRmsNormKernel`,
-`IEmbeddingKernel`, `IMatVecKernel`, `IMatMulKernel`, `IRopeKernel`,
+`IEmbeddingKernel`, `IRowCopyKernel`, `IMatVecKernel`, `IMatMulKernel`, `IRopeKernel`,
 `IAttentionTemperatureKernel` and `IKeyValueCacheKernel`, so orchestration can
 call each kernel directly on the backend.
 A consumer needing a single operation can accept its kernel interface directly.
@@ -375,7 +376,8 @@ output is written, including for an empty batch.
 
 The CPU lookup decodes each selected row with Core's `RowDecoder`, through
 `WeightMatrix.DecodeRow`, which supports every current `TensorEncoding`: F32,
-F16, BF16, Q4_0, Q8_0, Q4_K and Q6_K. It uses safe spans and explicit
+F16, BF16, Q4_0, Q4_1, Q5_0, Q5_1, Q8_0, IQ4_NL, Q2_K, Q3_K, Q4_K, Q5_K and
+Q6_K. It uses safe spans and explicit
 little-endian reads, writing only requested rows directly into the destination,
 with no temporary decoded matrix, row or block buffers. Stored weights remain unchanged. `WeightMatrix`
 validates the payload length and whole blocks per row before upload; the source
@@ -390,9 +392,20 @@ and [GGML reconstruction formulas](https://github.com/ggml-org/llama.cpp/blob/ma
 | Encoding | Stored block | Reconstruction |
 | --- | --- | --- |
 | Q4_0 | 32 values, 18 bytes | `scale × (q − 8)` with an F16 scale and four-bit `q`; low nibbles precede high nibbles |
+| Q4_1 | 32 values, 20 bytes | `q × scale + minimum` with an F16 scale and minimum and four-bit `q` packed as in Q4_0 |
+| Q5_0 | 32 values, 22 bytes | `scale × (q − 16)` with five-bit `q`: fifth bits in a little-endian 32-bit word, bit `j` for value `j`, then low bits as in Q4_0 |
+| Q5_1 | 32 values, 24 bytes | `q × scale + minimum` with five-bit `q` stored as in Q5_0 |
 | Q8_0 | 32 values, 34 bytes | F16 scale times a signed byte |
+| IQ4_NL | 32 values, 18 bytes | `scale × level[q]` with four-bit indices into 16 non-uniform levels from −127 to 113 (`kvalues_iq4nl`) |
+| Q2_K | 256 values, 84 bytes | Sixteen groups of 16, each with four-bit scale and minimum factors and two-bit `q`; `d × scale × q − dmin × minimum`, with `d` and `dmin` last |
+| Q3_K | 256 values, 110 bytes | Sixteen groups of 16 with signed six-bit scales; `q` is two low bits minus 4 when its separate high bit is clear; `d × scale × q` |
 | Q4_K | 256 values, 144 bytes | Eight groups of 32, each with six-bit scale and minimum factors; `d × scale × q − dmin × minimum` |
+| Q5_K | 256 values, 176 bytes | Q4_K with a fifth bit per value, stored in 32 bytes between the scales and the low bits |
 | Q6_K | 256 values, 210 bytes | Sixteen groups of 16; signed group scales and six-bit values centered at 32; `d × scale × (q − 32)` |
+
+The illustrated [Q2_K, Q3_K and BitNet b1.58 guide](quantization.md) follows
+`twoBitQuant` from packed bits to reconstructed values, and separates K-quant
+storage costs from BitNet's ternary alphabet and training method.
 
 `RowDecoder` is an original scalar reference implementation, without unsafe
 code or a native dependency. Embedding tests specify bytes and expected values
@@ -417,8 +430,9 @@ For the first weight row, `1 × 2 + 2 × 1 + (-1) × 4 = 0`; for the second,
 `0 × 2 + 3 × 1 + 2 × 4 = 11`. Thus a `[2; 3]` weight matrix transforms a
 three-value vector into two outputs, `[0; 11]`. Each output needs the whole
 input vector, so the destination must use different storage from the input.
-The CPU decodes and processes one weight row at a time, reusing its temporary
-row buffer.
+Each CPU worker processes one weight row at a time, reusing its temporary
+integer or F32 row buffer. The default K-quant path is described in
+[H.2](#quantize-activations-once-for-k-quant-products).
 
 Every projection of a block and the LM head multiply a stored weight matrix by
 one F32 vector. `MatVec(weights, input, destination)` computes
@@ -436,16 +450,23 @@ input. Validation and ordering otherwise follow `Add`.
 
 The weights stay in their stored encoding. Core's `RowDecoder` decodes one row
 of any `TensorEncoding` into F32, and `WeightMatrix.DecodeRow` applies it to a
-row of a matrix. Block layouts and arithmetic follow `block_q4_0`, `block_q8_0`,
-`block_q4_K` and `block_q6_K` in llama.cpp's `ggml-common.h`, and its reference
-`dequantize_row_*` functions in `ggml-quants.c`. Tests pack Q4_K and Q6_K blocks
-by hand from chosen scales, minimums and quants, and check every decoded value
-exactly. Embedding lookup uses the same decoder.
+row of a matrix. Block layouts and arithmetic follow `block_q4_0`, `block_q4_1`,
+`block_q5_0`, `block_q5_1`, `block_q8_0`, `block_iq4_nl`, `block_q2_K`,
+`block_q3_K`, `block_q4_K`, `block_q5_K` and `block_q6_K` in llama.cpp's
+`ggml-common.h`, with the IQ4_NL levels of
+`kvalues_iq4nl`, and its reference `dequantize_row_*` functions in
+`ggml-quants.c`. Tests pack blocks of every quantized encoding by hand from
+chosen scales, minimums and quants, and check every decoded value exactly. The
+Q5_K and Q5_0 tensors of local `Q4_K_S` and `Q4_K_M` files decode to the same
+mean, spread and range as Q4_K or Q8_0 tensors of the same roles, an optional
+check; no local Q2_K or Q3_K file has been decoded yet. Embedding lookup uses
+the same decoder.
 
-The CPU backend decodes one row at a time into a pooled buffer, so its memory
-use is one row, not a decoded matrix. It then computes the dot product with
-`Vector<T>`, widening the products to double precision and summing them in two
-vector accumulators. Each output is rounded to F32 once. Because outputs are
+In `DecodedFloat` mode, the CPU backend decodes one row at a time per worker into a pooled buffer.
+`CpuMatrixKernels` uses safe `Vector256` or `Vector128` intrinsics when accelerated,
+with a scalar fallback. Operands are widened before multiplication and summed
+in four double-precision vector accumulators. Large products partition weight
+rows between workers; each worker writes distinct output columns. Each output is rounded to F32 once. Because outputs are
 sums of many products that can cancel, tests compare them with a tolerance
 relative to the sum of the absolute products, not to the output itself.
 
@@ -455,8 +476,9 @@ to the normalized embedding of 10 sample tokens gives each token the highest
 logit. On an Apple M4 Max, single-threaded in Release, a `Q4_K` product takes
 about 0.5 ns per weight and a `Q6_K` product about 0.83 ns: 7 ms for `attn_q`,
 336 ms for the LM head, and about 2.1 s for all matrix products of one token.
-Parallelizing across rows and vectorizing the decoders are the next
-optimizations.
+These are historical measurements before H.1. See the updated
+[parallel matrix measurements](#measure-parallel-matrix-products) below;
+vectorizing the decoders remains separate work.
 
 ## Matrix-Matrix Product
 
@@ -490,13 +512,13 @@ matrix, because weight rows are the outputs. A batch of zero tokens is a valid
 no-op. `destination` must differ from `input`. Ownership, validation, ordering
 and tolerances follow `MatVec`.
 
-The decoding cost is what a batch saves. The CPU backend decodes each weight row
-once into its pooled buffer, then sums its products with the input row of every
-token. Each output is computed exactly as `MatVec` computes it, so batched and
+The row preparation cost is what a batch saves. The CPU backend decodes or
+unpacks each weight row once into its buffer, then sums its products with the
+input row of every token. Each output is computed exactly as `MatVec` computes it, so batched and
 token-by-token results are identical on the CPU; a test checks this. `MatVec`
 itself is the one-token case of the same kernel.
 
-On the local Ministral file, single-threaded in Release on an Apple M4 Max:
+Before H.1, on the local Ministral file, single-threaded in Release on an Apple M4 Max:
 
 | Matrix | `MatVec` | 4 tokens | 16 tokens | 64 tokens |
 | --- | --- | --- | --- | --- |
@@ -507,6 +529,230 @@ With 64-token batches, all matrix products of the model take about 0.57 s per
 prompt token, against about 1.8 s one token at a time in the same run. Beyond
 about 16 tokens, the double-precision sums of products dominate, at about
 0.17 ns per weight and token.
+
+## Measure parallel matrix products
+
+To measure H.1 independently of model loading, select `DecodedFloat`, build
+.NET 10 in Release and run the synthetic benchmark. No model download is needed:
+
+```sh
+dotnet build src/Marmotte.Cpu -c Release
+DOTNET_TieredCompilation=0 dotnet fsi --optimize+ examples/MatrixProducts.fsx -- --decoded
+DOTNET_PROCESSOR_COUNT=1 DOTNET_TieredCompilation=0 dotnet fsi --optimize+ examples/MatrixProducts.fsx -- --decoded
+```
+
+The second run constrains scheduling to one worker, separating the intrinsics
+change from row parallelism. Disabling tiered compilation keeps short workloads
+from being measured partly before JIT optimization. Each case warms up ten calls,
+then reports the median and range of seven groups of ten calls. Timings include
+row decoding, dot products, pooled row buffers and scheduling; they exclude
+fixture creation, uploads and downloads. One-token `MatMul` uses the same kernel
+as `MatVec`. Checksums help spot differences but do not replace the scalar-reference
+tests. Before/after runs use the same script; the baseline is commit `0cea0b3`.
+
+Recorded on 2026-11-08, ARM64, .NET 10.0.12, 14 logical processors,
+`Vector128.IsHardwareAccelerated = true`, `Vector256.IsHardwareAccelerated = false`:
+
+| Stored encoding, 1,024 × 3,072 | Tokens | Before (ms) | Intrinsics, one worker (ms) | Intrinsics, parallel (ms) | Total speedup |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| F32 | 1 | 1.991 | 1.915 | 0.387 | 5.1× |
+| F32 | 8 | 5.467 | 4.694 | 0.741 | 7.4× |
+| Q4_K | 1 | 1.388 | 1.243 | 0.283 | 4.9× |
+| Q4_K | 8 | 4.800 | 3.994 | 0.681 | 7.0× |
+| Q6_K | 1 | 2.798 | 2.673 | 0.485 | 5.8× |
+| Q6_K | 8 | 6.297 | 5.433 | 0.827 | 7.6× |
+
+Small 16 × 64 F32 matrices remain serial (about 0.001 ms for one token,
+0.002 ms for eight). At 64 × 256, eight-token products use two partitions:
+F32 improves from 0.024 to 0.015 ms, Q4_K from 0.022 to 0.012 ms, and Q6_K
+from 0.029 to 0.016 ms. These measurements motivate a minimum of 65,536
+multiply terms per scheduled partition. They are local kernel timings, not a
+claim about full-model throughput or a universal optimum for other CPUs.
+
+### Follow ownership through the workers
+
+For `Rows * Columns * Tokens` work, the number of partitions is bounded by
+`Environment.ProcessorCount`, `Rows`, and `floor(work / 65536)`. Zero or one
+partition runs serially. Contiguous row ranges are computed with 64-bit arithmetic,
+including uneven division; each row belongs to exactly one partition. Each active
+worker rents one row buffer and returns it in `finally`. The pool may round its
+capacity up; scratch storage is O(workers × columns), independent of tokens.
+
+```mermaid
+flowchart LR
+    W["Stored weights: rows 0–3"] --> A["Worker A: decode rows 0–1"]
+    W --> B["Worker B: decode rows 2–3"]
+    X["Shared input: all token rows"] --> A
+    X --> B
+    A --> Y0["Output columns 0–1 for every token"]
+    B --> Y1["Output columns 2–3 for every token"]
+    Y0 --> J["Join workers before returning"]
+    Y1 --> J
+```
+
+The diagram shows a two-partition example. Only memory values cross task
+boundaries; spans are created inside the worker. Weights and inputs are read-only
+throughout the call. The backend retains ownership and rejects aliasing before
+execution, and the parallel loop joins before the call returns, including on
+failure. A batch still decodes each weight row exactly once. There is no native
+pointer, pinning, global mutable scratch buffer or new package dependency.
+
+SIMD may change addition order relative to the former `Vector<T>` implementation,
+so cross-version results are compared with numerical tolerances. Scheduling never
+splits an individual dot product: repeated calls and batch/single-token execution
+remain identical on the same runtime and hardware. Tests cover all fourteen
+encodings, uneven partitions, SIMD boundaries and tails, large cancelling
+products, repeated writes, empty batches, and existing ownership/shape validation.
+The matrix tests also pass with `DOTNET_EnableHWIntrinsic=0`; the 256-bit path
+compiles but still needs execution on an accelerated x64 host.
+
+The intrinsic operations and feature guards follow the contracts in Microsoft's
+[SIMD and hardware intrinsics documentation](https://learn.microsoft.com/en-us/dotnet/standard/simd).
+The arithmetic and partitioning are original Marmotte code. H.2 adds the
+quantized-input policy below. H.3 adds selected-logit execution and online
+attention; their measurements are separate from these matrix-product results.
+
+## Quantize activations once for K-quant products
+
+H.2 adds a CPU arithmetic policy that avoids reconstructing every K-quant weight
+as F32. Build with .NET 10, then compare both policies on the same synthetic rows:
+
+```sh
+dotnet build src/Marmotte.Cpu -c Release
+DOTNET_TieredCompilation=0 dotnet fsi --optimize+ examples/MatrixProducts.fsx -- --decoded
+DOTNET_TieredCompilation=0 dotnet fsi --optimize+ examples/MatrixProducts.fsx
+```
+
+The script prints its policy, timings and checksums. Different checksums are
+expected because activations are rounded. Add `--large` for 4,096 × 3,072 and
+3,072 × 9,216 matrices. Upload and download are excluded; activation quantization,
+integer unpacking, dot products, scheduling and temporary allocations are timed.
+
+### Choose the arithmetic policy
+
+```fsharp
+// Default, also used by the generate CLI:
+use fast = new CpuBackend()
+// Same H.1 parallelism, but without additional activation rounding:
+use reference = new CpuBackend(CpuMatrixProductMode.DecodedFloat)
+// Explicit equivalent of the default:
+use quantized = new CpuBackend(CpuMatrixProductMode.QuantizedK)
+```
+
+`QuantizedK` handles Q2_K, Q3_K, Q4_K, Q5_K and Q6_K. The other nine stored
+encodings retain the H.1 F32-input path. Input/output tensors remain F32 and the
+caller's input is never modified. Q8_K is a transient activation representation,
+not a newly supported weight-file or cache encoding: `TensorEncoding`, GGUF
+quantization, embedding lookup and cache storage are unchanged.
+
+### Follow one block through the product
+
+Each token is split into blocks of 256 activations. The first value with largest
+absolute magnitude determines a signed reciprocal `r = -127 / extreme`, computed
+in F32. The stored scale is `d = 1 / r`; quants are nearest-even rounded `r*x`,
+clamped to [-127,127]. Zero blocks have zero quants, sums and scale. Sixteen
+integer sums, each covering 16 quants, are prepared alongside them.
+
+For example, a block starting with `127, -127, 0.5, 1.5, 2.5, -1.5` and otherwise
+zero has scale -1 and starts with quants `-127, 127, 0, -2, -2, 2`. Its first
+16-value sum is -2. This signed scale and tie rule are tested explicitly.
+
+```mermaid
+flowchart LR
+    X["F32 token inputs"] --> Q["Quantize once: Q8_K scales, quants, sums"]
+    W["Stored K-quant row"] --> U["Unpack integer quants and coefficients"]
+    Q --> D["Integer products and minimum corrections"]
+    U --> D
+    D --> S["Apply block scales; accumulate in double"]
+    S --> Y["One F32 output per token and weight row"]
+```
+
+The quantized batch is shared read-only by all row workers. A worker unpacks each
+weight row once and reuses it for all tokens, just as H.1 shared a decoded row.
+Weight group scales remain integers. For each 256-value block, compute
+`P = sum(groupScale * weightQuant * inputQuant)` and
+`M = sum(groupMinimum * inputGroupSum)`. Its contribution is
+`inputScale * (weightScale * P - weightMinimumScale * M)`.
+Q3_K and Q6_K have no minimum correction. Only these block-level operations are
+floating point; the dot products and group coefficients accumulate in Int32.
+
+Quants are promoted to Int16 in memory to use safe `Vector128` multiplication.
+The products fit Int16. The largest absolute scaled Q6_K block sum is bounded by
+`256 * 32 * 127 * 128 = 133169152`, within Int32; other K formats are smaller.
+Tests include this extreme case. Packed extraction uses bounds-checked spans and
+portable vectors; dot products have a scalar fallback when SIMD is disabled.
+There are no pointers, native dependencies or copied upstream kernels.
+
+Scratch is O(tokens × columns + workers × columns), not O(weights). Shared
+activation arrays cost approximately 2.266 bytes per input element plus one
+validity flag per token. Worker scratch uses one pooled Int16 row and per-group/
+per-block coefficient arrays (approximately 2.531 bytes per column, before pool
+rounding and array headers). Arrays are private to the call; the row buffer is
+returned in `finally`, and all workers join before return.
+
+### Account for error and exceptional values
+
+This is an approximation, so it is not bit-identical to `DecodedFloat`. With
+reconstructed activations `xHat`, the additional dot-product error is bounded by
+`sum(abs(weight) * abs(x - xHat))`, plus floating-point rounding. Away from scale
+underflow, each activation's rounding error is approximately at most half a
+block scale; reciprocal/scale rounding contributes as well. Cancellation can
+make relative error against a small output arbitrarily large, so a blanket
+percentage tolerance against the result is inappropriate.
+
+Tests compare integer products with a separate scalar calculation over decoded
+weights and reconstructed activations, then independently check the above bound
+against the original F32 input. The existing strict product tests still exercise
+`DecodedFloat`. Additional tests cover every K encoding, multiple blocks/tokens,
+uneven row partitions, zero blocks, ties, signed scales, integer extremes,
+non-K encodings, repeated calls and exact batch/individual-token agreement.
+
+A token containing NaN/infinity or an unrepresentable reciprocal/scale uses the
+F32 reference arithmetic. This includes tiny subnormals whose reciprocal would
+overflow. The fallback is per token, so other tokens in the batch behave exactly
+as they would alone. A weight row containing non-finite super-block scales also
+uses the reference path. No invalid values are silently turned into finite zeros.
+Small matrices can be slower because input preparation and scheduling costs are
+not fully amortized. Select `DecodedFloat` when extra activation error is unwanted.
+
+### Recorded kernel timings
+
+On 2026-11-08, ARM64, .NET 10.0.12, 14 logical processors, using the same warmup
+and seven-by-ten median protocol as H.1, for matrices of 1,024 × 3,072:
+
+| Encoding | One token: F32 input → Q8_K (ms) | Eight tokens: F32 input → Q8_K (ms) |
+| --- | ---: | ---: |
+| Q2_K | 0.535 → 0.250 | 0.894 → 0.605 |
+| Q3_K | 1.919 → 0.302 | 2.499 → 0.637 |
+| Q4_K | 0.307 → 0.308 | 0.675 → 0.628 |
+| Q5_K | 0.334 → 0.308 | 0.743 → 0.647 |
+| Q6_K | 0.530 → 0.276 | 0.870 → 0.624 |
+
+Q6_K improves by about 1.9× for one token; Q4_K is effectively unchanged there
+and improves modestly for eight tokens. Small 64 × 256 Q4_K products regress
+from 0.006 to 0.008 ms (one token) and 0.012 to 0.015 ms (eight tokens). These are
+kernel measurements, not full-generation throughput or proof of model quality.
+Both the SIMD and software paths pass the focused tests; accelerated x64 still
+needs hardware validation.
+
+An optional local check with Ministral-3-3B-Instruct-2512-Q4_K_M and the prompt
+`La capitale de la France est` completed its eight-token budget. The Q8_K policy
+produced ` **Paris**. La capitale de la Belgique`; the H.1 path had produced
+` **Paris**. La ville est située dans`. The first answer remains correct, but
+the continuation changed. This illustrates token sensitivity to approximation;
+it is not a general quality evaluation or comparison with a native runtime.
+
+### Reference contracts
+
+The block sizes, signed quants, scale/minimum packing and 16-value sums were
+checked against [ggml's block declarations](https://github.com/ggml-org/ggml/blob/master/src/ggml-common.h).
+The signed 127 reciprocal and nearest-even convention follow the Q8_K reference
+quantizer inspected on 2026-11-08 in
+[ggml-quants.c](https://github.com/ggml-org/ggml/blob/master/src/ggml-quants.c).
+Marmotte uses its own grouped integer representation and portable arithmetic;
+it does not serialize Q8_K blocks or claim bit-identical accumulation with a
+native backend. The fallback behavior for non-finite or unrepresentable input
+is Marmotte's explicit extension.
 
 ## Rotary Position Embedding
 
@@ -772,7 +1018,10 @@ values for the target model:
 | F32 | 128 | 208 KiB | 832 MiB | 6,656 MiB |
 | F16, BF16 | 64 | 104 KiB | 416 MiB | 3,328 MiB |
 | Q8_0 | 34 | 55.25 KiB | 221 MiB | 1,768 MiB |
-| Q4_0 | 18 | 29.25 KiB | 117 MiB | 936 MiB |
+| Q5_1 | 24 | 39 KiB | 156 MiB | 1,248 MiB |
+| Q5_0 | 22 | 35.75 KiB | 143 MiB | 1,144 MiB |
+| Q4_1 | 20 | 32.5 KiB | 130 MiB | 1,040 MiB |
+| IQ4_NL, Q4_0 | 18 | 29.25 KiB | 117 MiB | 936 MiB |
 
 ```fsharp
 let layout =
@@ -794,10 +1043,9 @@ backend.StoreKeyValues(cache, layer, firstPosition, keys, values)
 `BytesPerPosition` and `TotalBytes` give these sizes before allocating anything.
 Keys and values have separate encodings, like llama.cpp's `--cache-type-k` and
 `--cache-type-v` options, which LM Studio exposes as K and V cache quantization.
-Marmotte supports the encodings it can both write and read: F32, F16, BF16,
-Q8_0 and Q4_0. llama.cpp's default is F16. llama.cpp also offers Q4_1, Q5_0,
-Q5_1 and IQ4_NL, which `TensorEncoding` does not represent yet. K-quants such as
-Q4_K are rejected: their reference quantizers search for sub-block scales, which
+Marmotte supports the same encodings as llama.cpp: F32, F16, BF16, Q8_0, Q5_1,
+Q5_0, Q4_1, IQ4_NL and Q4_0. llama.cpp's default is F16. K-quants such as Q4_K
+are rejected: their reference quantizers search for sub-block scales, which
 Marmotte does not implement. A head dimension must hold whole blocks, so a
 32-value block never spans two heads and attention can decode one head at a
 time.
@@ -810,9 +1058,17 @@ position as a row of whole blocks, for values as for keys.
 `RowEncoder` in Core writes the rows; it is the inverse of `RowDecoder` and also
 encodes the GGUF quantizer's blocks. F16 and BF16 round to nearest, ties to
 even. Q8_0 rounds each value to half a step of `max / 127`, where `max` is the
-largest magnitude of its block of 32. Q4_0 uses 16 steps of `max / 8` and can
-clip the end opposite to its scale by a whole step. Both store their scale in
-F16. Quantization is lossy, and the precision attention needs is a measurement
+largest magnitude of its block of 32. Q5_0 and Q4_0 use 32 and 16 steps of
+`max / 16` and `max / 8`, and can clip the end opposite to their scale by a
+whole step. Q5_1 and Q4_1 also store the block's minimum and divide its range
+into 31 and 15 steps, which suits blocks whose values are not centered on zero.
+IQ4_NL has the size of Q4_0 but 16 levels closer together near zero, where most
+values lie: its encoder tries 16 scales and keeps the one with the smallest
+error weighted by `x²`, as llama.cpp's `quantize_iq4_nl` does without an
+importance matrix, then picks each index against the F16 scale actually stored
+rather than the F32 one. On normally distributed values, its squared error is
+about 20% below Q4_0's. Every encoding stores its scale and minimum in F16.
+Quantization is lossy, and the precision attention needs is a measurement
 to make on the model, not a property of the cache: keys have outlier channels,
 which inflate the scale of every block that contains one
 ([KIVI](https://arxiv.org/abs/2402.02750)), so they usually tolerate
@@ -832,13 +1088,13 @@ truncates. `position + tokens` may not exceed the capacity.
 `ReadKeyValues(cache, layer, position, keys, values)` decodes stored positions
 into two different F32 tensors of the same shapes. An F32 cache reads back bit
 for bit; another encoding reads back what `RowDecoder` decodes from the stored
-blocks. Attention will read the cache this way until it decodes cached rows
-directly.
+blocks. Attention decodes cached heads directly, without materializing all
+stored rows as execution tensors.
 
 Values that an encoding cannot hold are never replaced by plausible numbers.
 F16 and BF16 turn values beyond their range into infinities, and NaN stays NaN.
-A Q8_0 or Q4_0 block that contains NaN or an infinity, or whose scale exceeds
-the F16 range, is stored with a NaN scale: its 32 values read back as NaN, and
+A quantized block that contains NaN or an infinity, or whose scale or minimum
+exceeds the F16 range, is stored with a NaN scale: its 32 values read back as NaN, and
 the other blocks are unaffected. The GGUF quantizer is stricter and rejects
 such weights.
 
@@ -846,8 +1102,8 @@ The CPU backend allocates the whole capacity up front, as llama.cpp does: one
 byte array of `Capacity` rows per layer for keys and one for values. Blocks
 never span rows, so a batch of positions is encoded or decoded in one call. A
 layer's keys or values must fit in a managed array: 524,287 F32 positions for
-the target model, twice its 262,144-position context. Tests check hand-computed F16, BF16, Q8_0
-and Q4_0 bytes, rounding errors, non-finite blocks, the target model's sizes,
+the target model, twice its 262,144-position context. Tests check
+hand-computed bytes of every encoding, rounding errors, non-finite blocks, the target model's sizes,
 appending, replacing and truncating positions, validation before any write,
 ownership and disposal. Run
 [`examples/KeyValueCache.fsx`](../examples/KeyValueCache.fsx) to print the sizes
@@ -895,6 +1151,187 @@ compiled assemblies and a native library to run Add on CUDA; follow the
 [CUDA build instructions](cuda.md) first. The embedding script uses a tiny in-memory F32 vocabulary and prints
 the rows for IDs `[1; 0; 1]`. The key-value cache script prints the target
 model's cache size for each encoding, then stores random keys in a small CPU
-cache and prints the largest error after reading them back. Tests verify that
-unfinished GPU operations fail explicitly; optional CUDA tests exercise Add,
-device transfers, ordering and lifetime on a real GPU.
+cache and prints the root mean square and largest errors after reading them
+back. Tests also call GPU allocation, download and each
+kernel directly to verify that all unfinished operations fail explicitly.
+
+
+## Grouped-query attention
+
+Learn how a query selects information from its causal prefix. Prerequisites:
+.NET 10 and the cache concepts above. Run the self-contained example without a
+model file:
+
+```sh
+dotnet fsi examples/Attention.fsx
+```
+
+### 1. Store the keys and values
+
+The example stores three positions, each with two KV heads of two channels.
+In a model, keys have already received RoPE; values have not. Queries have
+received RoPE and any position-dependent attention temperature scaling.
+Store the whole prompt batch before calling attention: the kernel's causal
+mask prevents earlier tokens from seeing later ones.
+
+### 2. Share the KV heads
+
+Allocate queries and destination with shape `[3; 4; 2]`: tokens, query heads,
+channels. Four query heads share two KV heads, in consecutive groups:
+
+![Two consecutive query heads share each KV head; position one sees only cached positions zero and one.](images/grouped-query-attention.svg)
+
+For query head `h`, the KV head is `h / (queryHeads / KeyValueHeads)` using
+integer division. This also covers multi-head attention (one query per KV head)
+and multi-query attention (one KV head shared by every query).
+
+```fsharp
+backend.Attention(cache, 0, 0, queries, output)
+```
+
+The arguments select the cache, layer, first absolute query position, queries
+and destination. Both tensors must have identical shapes, either
+`[tokens; queryHeads; HeadDimension]` or `[tokens; queryHeads × HeadDimension]`.
+The number of query heads must be positive and divisible by the KV head count.
+The destination cannot alias queries. All storage belongs to the same backend.
+
+### 3. Normalize only the visible scores
+
+For token `t` at absolute position `p = position + t`, each head computes:
+
+```text
+score[j] = sum(Q[c] × K[j,c]) / sqrt(HeadDimension), 0 <= j <= p
+weight[j] = exp(score[j] - max(score)) / sum(exp(score - max(score)))
+output[c] = sum(weight[j] × V[j,c])
+```
+
+The maximum subtraction prevents exponential overflow for large finite scores.
+CPU attention defaults to `CpuAttentionMode.Online`: scores use F32 and running
+value sums and the denominator use double precision, with O(head dimension)
+scratch. `Reference` retains the original F32 reduction and prefix-length score
+buffer. Both reuse scratch across tokens and heads. K and V can independently
+use any supported cache encoding. Each head slice contains whole encoding
+blocks, so no full-cache F32 copy is needed. Future rows are not decoded at all,
+including future rows containing NaN. Non-finite visible data or overflowing
+scores can produce NaN; finite inputs are not a guarantee against F32 overflow.
+
+The example uses zero queries, hence equal scores and uniform probabilities.
+It prints the causal averages (two identical outputs per KV group), shown
+rounded below; the reference F32 accumulation can print `60.00000381f` instead of `60.0f`:
+
+```text
+Position 0: [|2.0f; 4.0f; 2.0f; 4.0f; 20.0f; 40.0f; 20.0f; 40.0f|]
+Position 1: [|4.0f; 6.0f; 4.0f; 6.0f; 40.0f; 60.0f; 40.0f; 60.0f|]
+Position 2: [|6.0f; 8.0f; 6.0f; 8.0f; 60.0f; 80.0f; 60.0f; 80.0f|]
+```
+
+For generation, store the next K/V row, then pass a single query token and its
+absolute position. Batched queries can also start inside an existing prefix.
+Every query position must already be stored in that layer; an empty batch is
+valid at any position from zero through `StoredPositions(layer)`. Validation
+finishes before writing output. A replaced/truncated cache immediately limits
+which positions can be attended to. CUDA and Metal expose the contract but
+still throw `NotImplementedException`.
+
+### Online attention and H.3 measurements
+
+To compare attention algorithms while keeping matrix arithmetic fixed:
+
+```fsharp
+use online = new CpuBackend(CpuMatrixProductMode.QuantizedK, CpuAttentionMode.Online)
+use reference = new CpuBackend(CpuMatrixProductMode.QuantizedK, CpuAttentionMode.Reference)
+```
+
+The parameterless and one-policy constructors both select online attention.
+`examples/InferencePerformance.fsx` runs both algorithms against identical F32
+and Q8_0 caches, without a local model:
+
+```sh
+dotnet build Marmotte.slnx -c Release
+DOTNET_TieredCompilation=0 dotnet fsi --optimize+ examples/InferencePerformance.fsx
+```
+
+For each query head, online attention scans visible positions once. It maintains
+a maximum `m`, a denominator `l` and a vector of weighted values `a`. For the next
+finite score `s`, update:
+
+```text
+mNext = max(m, s)
+r = exp(m - mNext)
+w = exp(s - mNext)
+lNext = r * l + w
+aNext = r * a + w * value
+output = a / l after the final visible position
+```
+
+Initially `m = -infinity`, `l = 0`, and `a = 0`. An initial negative-infinity
+score has zero mass; a later finite score can still produce valid output. An
+all-negative-infinity sequence normalizes to NaN, as does the reference.
+Positive-infinity/NaN scores propagate NaN. Masked positions are never decoded.
+
+This fuses score normalization and value accumulation without a prefix-sized
+score array. Every K/V head is still decoded once per visible position **per
+query head**; this implementation does not yet tile multiple queries or share
+those decodes across a query group. It is a CPU online fused attention kernel,
+not a GPU-tiled FlashAttention implementation. It does not alter the attention
+formula or introduce quantization. The online normalization principle is
+explained by [Milakov and Gimelshein (2018)](https://arxiv.org/abs/1805.02867);
+[FlashAttention (Dao et al., 2022)](https://arxiv.org/abs/2205.14135) applies
+memory-aware fusion and tiling to exact attention on GPUs. Marmotte's loops are
+original code, and those papers' GPU speedups are not predictions for this CPU.
+
+Scores and exponentials use F32. Running weighted values and the denominator
+use double precision because their unnormalized sums can overflow F32 even
+when the final weighted average is finite. Safe `Vector<T>` operations widen
+values and accumulate the sums, followed by one final F32 rounding per channel.
+The scalar fallback uses the same precision. The order of arithmetic differs
+from `Reference`, so compare with tolerances rather than bit equality.
+
+Recorded on 2026-11-08, ARM64, .NET 10.0.12, 14 logical processors; head width
+128, eight query heads, two KV heads. Three warmup calls precede seven groups
+of three timed calls; fixture/cache setup and transfers are excluded.
+
+| K/V encoding | Prefix | Query tokens | Reference | Online |
+| --- | ---: | ---: | ---: | ---: |
+| F32 | 128 | 8 | 2.180 ms | 1.826 ms |
+| F32 | 2,048 | 1 | 4.504 ms | 3.799 ms |
+| F32 | 2,048 | 8 | 35.906 ms | 30.734 ms |
+| Q8_0 | 128 | 8 | 1.796 ms | 1.482 ms |
+| Q8_0 | 2,048 | 1 | 3.742 ms | 3.114 ms |
+| Q8_0 | 2,048 | 8 | 30.102 ms | 24.780 ms |
+
+Maximum absolute differences in these cases are below 4.6e-6. Managed allocations
+per call are 1,584 bytes online, independent of prefix length, versus 1,072 bytes
+for the 128-position reference and 8,752 bytes for 2,048 positions. Online scratch
+can therefore be larger for short prefixes because it stores a double value
+vector. Neither algorithm reduces the allocated KV cache. These are attention
+kernel measurements, not full-generation throughput; see [selected-logit
+measurements](forward-pass.md#request-only-the-logits-you-need) for the other
+part of H.3.
+
+An optional real-model check on Ministral-3-3B-Instruct-2512-Q4_K_M used
+`La capitale de la France est`. The selected/full final logit rows were exactly
+equal within each attention mode. Comparing attention modes with `DecodedFloat`
+matrix products gave a maximum final-logit difference of 1.91e-6. With H.2's
+`QuantizedK` policy, that difference reached 0.361 and the top token changed:
+intermediate rounding can cross later activation-quantization thresholds.
+The default CLI still completed its eight-token budget, producing
+` Paris. C'est une ville très connue`. This single prompt is not a model-quality
+evaluation. To retain the previous H.2 arithmetic, construct
+`CpuBackend(CpuMatrixProductMode.QuantizedK, CpuAttentionMode.Reference)`.
+
+### Validation and references
+
+`AttentionTests` compares against an independent dense, double-precision
+reference, covers multi-query, grouped and multi-head layouts, and checks
+batch/single-token equivalence, nonzero batch offsets, causal masking, large
+scores, all 81 K/V encoding combinations, validation and lifetime failures.
+Quantized attention is compared with the actual decoded cached values; this
+does not establish model-quality tolerances for cache quantization. There is
+no end-to-end model inference or performance claim yet.
+
+The grouping follows [Ainslie et al., GQA (2023)](https://arxiv.org/abs/2305.13245).
+Scaled dot-product attention is defined in
+[Vaswani et al., Attention Is All You Need, section 3.2.1](https://arxiv.org/abs/1706.03762).
+The implementation is original; neither reference code nor a native library is
+required by the kernel or its tests.

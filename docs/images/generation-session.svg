@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="330" viewBox="0 0 900 330" role="img" aria-labelledby="title desc">
+<title id="title">Prefill and incremental decoding</title>
+<desc id="desc">Prefill processes prompt tokens zero and one, then token two, for three cached positions. The caller selects token three from the final logits. Decode consumes token three, making four cached positions, and returns logits for token four.</desc>
+<defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8" fill="#475569"/></marker></defs>
+<rect width="900" height="330" fill="#f8fafc"/>
+<g font-family="sans-serif" text-anchor="middle" fill="#0f172a">
+<text x="450" y="35" font-size="22" font-weight="bold">One sequence, one cache</text>
+<g font-size="16">
+<rect x="25" y="70" width="200" height="110" rx="10" fill="#dbeafe"/>
+<text x="125" y="99" font-weight="bold">Prefill: first batch</text>
+<text x="125" y="129">Prompt positions 0, 1</text>
+<text x="125" y="159">Cached count: 2</text>
+<rect x="250" y="70" width="200" height="110" rx="10" fill="#dbeafe"/>
+<text x="350" y="99" font-weight="bold">Prefill: last batch</text>
+<text x="350" y="129">Prompt position 2</text>
+<text x="350" y="159">Cached count: 3</text>
+<rect x="475" y="70" width="180" height="110" rx="10" fill="#fef3c7"/>
+<text x="565" y="99" font-weight="bold">Caller selects ID</text>
+<text x="565" y="129">From returned logits</text>
+<text x="565" y="159">Cached count: 3</text>
+<rect x="680" y="70" width="195" height="110" rx="10" fill="#dcfce7"/>
+<text x="777" y="99" font-weight="bold">Decode(selected ID)</text>
+<text x="777" y="129">Consumes position 3</text>
+<text x="777" y="159">Cached count: 4</text>
+<g stroke="#475569" stroke-width="2" marker-end="url(#arrow)"><path d="M225 125 H247"/><path d="M450 125 H472"/><path d="M655 125 H677"/></g>
+<text x="450" y="225">Each successful call returns logits predicting the next token.</text>
+<text x="450" y="255">Selecting or emitting a token does not put it in the cache.</text>
+<text x="450" y="295" font-size="15">Reset → new empty cache. Execution failure → faulted session → reset or dispose.</text>
+</g></g></svg>

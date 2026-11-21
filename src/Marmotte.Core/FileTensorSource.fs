@@ -11,44 +11,32 @@ type FileTensorLocation =
       /// Absolute position of the payload in the file.
       AbsoluteOffset: int64 }
 
-/// Tensor source over one open file, built by a format-specific source after it has validated
-/// the file's index. Takes ownership of the stream once constructed and disposes it.
-/// Each ReadPayload call copies the payload into a new managed array with positional reads,
-/// so concurrent reads are safe and returned memory outlives the source. A payload must fit
-/// in a single managed array. Memory mapping can replace the copy behind the same
-/// ITensorSource contract once a measurement justifies it.
-[<Sealed>]
-type FileTensorSource(file: FileStream, locations: FileTensorLocation array) =
-    do
-        ArgumentNullException.ThrowIfNull(file)
-        ArgumentNullException.ThrowIfNull(locations)
-        if not file.CanRead || not file.CanSeek then
-            invalidArg (nameof file) "The tensor file must be readable and seekable."
+/// Location validation and payload length shared by the file-backed tensor sources:
+/// one entry per tensor name, with every payload range inside the file.
+module internal FileTensorLocations =
 
-    let fileLength = file.Length
+    let validate (fileLength: int64) (locations: FileTensorLocation array) =
+        let isWithinFile (location: FileTensorLocation) =
+            if location.AbsoluteOffset < 0L || location.AbsoluteOffset > fileLength then
+                false
+            else
+                let remaining = uint64 (fileLength - location.AbsoluteOffset)
+                location.Descriptor.ByteSize |> Option.forall (fun size -> size <= remaining)
 
-    let isWithinFile (location: FileTensorLocation) =
-        if location.AbsoluteOffset < 0L || location.AbsoluteOffset > fileLength then
-            false
-        else
-            let remaining = uint64 (fileLength - location.AbsoluteOffset)
-            location.Descriptor.ByteSize |> Option.forall (fun size -> size <= remaining)
+        let locationsByName =
+            let entries = Dictionary<string, FileTensorLocation>(StringComparer.Ordinal)
+            for location in locations do
+                let name = location.Descriptor.Name
+                if not (entries.TryAdd(name, location)) then
+                    invalidArg (nameof locations) $"Duplicate tensor name '{name}'."
+                if not (isWithinFile location) then
+                    invalidArg (nameof locations) $"Tensor '{name}' payload lies outside the file."
+            entries
 
-    let locationsByName =
-        let entries = Dictionary<string, FileTensorLocation>(StringComparer.Ordinal)
-        for location in locations do
-            let name = location.Descriptor.Name
-            if not (entries.TryAdd(name, location)) then
-                invalidArg (nameof locations) $"Duplicate tensor name '{name}'."
-            if not (isWithinFile location) then
-                invalidArg (nameof locations) $"Tensor '{name}' payload lies outside the file."
-        entries
+        let descriptors = locations |> Array.map (fun location -> location.Descriptor)
+        locationsByName, descriptors
 
-    let descriptors = locations |> Array.map (fun location -> location.Descriptor)
-
-    let mutable disposed = false
-
-    let findLocation name =
+    let find (locationsByName: Dictionary<string, FileTensorLocation>) name =
         match locationsByName.TryGetValue(name) with
         | true, location -> location
         | false, _ -> raise (KeyNotFoundException($"Tensor '{name}' does not exist."))
@@ -64,6 +52,26 @@ type FileTensorSource(file: FileStream, locations: FileTensorLocation array) =
             raise (InvalidDataException(
                 $"Tensor '{descriptor.Name}' payload ({size} bytes) exceeds the managed array limit ({Array.MaxLength} bytes)."))
         | Some _, Some size -> int size
+
+/// Tensor source over one open file, built by a format-specific source after it has validated
+/// the file's index. Takes ownership of the stream once constructed and disposes it.
+/// Each ReadPayload call copies the payload into a new managed array with positional reads,
+/// so concurrent reads are safe and returned memory outlives the source. A payload must fit
+/// in a single managed array. MappedTensorSource serves the same ITensorSource contract from
+/// a memory-mapped file instead, after the load-time and resident-memory measurement recorded
+/// in docs/gguf.md showed that mapping avoids the copy.
+[<Sealed>]
+type FileTensorSource(file: FileStream, locations: FileTensorLocation array) =
+    do
+        ArgumentNullException.ThrowIfNull(file)
+        ArgumentNullException.ThrowIfNull(locations)
+        if not file.CanRead || not file.CanSeek then
+            invalidArg (nameof file) "The tensor file must be readable and seekable."
+
+    let fileLength = file.Length
+    let locationsByName, descriptors = FileTensorLocations.validate fileLength locations
+
+    let mutable disposed = false
 
     /// RandomAccess.Read may return fewer bytes than requested; zero means the file was truncated.
     let readExactlyAt (handle: SafeFileHandle) (destination: Span<byte>) (position: int64) (name: string) =
@@ -84,8 +92,8 @@ type FileTensorSource(file: FileStream, locations: FileTensorLocation array) =
 
         member this.ReadPayload(name) =
             ObjectDisposedException.ThrowIf(disposed, this)
-            let location = findLocation name
-            let payload = Array.zeroCreate<byte> (payloadLength location.Descriptor)
+            let location = FileTensorLocations.find locationsByName name
+            let payload = Array.zeroCreate<byte> (FileTensorLocations.payloadLength location.Descriptor)
             readExactlyAt file.SafeFileHandle (payload.AsSpan()) location.AbsoluteOffset name
             ReadOnlyMemory<byte>(payload)
 

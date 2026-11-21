@@ -40,6 +40,9 @@ type MetalBackend() =
     interface IEmbeddingKernel with
         member _.EmbeddingLookup(_, _, _) = notImplemented "embedding lookup kernel"
 
+    interface IRowCopyKernel with
+        member _.CopyRows(_, _, _) = notImplemented "row copy"
+
     interface IMatVecKernel with
         member _.MatVec(_, _, _) = notImplemented "matrix-vector product"
 
@@ -55,6 +58,9 @@ type MetalBackend() =
     interface IKeyValueCacheKernel with
         member _.StoreKeyValues(_, _, _, _, _) = notImplemented "key-value cache store"
         member _.ReadKeyValues(_, _, _, _, _) = notImplemented "key-value cache read"
+
+    interface IAttentionKernel with
+        member _.Attention(_, _, _, _, _) = notImplemented "grouped-query attention"
 
     interface IDisposable with
         member _.Dispose() = disposed <- true
