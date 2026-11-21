@@ -312,7 +312,9 @@ type private TrackingBackend() =
     interface ITensorBackend with
         member _.Backend = inner.Backend
         member _.Allocate shape = inner.Allocate shape |> track
-        member _.Upload(shape, data) = inner.Upload(shape, data) |> track
+        member _.Allocate(shape, encoding) = inner.Allocate(shape, encoding) |> track
+        member _.Upload(shape, data: ReadOnlyMemory<single>) = inner.Upload(shape, data) |> track
+        member _.Upload(shape, data: ReadOnlyMemory<Half>) = inner.Upload(shape, data) |> track
         member _.UploadWeights matrix =
             let weight = inner.UploadWeights matrix
             weights.Add weight
@@ -321,7 +323,10 @@ type private TrackingBackend() =
             let cache = inner.AllocateKeyValueCache layout
             caches.Add cache
             cache
-        member _.Download(tensor, data) =
+        member _.Download(tensor, data: Memory<single>) =
+            downloads.Add data.Length
+            inner.Download(tensor, data)
+        member _.Download(tensor, data: Memory<Half>) =
             downloads.Add data.Length
             inner.Download(tensor, data)
         member _.Synchronize() =
