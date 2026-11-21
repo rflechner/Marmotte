@@ -22,7 +22,11 @@
     <MarmotteCudaNativePath Condition="'$(_MarmotteCudaBuildEnabled)' == 'true'">$(MarmotteCudaBuildDirectory)/native/$(_MarmotteCudaLibraryName)</MarmotteCudaNativePath>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="AssemblyInfo.fs" />
     <Compile Include="CudaNative.fs" />
+    <Compile Include="CudaStorage.fs" />
+    <Compile Include="CudaTensor.fs" />
+    <Compile Include="CudaWeightTensor.fs" />
     <Compile Include="CudaBackend.fs" />
   </ItemGroup>
   <ItemGroup>

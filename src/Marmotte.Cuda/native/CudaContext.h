@@ -39,7 +39,7 @@ struct CudaContext {
 };
 
 inline const CudaAllocation* findBuffer(CudaContext* context, void* buffer, int count) {
-    if (!context) return nullptr;
+    if (!context || count <= 0) return nullptr;
     const auto entry = context->buffers.find(buffer);
     return entry != context->buffers.end() && entry->second.count == count ? &entry->second : nullptr;
 }

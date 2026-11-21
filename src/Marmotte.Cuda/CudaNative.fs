@@ -32,7 +32,13 @@ module private CudaApi =
     extern int marmotte_cuda_allocate_stored(SafeHandle context, int encoding, int64 bytes, nativeint& buffer)
 
     [<DllImport(library, CallingConvention = CallingConvention.Cdecl)>]
-    extern int marmotte_cuda_upload_stored(SafeHandle context, nativeint buffer, [<In>] byte[] payload, int64 byteCount)
+    extern int marmotte_cuda_upload_stored_range(SafeHandle context, nativeint buffer, int64 offset, [<In>] byte[] payload, int64 byteCount)
+
+    [<DllImport(library, CallingConvention = CallingConvention.Cdecl)>]
+    extern int marmotte_cuda_download_stored(SafeHandle context, nativeint buffer, [<Out>] byte[] payload, int64 byteCount)
+
+    [<DllImport(library, CallingConvention = CallingConvention.Cdecl)>]
+    extern int marmotte_cuda_allocated_bytes(SafeHandle context, int64& bytes)
 
     [<DllImport(library, CallingConvention = CallingConvention.Cdecl)>]
     extern int marmotte_cuda_free(SafeHandle context, nativeint buffer)
@@ -87,6 +93,14 @@ type private CudaContextHandle(pointer: nativeint) =
     do base.SetHandle(pointer)
 
     override this.IsInvalid = this.handle = 0n
+
+    /// Explicit cleanup reports native failures; the finalizer must never throw.
+    member this.CloseChecked() =
+        if not this.IsClosed then
+            let status = CudaApi.marmotte_cuda_destroy(this.handle)
+            this.SetHandleAsInvalid()
+            CudaApi.check "context release" status
+
     override this.ReleaseHandle() =
         CudaApi.marmotte_cuda_destroy(this.handle) |> ignore
         true
@@ -124,9 +138,26 @@ type internal CudaSession(deviceIndex: int) =
         buffer
 
     /// Copies a whole stored payload into a stored allocation; the copy is complete on return.
-    member _.UploadStored(buffer, payload: byte array) =
-        CudaApi.marmotte_cuda_upload_stored(context, buffer, payload, int64 payload.Length)
-        |> CudaApi.check "stored upload"
+    member _.UploadStored(buffer, payload: ReadOnlyMemory<byte>) =
+        let staging = Array.zeroCreate<byte> (min payload.Length (4 * 1024 * 1024))
+        let mutable offset = 0
+        while offset < payload.Length do
+            let count = min staging.Length (payload.Length - offset)
+            payload.Span.Slice(offset, count).CopyTo(staging.AsSpan(0, count))
+            CudaApi.marmotte_cuda_upload_stored_range(context, buffer, int64 offset, staging, int64 count)
+            |> CudaApi.check "stored upload"
+            offset <- offset + count
+
+    member _.DownloadStored(buffer, bytes: int) =
+        let payload = Array.zeroCreate<byte> bytes
+        CudaApi.marmotte_cuda_download_stored(context, buffer, payload, int64 bytes)
+        |> CudaApi.check "stored download"
+        payload
+
+    member _.AllocatedBytes =
+        let mutable bytes = 0L
+        CudaApi.marmotte_cuda_allocated_bytes(context, &bytes) |> CudaApi.check "allocation accounting"
+        bytes
 
     member _.Upload(buffer, values: single array) =
         CudaApi.marmotte_cuda_upload(context, buffer, values, values.Length) |> CudaApi.check "upload"
@@ -151,4 +182,4 @@ type internal CudaSession(deviceIndex: int) =
     member _.Synchronize() = CudaApi.marmotte_cuda_synchronize(context) |> CudaApi.check "synchronization"
 
     interface IDisposable with
-        member _.Dispose() = context.Dispose()
+        member _.Dispose() = context.CloseChecked()

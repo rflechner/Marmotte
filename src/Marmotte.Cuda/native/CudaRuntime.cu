@@ -86,30 +86,22 @@ MARMOTTE_EXPORT int marmotte_cuda_allocate_f16(CudaContext* context, int count, 
     return allocateBuffer(context, count, CudaEncoding::F16, result);
 }
 
-namespace {
-
-// Stored weight payloads are raw bytes in their file encoding; the following upload covers
-// the whole allocation, so no zero-initialization is needed here.
-int allocateStored(CudaContext* context, int encodingValue, std::size_t bytes, void** result) {
-
+// A stored payload is never interpreted or zeroed: upload fills it before publication.
+MARMOTTE_EXPORT int marmotte_cuda_allocate_stored(CudaContext* context, int encodingValue, long long bytes, void** result) {
+    if (result) *result = nullptr;
     CudaEncoding encoding;
-    if (!context || !result || bytes == 0 || !storedEncodingFromInt(encodingValue, encoding)) {
+    if (!context || !result || bytes <= 0 ||
+        static_cast<unsigned long long>(bytes) > std::numeric_limits<std::size_t>::max() ||
+        !storedEncodingFromInt(encodingValue, encoding)) return cudaErrorInvalidValue;
 
-        return cudaErrorInvalidValue;
-    }
-    *result = nullptr;
     auto status = cudaSetDevice(context->device);
     if (status != cudaSuccess) return status;
-
     void* buffer = nullptr;
-    status = cudaMalloc(&buffer, bytes);
+    status = cudaMalloc(&buffer, static_cast<std::size_t>(bytes));
     if (status != cudaSuccess) return status;
     try {
-
-        context->buffers.emplace(buffer, CudaAllocation{-1, encoding, bytes});
-
+        context->buffers.emplace(buffer, CudaAllocation{-1, encoding, static_cast<std::size_t>(bytes)});
     } catch (const std::bad_alloc&) {
-
         cudaFree(buffer);
         return cudaErrorMemoryAllocation;
     }
@@ -117,34 +109,53 @@ int allocateStored(CudaContext* context, int encodingValue, std::size_t bytes, v
     return cudaSuccess;
 }
 
-// The host pointer is valid only during P/Invoke. Wait even though the copy uses a stream.
-int uploadStored(CudaContext* context, void* buffer, const void* payload, std::size_t byteCount) {
-
-    if (!context || !payload) return cudaErrorInvalidValue;
+namespace {
+const CudaAllocation* storedRange(CudaContext* context, void* buffer, long long offset, long long bytes) {
+    if (!context || offset < 0 || bytes <= 0) return nullptr;
     const auto entry = context->buffers.find(buffer);
-    if (entry == context->buffers.end() || entry->second.count != -1 || entry->second.bytes != byteCount) {
+    if (entry == context->buffers.end() || entry->second.count != -1) return nullptr;
+    const auto& allocation = entry->second;
+    if (static_cast<unsigned long long>(offset) > allocation.bytes ||
+        static_cast<unsigned long long>(bytes) > allocation.bytes - static_cast<std::size_t>(offset)) return nullptr;
+    return &allocation;
+}
+}
 
-        return cudaErrorInvalidValue;
-    }
+// Offsets/counts are bytes, not elements. A range may end inside a quantization block.
+// The host pointer is valid only during P/Invoke; wait before reusing the bounded staging array.
+MARMOTTE_EXPORT int marmotte_cuda_upload_stored_range(CudaContext* context, void* buffer, long long offset,
+                                                    const void* payload, long long byteCount) {
+    if (!payload || !storedRange(context, buffer, offset, byteCount)) return cudaErrorInvalidValue;
     auto status = cudaSetDevice(context->device);
     if (status != cudaSuccess) return status;
-    status = cudaMemcpyAsync(buffer, payload, byteCount, cudaMemcpyHostToDevice, context->stream);
+    auto destination = static_cast<unsigned char*>(buffer) + static_cast<std::size_t>(offset);
+    status = cudaMemcpyAsync(destination, payload, static_cast<std::size_t>(byteCount),
+                             cudaMemcpyHostToDevice, context->stream);
     const auto completed = cudaStreamSynchronize(context->stream);
     return status == cudaSuccess ? completed : status;
 }
+
+// Exact raw readback and allocation accounting support storage diagnostics without decoding.
+MARMOTTE_EXPORT int marmotte_cuda_download_stored(CudaContext* context, void* buffer, void* payload, long long bytes) {
+    const auto allocation = storedRange(context, buffer, 0, bytes);
+    if (!payload || !allocation || allocation->bytes != static_cast<unsigned long long>(bytes)) return cudaErrorInvalidValue;
+    auto status = cudaSetDevice(context->device);
+    if (status != cudaSuccess) return status;
+    status = cudaMemcpyAsync(payload, buffer, allocation->bytes, cudaMemcpyDeviceToHost, context->stream);
+    const auto completed = cudaStreamSynchronize(context->stream);
+    return status == cudaSuccess ? completed : status;
 }
 
-// encoding is a stored-encoding code (see CudaContext.h); bytes is a payload byte count.
-MARMOTTE_EXPORT int marmotte_cuda_allocate_stored(CudaContext* context, int encoding, long long bytes, void** result) {
-
-    if (bytes <= 0) return cudaErrorInvalidValue;
-    return allocateStored(context, encoding, static_cast<std::size_t>(bytes), result);
-}
-
-MARMOTTE_EXPORT int marmotte_cuda_upload_stored(CudaContext* context, void* buffer, const void* payload, long long byteCount) {
-
-    if (byteCount <= 0) return cudaErrorInvalidValue;
-    return uploadStored(context, buffer, payload, static_cast<std::size_t>(byteCount));
+MARMOTTE_EXPORT int marmotte_cuda_allocated_bytes(CudaContext* context, long long* bytes) {
+    if (!context || !bytes) return cudaErrorInvalidValue;
+    unsigned long long total = 0;
+    for (const auto& entry : context->buffers) {
+        if (entry.second.bytes > static_cast<unsigned long long>(std::numeric_limits<long long>::max()) - total)
+            return cudaErrorInvalidValue;
+        total += entry.second.bytes;
+    }
+    *bytes = static_cast<long long>(total);
+    return cudaSuccess;
 }
 
 MARMOTTE_EXPORT int marmotte_cuda_free(CudaContext* context, void* buffer) {

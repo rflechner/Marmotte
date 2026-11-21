@@ -283,7 +283,10 @@ The three backend projects share these contracts:
   Native compilation and GPU tests are optional; see the
   [CUDA guide](docs/cuda.md) for prerequisites, builds and how the backend works.
   Add has separate [F32 and F16 implementations](docs/cuda.md#kernel-formats-and-file-layout).
-  Weight upload, caches and other kernels still raise `NotImplementedException`.
+  `UploadWeights` copies all fourteen runtime encodings to VRAM without decoding,
+  with at most 4 MiB of host staging per upload. Weight and backend disposal wait
+  for queued work and release storage. Try `dotnet fsi examples/CudaWeights.fsx`.
+  Caches and other kernels still raise `NotImplementedException`.
 
 `Add` writes into a preallocated destination and requires identical contiguous,
 row-major shapes and encodings (all F32 or all F16). `Allocate(shape)` remains F32;
@@ -545,7 +548,7 @@ addition, SwiGLU, RMS normalization and matrix-vector products against scalar
 and double-precision references, embedding lookup against independently
 specified floating-point and quantized bytes, shape and ID validation, buffer
 ownership, transfers and disposal, plus explicit failures for unfinished GPU
-operations. CUDA Add has optional GPU tests; see [how to run them](docs/cuda.md#run-the-tests).
+operations. CUDA Add and stored weight transfers have optional GPU tests; see [how to run them](docs/cuda.md#run-the-tests).
 No model or weight download is required.
 
 ## Coding guidelines

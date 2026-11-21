@@ -373,10 +373,16 @@ without waiting; `Download` and `Synchronize` wait. GPU tests stay opt-in
   all fourteen runtime encodings — without decoding, as the CPU backend retains the
   payload. `CudaWeightTensor` keeps name, encoding, rows, columns and the device pointer;
   the native allocation registry records the byte size and encoding for boundary checks.
-- [ ] **Q.2** Release weight allocations on tensor and backend disposal, ordered on the
-  stream like tensor frees.
+  Host staging is bounded to 4 MiB; opt-in tests verify every stored byte for all
+  encodings, chunk boundaries and cleanup after partial uploads.
+- [x] **Q.2** Release weight allocations on tensor and backend disposal, ordered on the
+  stream like tensor frees. Explicit backend disposal reports native cleanup errors;
+  finalization remains a best-effort safety net.
 - [ ] **Q.3** Optional zero-copy path over mapped GGUF files (pinned host memory or unified
-  addressing), measured against Q.1 with the same workload as A.2.
+  addressing), measured against Q.1 with the same workload as A.2. Evaluated on an
+  RTX 4070 Ti SUPER: repeated full reads from a registered read-only mapping were
+  about 17× slower than VRAM. The reproducible experiment is retained; production
+  integration remains deferred. See [storage measurements](docs/cuda.md#compare-vram-and-mapped-host-weights-q3).
 
 ### R. CUDA element-wise, normalization and lookup kernels
 

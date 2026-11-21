@@ -1,9 +1,9 @@
 # CUDA: from the first build to an Add on the GPU
 
 Marmotte's CUDA backend implements contiguous F32 and F16 tensors, zero-initialized
-allocation, uploads, downloads, synchronization and element-wise Add. It uses
+allocation, uploads, downloads, stored weight uploads and element-wise Add. It uses
 native CUDA C++ through P/Invoke, with no additional NuGet dependency. Other
-kernels, weight upload and the key-value cache still throw
+kernels and the key-value cache still throw
 `NotImplementedException`.
 
 This guide assumes familiarity with building the .NET solution, but no CUDA
@@ -331,8 +331,9 @@ freeing its allocation; backend disposal waits and releases every remaining
 allocation and its stream. Metadata remains readable after disposal. A
 `SafeHandle` also owns the native context as a finalization safety net, but
 deterministic disposal avoids retaining VRAM until garbage collection.
-Cleanup makes a best effort after device failure, and finalization cannot
-report failures to the caller. There is no `cudaDeviceReset`: disposing one
+Explicit backend disposal reports native synchronization/free errors after
+attempting every release. Cleanup makes a best effort after device failure, and
+finalization cannot report failures to the caller. There is no `cudaDeviceReset`: disposing one
 backend must not invalidate another backend's resources.
 
 The native allocation registry provides additional length, format and ownership
@@ -344,6 +345,135 @@ by Core, concurrent calls on one backend, including disposal, are unsupported.
 Shapes must match exactly: no broadcasting or strided views. Tensors belong to
 their creating instance and cannot be passed to another CUDA or CPU backend.
 
+## Upload stored weights and release VRAM
+
+The goal is to place a matrix on the GPU without expanding its quantized values.
+Build the native backend as above, then run this example; it creates its own
+36-byte fixture and requires no model installation:
+
+```powershell
+dotnet fsi examples/CudaWeights.fsx
+```
+
+Expected output: `example.weight: Q4_0, 2 x 32, Cuda`.
+The example reads two rows of Q4_0 through Core's `FileTensorSource`, calls
+`WeightMatrix.Read`, uploads the result, closes the source and deletes the file.
+The returned `IWeightTensor` still owns its independent device copy.
+
+```mermaid
+flowchart LR
+    Source["Validated stored payload<br/>B bytes, copied or memory-mapped"]
+    Staging["Managed staging<br/>min(B, 4 MiB) bytes"]
+    Device["Owned VRAM<br/>B bytes, original encoding"]
+    Release["Dispose weight or backend<br/>wait for stream, then free"]
+    Source -->|copy next byte range| Staging
+    Staging -->|transfer and wait before reuse| Device
+    Device --> Release
+```
+
+`UploadWeights` supports F32, F16, BF16, Q4_0, Q4_1, Q5_0, Q5_1, Q8_0,
+IQ4_NL and Q2_K through Q6_K. Rows and columns keep Core's row-major order.
+Every byte, including scale bits and non-finite representations, is preserved;
+no decoding, numerical conversion or repacking occurs. `WeightMatrix.Read`
+has already checked the shape, row block boundaries and payload length.
+An upload finishes before returning, so its source need only remain valid and
+unchanged for the duration of the call. This also applies to mapped GGUF sources.
+
+A single staging array is reused for successive ranges of at most 4 MiB.
+Range boundaries may split quantization blocks: the device receives contiguous
+bytes at their original offsets, so block interpretation is unaffected. Native
+checks reject negative offsets, overflowing/out-of-bounds ranges, foreign pointers
+and execution-tensor allocations before copying. Stored weights cannot be used as
+execution tensors, even when their encoding is F32 or F16.
+
+VRAM use is exactly the stored payload size, excluding allocator overhead. Host
+staging is bounded independently of that size, rather than duplicating an entire
+large matrix. Each range waits on the stream before reusing its staging array.
+If a later range fails, upload releases the partially populated allocation and
+rethrows the original error. The tensor is only returned after all ranges succeed.
+
+Weight disposal waits for preceding work and frees its allocation. Backend disposal
+waits and releases every remaining allocation, including weights whose callers did
+not dispose them. Both are idempotent; name, encoding and dimensions remain readable.
+Explicit cleanup reports CUDA errors, while the `SafeHandle` finalizer remains a
+best-effort fallback. A failed free stays in the native registry for a final cleanup
+attempt when the backend closes. Other backend instances remain usable.
+
+Storage types live in `CudaStorage.fs`, `CudaTensor.fs` and `CudaWeightTensor.fs`;
+the backend owns their lifetimes and the session owns native interop. Internal raw
+readback and byte accounting let the tests verify device contents and releases
+without adding a public pointer or weight-download API. Matrix products and
+embedding lookup remain separate roadmap items.
+
+## Compare VRAM and mapped host weights (Q.3)
+
+Q.3 is an optional storage alternative, evaluated separately from inference.
+The experiment registers an entire read-only file view with
+`cudaHostRegisterMapped | cudaHostRegisterReadOnly`, obtains its device address
+and reads stored bytes directly from GPU code. This avoids a VRAM weight copy.
+The view stays open and registered until all GPU work finishes. Device capability
+checks and read-only registration requirements follow NVIDIA's
+[CUDA 12.8 memory API](https://docs.nvidia.com/cuda/archive/12.8.1/cuda-runtime-api/group__CUDART__MEMORY.html).
+Unified addressing alone does not establish that an arbitrary file mapping is
+accessible to GPU code; this experiment explicitly registers it.
+
+To reproduce the comparison on Windows, create a new fixture, then build the
+standalone probe. The generated file has eight Q4_K matrices of 155,325 × 3,072
+and one 3,072-element F32 vector: the same payload workload as
+[A.2](gguf.md#memory-mapped-tensor-source). Its synthetic names produce a 512-byte
+header and a total size of 2,147,225,600 bytes. The fixture contains arbitrary
+stored bytes for transfer measurements, not meaningful model weights.
+
+```powershell
+New-Item -ItemType Directory -Force artifacts/cuda-weight-storage | Out-Null
+dotnet fsi examples/CudaWeights.fsx --create-benchmark artifacts/cuda-weight-storage/weights.gguf
+cmake -S examples/cuda-weight-storage -B artifacts/cuda-weight-storage/build -G "Visual Studio 17 2022" -A x64 -DCMAKE_CUDA_ARCHITECTURES=89
+cmake --build artifacts/cuda-weight-storage/build --config Release
+& artifacts/cuda-weight-storage/build/Release/cuda_weight_storage.exe artifacts/cuda-weight-storage/weights.gguf 512 268401600 12288
+dotnet fsi examples/CudaWeights.fsx --measure artifacts/cuda-weight-storage/weights.gguf
+```
+
+The generator refuses to overwrite an existing file. The probe accepts the data
+offset, matrix byte count and vector byte count printed by the generator; it
+validates their ranges without implementing another GGUF parser. The managed
+measurement uses `GgufTensorSource.openMappedFile` and the actual backend.
+On Linux, omit the Visual Studio generator and `-A x64`, set
+`-DCMAKE_BUILD_TYPE=Release`, and run `build/cuda_weight_storage`; that path has
+not been exercised here.
+
+Measured on 2026-11-21, Windows x64, RTX 4070 Ti SUPER (16 GiB), driver 610.88,
+CUDA 12.8 and MSVC 19.42. The native probe is Release, with warm file pages and
+five trials. Each trial reports placement, the first full GPU read, then the mean
+of ten repeated full reads. The table contains the median across trials:
+
+| Storage path | Placement | First GPU read | Repeated GPU read | Host staging | Weight VRAM |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Copy to VRAM, whole-matrix staging | 251 ms | 6.63 ms | 6.56 ms | 256 MiB | 2.0 GiB |
+| Copy to VRAM, bounded staging | 283 ms | 6.60 ms | 6.56 ms | 4 MiB | 2.0 GiB |
+| Registered read-only mapping | 0.08 ms | 200 ms | 112 ms | None | None |
+
+All paths produced the same full-byte checksum, `268386036982`. File-page warming
+also touches the normalization vector; GPU scans cover the eight matrices. The
+checksum kernel and its small result buffer are identical for all paths. These
+are storage/read measurements, not decoding, matrix multiplication or token rates.
+Whole-matrix and bounded native staging each reuse one buffer; their allocation
+behavior is not a measurement of the .NET garbage collector.
+
+The actual managed Debug backend uploaded all eight matrices in a median 764 ms
+over five warm-cache trials, allocating 32.02 MiB on the calling thread in total
+(eight 4 MiB staging arrays plus small objects). Median index/mapping setup was
+0.64 ms. These separate managed timings include interop and the Debug native
+runtime; they are not directly comparable to the Release native probe.
+
+Bounded staging trades about 13% placement time in the native probe for a 64-fold
+reduction in peak staging size. It preserves the VRAM read rate and requires no
+new unsafe managed code. Mapped host placement is fast, but repeated reads were
+about 17 times slower and the first read included substantial deferred work.
+Accordingly the production backend keeps VRAM copies. Q.3 remains deferred;
+the reproducible probe is retained to revisit devices or workloads where saved
+VRAM matters more than repeated weight-read speed. No automatic fallback or
+experimental mapping mode is exposed by `CudaBackend`.
+
 ## Run the tests
 
 Normal tests require neither CUDA nor a native library:
@@ -354,8 +484,7 @@ dotnet test Marmotte.slnx --no-build
 ```
 
 They cover driver-free construction, empty tensors, argument validation,
-ownership, disposal and the explicitly unfinished operations. The seven GPU
-tests are reported as skipped by default. After building and deploying the
+ownership, disposal and the explicitly unfinished operations. GPU tests are reported as skipped by default. After building and deploying the
 native library with `MarmotteBuildCuda=true` or `MarmotteCudaNativePath`, opt in explicitly:
 
 ```powershell
@@ -382,6 +511,13 @@ normal/subnormal transitions, signed zero, infinities and NaNs. It checks all
 65,536 bit patterns across upload/download, mixed-format rejection, memory
 slices, in-place operations, queued dependencies and lifetime validation.
 The empty F16 CUDA cases still need no native library or device.
+
+[`CudaWeightTests.fs`](../tests/Marmotte.Backends.Tests/CudaWeightTests.fs) checks
+bit-for-bit device storage for all fourteen encodings, host slices, mutation after
+upload, closed mapped sources, staging boundaries inside quantization blocks,
+native byte accounting, partial-upload cleanup, ownership and stream-ordered
+disposal. Direct C ABI checks reject overflowing ranges and attempts to pass
+stored weights to Add. The lifetime state tests also run without CUDA.
 
 ## Diagnose common failures
 

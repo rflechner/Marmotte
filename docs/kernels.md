@@ -49,7 +49,8 @@ use unrounded intermediates.
 | StoreKeyValues / ReadKeyValues | One cached key or value of a past position, encoded and decoded back to F32 | [Key-value cache](#key-value-cache) |
 
 All eight kernels and the key-value cache have CPU implementations. CUDA also
-implements Add and F32/F16 device storage/transfers; its remaining kernels and Metal
+implements Add, F32/F16 device storage/transfers and stored weight uploads in all
+fourteen runtime encodings; its remaining kernels and Metal
 remain placeholders. See the [CUDA build and implementation guide](cuda.md).
 Core implements YaRN parameter preparation. Attention temperature has a worked
 example in text. The eight walkthrough images were
