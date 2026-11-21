@@ -261,16 +261,26 @@ the reference for results.
   submission-ordered execution with explicit synchronization, and tensor
   lifetimes owned by the backend.
 - [ ] **L.3** Extend the boundary to the key-value cache and the operations used by the
-  forward pass as they are implemented.
+  forward pass as they are implemented. Core's contracts in `Compute.fs` already cover
+  weights, the cache and every forward kernel; each backend implements them as its kernels
+  land (CUDA in groups Q–T at the end of this file, Metal in L.6).
 - [x] **L.4** Choose the interop approach for each backend: native kernels called through
   P/Invoke, or a .NET GPU library.
 - [ ] **L.5** CUDA backend: weight upload, quantized matrix products and the remaining
-  kernels.
+  kernels, detailed as groups [Q](#q-cuda-weight-upload-and-device-storage) through
+  [T](#t-cuda-position-kernels-key-value-cache-and-attention) at the end of this file, in
+  dependency order: element-wise and lookup kernels first, then matrix products, then
+  position kernels, cache and attention, so a synthetic F32 model can run end to end
+  before the K-quant products land.
 - [ ] **L.6** Metal backend: Metal Shading Language kernels, sharing mapped weights
   through unified memory without copies where alignment allows.
-- [ ] **L.7** Compare each backend with the CPU reference within documented tolerances.
+- [ ] **L.7** Compare each backend with the CPU reference within documented tolerances:
+  extend the opt-in `Category=CUDA` tests in `CudaTests.fs` kernel by kernel with
+  independent fixtures, and record the tolerances in `docs/kernels.md` beside the CPU
+  error bounds.
 - [x] **L.8** Keep GPU tests optional, so that normal development does not require a GPU.
-- [ ] **L.9** Measure each backend with the same workloads as the CPU.
+- [ ] **L.9** Measure each backend with the same workloads as the CPU recorded in
+  `docs/kernels.md`, and report the CUDA timings in `docs/cuda.md`.
 
 ## GGUF reader and quantizer
 
@@ -343,3 +353,69 @@ before designing its YAML representation.
 - [ ] **P.5** Demonstrate another architecture variant expressed with existing
   operations, with numerical regression tests. Document which changes need only
   a description and which require new kernels or model-format adapters.
+
+## Q–T. CUDA kernels (detail of L.5)
+
+The CPU implementation remains the reference for results. Each kernel follows the native
+kernel guide (`src/Marmotte.Cuda/native/kernels/README.md`): one `.cu` file per operation
+with typed GPU functions and a shared `extern "C"` entry point, listed in
+`native/CMakeLists.txt`, plus a private P/Invoke binding in `CudaNative.fs` and public
+argument validation in `CudaBackend.fs`. Launches run on the backend stream and return
+without waiting; `Download` and `Synchronize` wait. GPU tests stay opt-in
+(`MARMOTTE_TEST_CUDA=1`, `Category=CUDA`); see [docs/cuda.md](docs/cuda.md).
+
+### Q. CUDA weight upload and device storage
+
+- [ ] **Q.1** `UploadWeights`: copy each weight payload to VRAM in its stored encoding —
+  all fourteen runtime encodings — without decoding, as the CPU backend retains the
+  payload. `CudaWeightTensor` keeps name, encoding, rows, columns and the device pointer;
+  the native allocation registry records the byte size and encoding for boundary checks.
+- [ ] **Q.2** Release weight allocations on tensor and backend disposal, ordered on the
+  stream like tensor frees.
+- [ ] **Q.3** Optional zero-copy path over mapped GGUF files (pinned host memory or unified
+  addressing), measured against Q.1 with the same workload as A.2.
+
+### R. CUDA element-wise, normalization and lookup kernels
+
+- [ ] **R.1** SwiGLU F32: `silu(gate) × up` per element, in one `kernels/SwiGlu.cu`.
+- [ ] **R.2** RMS normalization F32: per-row mean of squares with a block reduction, then
+  scaling by the weight vector; document the accumulation precision.
+- [ ] **R.3** `CopyRows`: device-to-device copy of contiguous rank-2 rows, needed by
+  `LogitSelection` (H.3).
+- [ ] **R.4** Embedding lookup: decode the selected weight rows on the GPU straight into
+  the F32 destination. Start with F32/F16/Q4_0/Q8_0, then port the remaining `RowDecoder`
+  encodings (Q4_1, Q5_0, Q5_1, IQ4_NL, Q2_K–Q6_K); the target model's embedding matrix is
+  Q6_K, 131,072 × 3,072.
+
+### S. CUDA matrix products
+
+- [ ] **S.1** `MatVec` and `MatMul` over F32 and F16 weights as the reference path,
+  decoding one weight row at a time on the GPU.
+- [ ] **S.2** Batched `MatMul`: decode each weight row once into shared memory and share
+  it across the whole token batch, tiling rows over blocks; the CPU reaches about 3× per
+  token for 64-token batches (F.3).
+- [ ] **S.3** K-quant products (Q2_K–Q6_K): unpack blocks into shared memory and accumulate
+  scaled integer products per weight row, with the decoded-F32 fallback for non-finite or
+  unrepresentable cases (H.2). This is the dominant cost of the target model: every
+  generated token reads about 2 GiB of weights.
+- [ ] **S.4** Optional transient Q8_K quantization of each activation token, shared across
+  row workers, as in H.2.
+
+### T. CUDA position kernels, key-value cache and attention
+
+- [ ] **T.1** RoPE over Q and K: "normal" pairing plus YaRN, with angles in double
+  precision per token, either from cos/sin tables prepared by Core's `RotaryEmbedding` or
+  computed on the device (G.1, G.2).
+- [ ] **T.2** Attention temperature: one F32 factor per token from
+  `AttentionTemperature.Factor` (G.3).
+- [ ] **T.3** Key-value cache in device memory: allocate `layers × capacity × rowBytes`
+  for keys and for values separately, port `RowEncoder`/`RowDecoder` to CUDA for the nine
+  cache encodings (F32, F16, BF16, Q8_0, Q4_0, Q4_1, Q5_0, Q5_1, IQ4_NL), keep per-layer
+  stored counts, and discard later positions when storing at an earlier one (G.4, G.5).
+- [ ] **T.4** Grouped-query attention: causal mask, 1/√head-dimension scaling, stable
+  softmax, reading cached K/V one head at a time; score-buffer (Reference) first, then the
+  online running-sum variant (H.3), sharing decoded K/V between the query heads of one
+  key-value head (G.6).
+- [ ] **T.5** End-to-end dense `mistral3` forward on CUDA through `TransformerModel`,
+  including `LogitSelection`, verified against the CPU reference on the synthetic model in
+  the opt-in GPU tests (I.1).
