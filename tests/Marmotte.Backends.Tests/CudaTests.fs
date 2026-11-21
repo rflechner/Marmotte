@@ -67,6 +67,7 @@ let ``CUDA validates arguments before native loading or host writes`` () =
     Assert.Throws<ArgumentException>(fun () -> new CudaBackend(-1) |> ignore) |> ignore
     Assert.Throws<ArgumentNullException>(fun () -> backend.Allocate(nullShape) |> ignore) |> ignore
     Assert.Throws<ArgumentNullException>(fun () -> backend.Upload(nullShape, ReadOnlyMemory<single>.Empty) |> ignore) |> ignore
+    Assert.Throws<ArgumentNullException>(fun () -> backend.UploadWeights(Unchecked.defaultof<WeightMatrix>) |> ignore) |> ignore
     Assert.Throws<ArgumentException>(fun () -> backend.Upload(TensorShape.Create [| 1 |], ReadOnlyMemory<single>.Empty) |> ignore) |> ignore
 
     for a, b, output in [ nullTensor, empty, empty; empty, nullTensor, empty; empty, empty, nullTensor ] do
@@ -194,3 +195,37 @@ let ``CUDA disposal waits for queued work and releases only its own resources`` 
     Assert.Throws<ObjectDisposedException>(fun () -> backend.Download(output, Memory<single>(Array.zeroCreate shape.ElementCount))) |> ignore
     otherBackend.Add(survivor, survivor, survivor)
     Assert.All(download otherBackend survivor, fun value -> Assert.Equal(14.0f, value))
+
+[<CudaFact>]
+[<Trait("Category", "CUDA")>]
+let ``CUDA UploadWeights stores payloads in their encoding and tracks weight lifetime`` () =
+    use backend = new CudaBackend() :> ITensorBackend
+    use otherBackend = new CudaBackend() :> ITensorBackend
+    // F32 2x3 (24 bytes), Q4_0 2x64 (two 18-byte blocks per row), Q6_K 1x256 (one 210-byte block).
+    // The device bytes are verified through the matrix products once those kernels land;
+    // here the contract is the copy, the metadata and the lifetime.
+    let cases =
+        [ Marmotte.Backends.Tests.matrixOf TensorEncoding.F32 2 3 (Array.zeroCreate 24)
+          Marmotte.Backends.Tests.matrixOf TensorEncoding.Q4_0 2 64 (Array.zeroCreate 72)
+          Marmotte.Backends.Tests.matrixOf TensorEncoding.Q6_K 1 256 (Array.zeroCreate 210) ]
+
+    for matrix in cases do
+        use weights = backend.UploadWeights(matrix)
+        Assert.Equal("blk.0.attn_q.weight", weights.Name)
+        Assert.Equal(matrix.Encoding, weights.Encoding)
+        Assert.Equal(matrix.Rows, weights.Rows)
+        Assert.Equal(matrix.Columns, weights.Columns)
+        Assert.Equal(BackendKind.Cuda, weights.Backend)
+        weights.Dispose()
+        weights.Dispose()
+        // Metadata remains readable after disposal.
+        Assert.Equal(matrix.Encoding, weights.Encoding)
+        Assert.Equal(matrix.Rows, weights.Rows)
+
+    // A weight uploaded on one backend stays alive until that backend is disposed.
+    let surviving = otherBackend.UploadWeights(List.head cases)
+    backend.Dispose()
+    Assert.Equal(BackendKind.Cuda, surviving.Backend)
+    Assert.Throws<ObjectDisposedException>(fun () -> backend.UploadWeights(List.head cases) |> ignore) |> ignore
+    otherBackend.Dispose()
+    Assert.Equal(2, surviving.Rows)

@@ -5,6 +5,10 @@ open System.Collections.Generic
 open Marmotte.Core
 
 /// Device pointers never escape the assembly. Metadata survives disposal, just as on the CPU.
+type private ICudaStorage =
+    abstract Pointer: nativeint
+    abstract Invalidate: unit -> unit
+
 type private CudaTensor(owner: obj, shape: TensorShape, encoding: TensorEncoding, pointer: nativeint, release: CudaTensor -> unit) =
     let mutable disposed = false
 
@@ -15,6 +19,10 @@ type private CudaTensor(owner: obj, shape: TensorShape, encoding: TensorEncoding
         pointer
 
     member _.Invalidate() = disposed <- true
+
+    interface ICudaStorage with
+        member this.Pointer = this.Pointer
+        member this.Invalidate() = this.Invalidate()
 
     interface ITensor with
         member _.Shape = shape
@@ -27,21 +35,56 @@ type private CudaTensor(owner: obj, shape: TensorShape, encoding: TensorEncoding
                 try release this
                 finally disposed <- true
 
-/// Owned contiguous F32/F16 device tensors and Add, using one CUDA stream per instance.
+/// A weight matrix copied to device memory in its stored encoding, never decoded as a whole.
+/// Unlike the CPU backend, the payload is copied at upload time, so the tensor source that
+/// produced the WeightMatrix need not stay alive while this tensor is in use.
+type private CudaWeightTensor(owner: obj, name: string, encoding: TensorEncoding, rows: int, columns: int, pointer: nativeint, release: CudaWeightTensor -> unit) =
+    let mutable disposed = false
+
+    member _.Owner = owner
+
+    member this.Pointer =
+        ObjectDisposedException.ThrowIf(disposed, this)
+        pointer
+
+    member _.Invalidate() = disposed <- true
+
+    interface ICudaStorage with
+        member this.Pointer = this.Pointer
+        member this.Invalidate() = this.Invalidate()
+
+    interface IWeightTensor with
+        member _.Name = name
+        member _.Encoding = encoding
+        member _.Rows = rows
+        member _.Columns = columns
+        member _.Backend = BackendKind.Cuda
+
+    interface IDisposable with
+        member this.Dispose() =
+            if not disposed then
+                try release this
+                finally disposed <- true
+
+/// Owned contiguous F32/F16 device tensors, stored-encoding weight uploads and Add, using one
+/// CUDA stream per instance.
 /// deviceIndex is a zero-based CUDA device ordinal (default 0), and must be non-negative.
 /// Native loading and device initialization happen at the first non-empty allocation; construction,
 /// empty tensors and an unused Synchronize require no CUDA installation. No CPU fallback is used.
 /// Add and zero-initialization may return before completion. Transfers, tensor disposal and
-/// Synchronize wait for preceding work. Backend disposal waits and releases all remaining tensors.
-/// Host transfers use temporary managed arrays to avoid unsafe code; see docs/cuda.md for costs.
+/// Synchronize wait for preceding work. Backend disposal waits and releases all remaining tensors
+/// and weights.
+/// UploadWeights copies the whole stored payload to device memory, so the WeightMatrix's source
+/// may be released afterwards. Host transfers use temporary managed arrays to avoid unsafe code;
+/// see docs/cuda.md for costs.
 /// Missing native libraries raise DllNotFoundException; CUDA failures raise InvalidOperationException
-/// (OutOfMemoryException for allocation exhaustion). Unimplemented kernels, weights and caches raise
+/// (OutOfMemoryException for allocation exhaustion). Unimplemented kernels and caches raise
 /// NotImplementedException. Concurrent calls on an instance, including disposal, are unsupported.
 [<Sealed>]
 type CudaBackend(?deviceIndex: int) =
     let deviceIndex = defaultArg deviceIndex 0
     let owner = obj()
-    let liveTensors = HashSet<CudaTensor>(HashIdentity.Reference)
+    let liveStorage = HashSet<ICudaStorage>(HashIdentity.Reference)
     let mutable session: CudaSession option = None
     let mutable disposed = false
 
@@ -70,12 +113,12 @@ type CudaBackend(?deviceIndex: int) =
         | :? CudaTensor as tensor when Object.ReferenceEquals(tensor.Owner, owner) -> tensor.Pointer
         | _ -> invalidArg argumentName "The tensor must belong to this CUDA backend instance."
 
-    let release (tensor: CudaTensor) =
+    let release (storage: ICudaStorage) =
         try
-            if tensor.Pointer <> 0n then
-                getSession().Free(tensor.Pointer)
+            if storage.Pointer <> 0n then
+                getSession().Free(storage.Pointer)
         finally
-            liveTensors.Remove(tensor) |> ignore
+            liveStorage.Remove(storage) |> ignore
 
     let createTensor (shape: TensorShape) encoding =
         match encoding with
@@ -84,7 +127,7 @@ type CudaBackend(?deviceIndex: int) =
 
         let pointer = if shape.ElementCount = 0 then 0n else getSession().Allocate(shape.ElementCount, encoding)
         let tensor = new CudaTensor(owner, shape, encoding, pointer, release)
-        liveTensors.Add(tensor) |> ignore
+        liveStorage.Add(tensor) |> ignore
         tensor :> ITensor
 
     let requireSameShape (reference: ITensor) argumentName (tensor: ITensor) =
@@ -140,7 +183,22 @@ type CudaBackend(?deviceIndex: int) =
                 try tensor.Dispose() with _ -> ()
                 reraise ()
 
-        member _.UploadWeights(_) = notImplemented "weight upload"
+        member _.UploadWeights(weights: WeightMatrix) =
+            checkDisposed ()
+            ArgumentNullException.ThrowIfNull(weights)
+            let payload = weights.Payload
+            let bytes = int64 payload.Length
+            let pointer = if bytes = 0L then 0n else getSession().AllocateStored(weights.Encoding, bytes)
+            let tensor = new CudaWeightTensor(owner, weights.Name, weights.Encoding, weights.Rows, weights.Columns, pointer, release)
+            liveStorage.Add(tensor) |> ignore
+            if bytes > 0L then
+                try
+                    getSession().UploadStored(pointer, payload.ToArray())
+                with _ ->
+                    // Preserve the upload failure if cleanup also encounters a device failure.
+                    try (tensor :> IDisposable).Dispose() with _ -> ()
+                    reraise ()
+            tensor :> IWeightTensor
         member _.AllocateKeyValueCache(_) = notImplemented "key-value cache allocation"
 
         member _.Download(tensor, destination: Memory<single>) =
@@ -225,9 +283,9 @@ type CudaBackend(?deviceIndex: int) =
                 try
                     synchronize ()
                 finally
-                    for tensor in liveTensors do
-                        tensor.Invalidate()
-                    liveTensors.Clear()
+                    for storage in liveStorage do
+                        storage.Invalidate()
+                    liveStorage.Clear()
                     match session with
                     | Some current ->
                         (current :> IDisposable).Dispose()

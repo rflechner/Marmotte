@@ -10,9 +10,21 @@
 #define MARMOTTE_EXPORT extern "C" __attribute__((visibility("default")))
 #endif
 
-enum class CudaEncoding { F32, F16 };
+// Runtime tensor encodings in the same order as Core's TensorEncoding. The managed backend
+// maps each case to its integer explicitly (CudaNative.fs), so this order is a shared
+// contract between the two sides, never a blind cast of a foreign enum.
+enum class CudaEncoding {
+    F32, F16, BF16, Q4_0, Q4_1, Q5_0, Q5_1, Q8_0, IQ4_NL, Q2_K, Q3_K, Q4_K, Q5_K, Q6_K
+};
+
+inline bool storedEncodingFromInt(int value, CudaEncoding& encoding) {
+    if (value < 0 || value > static_cast<int>(CudaEncoding::Q6_K)) return false;
+    encoding = static_cast<CudaEncoding>(value);
+    return true;
+}
 
 struct CudaAllocation {
+    // Element count for execution tensors, -1 for a raw stored weight payload.
     int count;
     CudaEncoding encoding;
     std::size_t bytes;

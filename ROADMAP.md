@@ -369,7 +369,7 @@ without waiting; `Download` and `Synchronize` wait. GPU tests stay opt-in
 
 ### Q. CUDA weight upload and device storage
 
-- [ ] **Q.1** `UploadWeights`: copy each weight payload to VRAM in its stored encoding —
+- [x] **Q.1** `UploadWeights`: copy each weight payload to VRAM in its stored encoding —
   all fourteen runtime encodings — without decoding, as the CPU backend retains the
   payload. `CudaWeightTensor` keeps name, encoding, rows, columns and the device pointer;
   the native allocation registry records the byte size and encoding for boundary checks.

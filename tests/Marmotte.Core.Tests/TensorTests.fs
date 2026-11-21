@@ -6,6 +6,15 @@ open System.IO
 open Marmotte.Core
 open Xunit
 
+/// Windows refuses to resize a file while a memory-mapped section is open onto it
+/// (ERROR_USER_MAPPED_FILE), so tests that truncate a mapped file behind its back only
+/// run on Linux and macOS.
+type private SkipOnWindowsFactAttribute() as this =
+    inherit FactAttribute()
+    do
+        if OperatingSystem.IsWindows() then
+            this.Skip <- "Windows forbids resizing a file with an open memory mapping."
+
 type private StoredTensor =
     { Descriptor: TensorDescriptor
       Payload: byte array }
@@ -307,7 +316,7 @@ let ``mapped source unmaps on dispose and returned payloads outlive it`` () =
         use exclusive = File.Open(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None)
         Assert.True(exclusive.CanWrite))
 
-[<Fact>]
+[<SkipOnWindowsFact>]
 let ``mapped source reports a file truncated after it was opened`` () =
     let locations = [| location "matrix" (Some TensorEncoding.F32) [ 2UL; 2UL ] 16 0L |]
 

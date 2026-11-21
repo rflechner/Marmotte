@@ -19,7 +19,7 @@ let private download (backend: ITensorBackend) (tensor: ITensor) =
     values
 
 /// Serves one matrix from memory, to build a WeightMatrix without a file format.
-type private MatrixSource(encoding: TensorEncoding, rows: int, columns: int, payload: byte array) =
+type internal MatrixSource(encoding: TensorEncoding, rows: int, columns: int, payload: byte array) =
     let descriptor =
         { Name = "blk.0.attn_q.weight"
           Encoding = Some encoding
@@ -36,7 +36,7 @@ type private MatrixSource(encoding: TensorEncoding, rows: int, columns: int, pay
     interface IDisposable with
         member _.Dispose() = ()
 
-let private matrixOf encoding rows columns payload =
+let internal matrixOf encoding rows columns payload =
     use source = new MatrixSource(encoding, rows, columns, payload)
     WeightMatrix.Read(source, "blk.0.attn_q.weight")
 
@@ -729,8 +729,7 @@ let ``unfinished GPU operations explicitly fail without requiring GPU hardware``
     use weights = host.UploadWeights(weightMatrix ())
     use cache = host.AllocateKeyValueCache(cacheLayout ())
     let operations =
-        [ (fun () -> backend.UploadWeights(weightMatrix ()) |> ignore)
-          (fun () -> backend.AllocateKeyValueCache(cacheLayout ()) |> ignore)
+        [ (fun () -> backend.AllocateKeyValueCache(cacheLayout ()) |> ignore)
           (fun () -> backend.SwiGlu(tensor, tensor, tensor))
           (fun () -> backend.RmsNorm(tensor, tensor, 1e-5f, tensor))
           (fun () -> backend.EmbeddingLookup(weights, ReadOnlyMemory<int>([| 0 |]), tensor))
@@ -748,6 +747,7 @@ let ``unfinished GPU operations explicitly fail without requiring GPU hardware``
         Assert.Contains(name, error.Message)
 
     if name = "Metal" then
+        Assert.Throws<NotImplementedException>(fun () -> backend.UploadWeights(weightMatrix ()) |> ignore) |> ignore
         Assert.Throws<NotImplementedException>(fun () -> backend.Allocate(shape) |> ignore) |> ignore
         Assert.Throws<NotImplementedException>(fun () -> backend.Upload(shape, ReadOnlyMemory<single>([| 1.0f |])) |> ignore) |> ignore
         Assert.Throws<NotImplementedException>(fun () -> backend.Download(tensor, Memory<single>([| 0.0f |]))) |> ignore

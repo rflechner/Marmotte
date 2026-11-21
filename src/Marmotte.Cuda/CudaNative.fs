@@ -29,6 +29,12 @@ module private CudaApi =
     extern int marmotte_cuda_allocate_f16(SafeHandle context, int count, nativeint& buffer)
 
     [<DllImport(library, CallingConvention = CallingConvention.Cdecl)>]
+    extern int marmotte_cuda_allocate_stored(SafeHandle context, int encoding, int64 bytes, nativeint& buffer)
+
+    [<DllImport(library, CallingConvention = CallingConvention.Cdecl)>]
+    extern int marmotte_cuda_upload_stored(SafeHandle context, nativeint buffer, [<In>] byte[] payload, int64 byteCount)
+
+    [<DllImport(library, CallingConvention = CallingConvention.Cdecl)>]
     extern int marmotte_cuda_free(SafeHandle context, nativeint buffer)
 
     [<DllImport(library, CallingConvention = CallingConvention.Cdecl)>]
@@ -56,6 +62,24 @@ module private CudaApi =
             if status = memoryAllocationError then
                 raise (OutOfMemoryException(message))
             raise (InvalidOperationException(message))
+
+    /// Stored-encoding code shared with the native CudaEncoding order; see CudaContext.h.
+    let encodingCode (encoding: TensorEncoding) =
+        match encoding with
+        | TensorEncoding.F32 -> 0
+        | TensorEncoding.F16 -> 1
+        | TensorEncoding.BF16 -> 2
+        | TensorEncoding.Q4_0 -> 3
+        | TensorEncoding.Q4_1 -> 4
+        | TensorEncoding.Q5_0 -> 5
+        | TensorEncoding.Q5_1 -> 6
+        | TensorEncoding.Q8_0 -> 7
+        | TensorEncoding.IQ4_NL -> 8
+        | TensorEncoding.Q2_K -> 9
+        | TensorEncoding.Q3_K -> 10
+        | TensorEncoding.Q4_K -> 11
+        | TensorEncoding.Q5_K -> 12
+        | TensorEncoding.Q6_K -> 13
 
 /// Owns the native stream and every live device allocation, including a finalization safety net.
 type private CudaContextHandle(pointer: nativeint) =
@@ -91,6 +115,18 @@ type internal CudaSession(deviceIndex: int) =
         buffer
 
     member _.Free(buffer) = CudaApi.marmotte_cuda_free(context, buffer) |> CudaApi.check "release"
+
+    /// Allocates a raw stored payload (a weight matrix in its file encoding) of the given byte size.
+    member _.AllocateStored(encoding: TensorEncoding, bytes: int64) =
+        let mutable buffer = 0n
+        let status = CudaApi.marmotte_cuda_allocate_stored(context, CudaApi.encodingCode encoding, bytes, &buffer)
+        status |> CudaApi.check "stored allocation"
+        buffer
+
+    /// Copies a whole stored payload into a stored allocation; the copy is complete on return.
+    member _.UploadStored(buffer, payload: byte array) =
+        CudaApi.marmotte_cuda_upload_stored(context, buffer, payload, int64 payload.Length)
+        |> CudaApi.check "stored upload"
 
     member _.Upload(buffer, values: single array) =
         CudaApi.marmotte_cuda_upload(context, buffer, values, values.Length) |> CudaApi.check "upload"
