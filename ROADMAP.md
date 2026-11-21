@@ -273,7 +273,10 @@ the reference for results.
   position kernels, cache and attention, so a synthetic F32 model can run end to end
   before the K-quant products land.
 - [ ] **L.6** Metal backend: Metal Shading Language kernels, sharing mapped weights
-  through unified memory without copies where alignment allows.
+  through unified memory without copies where alignment allows, detailed as groups
+  [U](#u-metal-device-buffers-and-weight-storage) through
+  [X](#x-metal-position-kernels-key-value-cache-and-attention) at the end of this file,
+  mirroring the CUDA groups Q–T.
 - [ ] **L.7** Compare each backend with the CPU reference within documented tolerances:
   extend the opt-in `Category=CUDA` tests in `CudaTests.fs` kernel by kernel with
   independent fixtures, and record the tolerances in `docs/kernels.md` beside the CPU
@@ -417,5 +420,73 @@ without waiting; `Download` and `Synchronize` wait. GPU tests stay opt-in
   online running-sum variant (H.3), sharing decoded K/V between the query heads of one
   key-value head (G.6).
 - [ ] **T.5** End-to-end dense `mistral3` forward on CUDA through `TransformerModel`,
+  including `LogitSelection`, verified against the CPU reference on the synthetic model in
+  the opt-in GPU tests (I.1).
+
+## U–X. Metal kernels (detail of L.6)
+
+The Metal backend mirrors groups Q–T on Apple GPUs, and the CPU implementation remains the
+reference for results. Shaders are Metal Shading Language compute functions; following the
+interop chosen in L.4, each operation gets one shader file plus a host entry point compiled
+into a dynamic library loaded through P/Invoke, with one command queue per backend instance.
+Storage is `MTLBuffer` objects owned by the backend; on unified-memory systems, mapped GGUF
+weights are shared without copies where alignment allows. GPU tests stay opt-in, like the
+CUDA ones. Document Apple-specific arithmetic behavior (for example, F32 subnormals flushed
+to zero on Apple GPUs) next to the affected kernels.
+
+### U. Metal device, buffers and weight storage
+
+- [ ] **U.1** Device and transfers: select the `MTLDevice`, create one command queue per
+  `MetalBackend` lazily (construction needs no driver, as on CUDA), allocate zero-initialized
+  buffers, upload/download F32 and F16 with bit-preserving transfers, and synchronize by
+  waiting on the queue's command buffers.
+- [ ] **U.2** `UploadWeights`: place each weight payload in a buffer in its stored encoding —
+  all fourteen runtime encodings — without decoding, sharing mapped file memory directly on
+  unified-memory systems where alignment allows and copying otherwise; keep name, encoding,
+  rows and columns as managed metadata.
+- [ ] **U.3** Release buffers on tensor and backend disposal, ordered on the queue like the
+  CUDA stream ordering.
+
+### V. Metal element-wise, normalization and lookup kernels
+
+- [ ] **V.1** Add F32 and F16 as the first kernel (the `half2` vector type packs F16 pairs);
+  document rounding and subnormal behavior on the target GPUs.
+- [ ] **V.2** SwiGLU F32: `silu(gate) × up` per element, in one shader file.
+- [ ] **V.3** RMS normalization F32: per-row mean of squares with a threadgroup reduction,
+  then scaling by the weight vector; document the accumulation precision.
+- [ ] **V.4** `CopyRows`: buffer-to-buffer copy of contiguous rank-2 rows, needed by
+  `LogitSelection` (H.3).
+- [ ] **V.5** Embedding lookup: decode the selected weight rows on the GPU straight into
+  the F32 destination; start with F32/F16/Q4_0/Q8_0, then port the remaining `RowDecoder`
+  encodings (Q4_1, Q5_0, Q5_1, IQ4_NL, Q2_K–Q6_K).
+
+### W. Metal matrix products
+
+- [ ] **W.1** `MatVec` and `MatMul` over F32 and F16 weights as the reference path,
+  decoding one weight row at a time on the GPU.
+- [ ] **W.2** Batched `MatMul`: decode each weight row once into threadgroup memory and
+  share it across the whole token batch, tiling rows over threadgroups (F.3).
+- [ ] **W.3** K-quant products (Q2_K–Q6_K): unpack blocks into threadgroup memory and
+  accumulate scaled integer products per weight row, with the decoded-F32 fallback for
+  non-finite or unrepresentable cases (H.2).
+- [ ] **W.4** Optional transient Q8_K quantization of each activation token, shared across
+  row workers, as in H.2.
+
+### X. Metal position kernels, key-value cache and attention
+
+- [ ] **X.1** RoPE over Q and K: "normal" pairing plus YaRN, with angles in double
+  precision per token, either from cos/sin tables prepared by Core's `RotaryEmbedding` or
+  computed in the shader (G.1, G.2).
+- [ ] **X.2** Attention temperature: one F32 factor per token from
+  `AttentionTemperature.Factor` (G.3).
+- [ ] **X.3** Key-value cache in buffers: allocate `layers × capacity × rowBytes` for keys
+  and for values separately, port `RowEncoder`/`RowDecoder` to Metal shaders for the nine
+  cache encodings (F32, F16, BF16, Q8_0, Q4_0, Q4_1, Q5_0, Q5_1, IQ4_NL), keep per-layer
+  stored counts, and discard later positions when storing at an earlier one (G.4, G.5).
+- [ ] **X.4** Grouped-query attention: causal mask, 1/√head-dimension scaling, stable
+  softmax, reading cached K/V one head at a time; score-buffer (Reference) first, then the
+  online running-sum variant (H.3), sharing decoded K/V between the query heads of one
+  key-value head (G.6).
+- [ ] **X.5** End-to-end dense `mistral3` forward on Metal through `TransformerModel`,
   including `LogitSelection`, verified against the CPU reference on the synthetic model in
   the opt-in GPU tests (I.1).
