@@ -383,6 +383,17 @@ without waiting; `Download` and `Synchronize` wait. GPU tests stay opt-in
   RTX 4070 Ti SUPER: repeated full reads from a registered read-only mapping were
   about 17× slower than VRAM. The reproducible experiment is retained; production
   integration remains deferred. See [storage measurements](docs/cuda.md#compare-vram-and-mapped-host-weights-q3).
+- [ ] **Q.4** Study partial RAM/VRAM placement for mixture-of-experts (MoE) models
+  whose weights exceed VRAM capacity. Keep a budgeted set of experts in VRAM and
+  the remaining experts in RAM; compare direct mapped-host GPU reads, on-demand
+  uploads into a bounded VRAM expert cache, and CPU execution of RAM-resident
+  experts. Start with explicit routing and expert layouts plus a small CPU numerical
+  reference; end-to-end GPU measurements also require the CUDA inference kernels.
+  Preserve the selected experts and routing weights in every placement strategy.
+  Measure prefill and decode separately, including expert reuse/cache misses,
+  transferred bytes per token, latency and peak RAM/pinned RAM/VRAM under changing
+  routing patterns. Q.3's dense full-read result does not establish MoE performance.
+  See the [study plan](docs/cuda.md#study-partial-ramvram-placement-for-moe-q4).
 
 ### R. CUDA element-wise, normalization and lookup kernels
 

@@ -474,6 +474,53 @@ the reproducible probe is retained to revisit devices or workloads where saved
 VRAM matters more than repeated weight-read speed. No automatic fallback or
 experimental mapping mode is exposed by `CudaBackend`.
 
+## Study partial RAM/VRAM placement for MoE (Q.4)
+
+The planned Q.4 study asks whether a model whose weights exceed VRAM capacity can
+run at useful speed with some experts in RAM. Sparse mixture-of-experts (MoE)
+layers select only a subset of experts for each token, but that selection can
+change between tokens and layers. For example, the
+[Mixtral paper](https://arxiv.org/abs/2401.04088) describes two selected experts
+out of eight per layer. A prompt batch can collectively select many more experts
+than one token. The dense full-read timings above therefore do not establish the
+cost of partial expert placement. Expert offloading is also studied in
+[Fast Inference of Mixture-of-Experts Language Models with Offloading](https://arxiv.org/abs/2312.17238);
+these references motivate an experiment, not a performance claim for Marmotte.
+
+This is future work: Marmotte currently executes dense `mistral3` only. First
+define and validate a chosen MoE architecture's router, expert tensor layout and
+weighted output combination against a small independent CPU reference. Use
+synthetic fixtures without a model download. CUDA inference kernels are a
+prerequisite for end-to-end GPU results; storage-only probes can run earlier.
+
+Compare three strategies under the same explicit memory budget, keeping the
+non-expert weights and frequently reused experts in VRAM where the budget permits:
+
+- Read selected RAM-resident experts directly on the GPU through registered
+  mappings, extending the Q.3 experiment to sparse access.
+- Copy selected experts into a bounded VRAM cache on demand. Compare fixed
+  placement with cache replacement, then evaluate prefetching without changing
+  the experts selected by the router.
+- Execute RAM-resident experts on the CPU and transfer their inputs and outputs,
+  measuring synchronization and combination costs as well as expert computation.
+
+For each strategy, preserve stored weight encodings, routing choices and routing
+weights; verify outputs against the CPU reference within documented tolerances.
+Budget activations, the KV cache and transfer buffers alongside weights. Bound
+pinned RAM explicitly and keep mappings, registrations and cached expert buffers
+alive until their submitted work completes. Disk-backed paging is a separate
+experiment, not an assumed extension of RAM capacity.
+
+Measure prefill and single-token decode separately, with cold and warm expert
+caches. Vary expert count, selected experts per token, batch size and VRAM budget;
+include uniform selection, repeated selections and abrupt changes in selected
+experts. Report total versus active weight bytes, cache hit/miss rates, actual
+PCIe bytes per token, transfer/compute time, token latency distributions and
+throughput, plus peak RAM, pinned RAM and VRAM. Compare with CPU-only execution
+and an all-VRAM baseline where it fits, using identical inputs and encodings.
+Keep real-model checks optional and distinguish them from synthetic measurements.
+Use these results to decide whether any placement policy merits production support.
+
 ## Run the tests
 
 Normal tests require neither CUDA nor a native library:
