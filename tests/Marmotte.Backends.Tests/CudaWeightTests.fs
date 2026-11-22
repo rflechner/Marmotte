@@ -199,6 +199,16 @@ module private Native =
     extern int marmotte_cuda_add(nativeint context, nativeint left, nativeint right, nativeint destination, int count)
     [<DllImport("marmotte_cuda", CallingConvention = CallingConvention.Cdecl)>]
     extern int marmotte_cuda_free(nativeint context, nativeint buffer)
+    [<DllImport("marmotte_cuda", CallingConvention = CallingConvention.Cdecl)>]
+    extern int marmotte_cuda_allocate(nativeint context, int count, nativeint& buffer)
+    [<DllImport("marmotte_cuda", CallingConvention = CallingConvention.Cdecl)>]
+    extern int marmotte_cuda_allocate_f16(nativeint context, int count, nativeint& buffer)
+    [<DllImport("marmotte_cuda", CallingConvention = CallingConvention.Cdecl)>]
+    extern int marmotte_cuda_upload(nativeint context, nativeint buffer, single[] values, int count)
+    [<DllImport("marmotte_cuda", CallingConvention = CallingConvention.Cdecl)>]
+    extern int marmotte_cuda_download(nativeint context, nativeint buffer, [<Out>] single[] values, int count)
+    [<DllImport("marmotte_cuda", CallingConvention = CallingConvention.Cdecl)>]
+    extern int marmotte_cuda_copy_rows(nativeint context, nativeint source, int sourceRows, int firstRow, nativeint destination, int rows, int columns)
 
 [<CudaFact; Trait("Category", "CUDA")>]
 let ``CUDA native stored ranges reject overflow foreign pointers and execution tensor access`` () =
@@ -227,6 +237,52 @@ let ``CUDA native stored ranges reject overflow foreign pointers and execution t
         Assert.NotEqual(0, Native.marmotte_cuda_free(other, pointer))
         Assert.Equal(0, Native.marmotte_cuda_free(context, pointer))
         Assert.NotEqual(0, Native.marmotte_cuda_free(context, pointer))
+    finally
+        if other <> 0n then Assert.Equal(0, Native.marmotte_cuda_destroy(other))
+        Assert.Equal(0, Native.marmotte_cuda_destroy(context))
+
+[<CudaFact; Trait("Category", "CUDA")>]
+let ``CUDA native row copies reject inconsistent counts encodings and foreign pointers`` () =
+    let mutable context = 0n
+    let mutable other = 0n
+    Assert.Equal(0, Native.marmotte_cuda_create(0, &context))
+    try
+        Assert.Equal(0, Native.marmotte_cuda_create(0, &other))
+        let mutable source = 0n
+        let mutable destination = 0n
+        let mutable half = 0n
+        let mutable stored = 0n
+        Assert.Equal(0, Native.marmotte_cuda_allocate(context, 6, &source))
+        Assert.Equal(0, Native.marmotte_cuda_allocate(context, 4, &destination))
+        Assert.Equal(0, Native.marmotte_cuda_allocate_f16(context, 4, &half))
+        Assert.Equal(0, Native.marmotte_cuda_allocate_stored(context, 0, 24L, &stored))
+        Assert.Equal(0, Native.marmotte_cuda_upload(context, source, Array.init 6 single, 6))
+        Assert.Equal(0, Native.marmotte_cuda_upload(context, destination, Array.create 4 42.0f, 4))
+
+        // Arguments are (source, sourceRows, firstRow, destination, rows, columns) over a [3; 2] source.
+        let invalidCalls =
+            [ context, source, 3, 0, destination, 2, 0
+              context, source, 0, 0, destination, 2, 2
+              context, source, 3, 0, destination, 0, 2
+              context, source, 3, -1, destination, 2, 2
+              context, source, 3, 2, destination, 2, 2
+              context, source, 3, Int32.MaxValue, destination, 2, 2
+              context, source, Int32.MaxValue, 0, destination, 2, 2
+              context, source, 2, 0, destination, 2, 2
+              context, source, 3, 0, destination, 1, 2
+              context, source, 3, 0, half, 2, 2
+              context, stored, 3, 0, destination, 2, 2
+              context, source, 3, 0, stored, 2, 2
+              other, source, 3, 0, destination, 2, 2 ]
+        for callContext, from, sourceRows, firstRow, into, rows, columns in invalidCalls do
+            Assert.NotEqual(0, Native.marmotte_cuda_copy_rows(callContext, from, sourceRows, firstRow, into, rows, columns))
+
+        let actual = Array.zeroCreate<single> 4
+        Assert.Equal(0, Native.marmotte_cuda_download(context, destination, actual, 4))
+        Assert.All(actual, fun value -> Assert.Equal(42.0f, value))
+        Assert.Equal(0, Native.marmotte_cuda_copy_rows(context, source, 3, 1, destination, 2, 2))
+        Assert.Equal(0, Native.marmotte_cuda_download(context, destination, actual, 4))
+        Assert.Equal<single>([| 2.0f; 3.0f; 4.0f; 5.0f |], actual)
     finally
         if other <> 0n then Assert.Equal(0, Native.marmotte_cuda_destroy(other))
         Assert.Equal(0, Native.marmotte_cuda_destroy(context))

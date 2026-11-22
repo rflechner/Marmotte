@@ -1,6 +1,7 @@
 module Marmotte.Backends.CudaTests
 
 open System
+open System.Runtime.InteropServices
 open Marmotte.Core
 open Marmotte.Cpu
 open Marmotte.Cuda
@@ -424,4 +425,131 @@ let ``CUDA RmsNorm validates rank weight epsilon encodings ownership and disposa
     Assert.Throws<ArgumentException>(fun () -> backend.RmsNorm(input, halfWeight, 1e-5f, destination)) |> ignore
     Assert.Throws<ArgumentException>(fun () -> backend.RmsNorm(input, weight, 1e-5f, halfDestination)) |> ignore
     Assert.Throws<ObjectDisposedException>(fun () -> backend.RmsNorm(disposed, weight, 1e-5f, destination)) |> ignore
+    Assert.All(download backend destination, fun value -> Assert.Equal(42.0f, value))
+
+[<Fact>]
+let ``CUDA row copies validate shapes encodings and ranges before native loading`` () =
+    use backend = new CudaBackend() :> ITensorBackend
+    use otherBackend = new CudaBackend() :> ITensorBackend
+    use cpu = new CpuBackend() :> ITensorBackend
+    let nullTensor = Unchecked.defaultof<ITensor>
+    use source = backend.Allocate(TensorShape.Create [| 0; 3 |])
+    use destination = backend.Allocate(TensorShape.Create [| 0; 3 |])
+
+    // Empty copies, including identity, are validated without loading the native library.
+    backend.CopyRows(source, 0, destination)
+    backend.CopyRows(source, 0, source)
+    backend.Synchronize()
+
+    Assert.Throws<ArgumentNullException>(fun () -> backend.CopyRows(nullTensor, 0, destination)) |> ignore
+    Assert.Throws<ArgumentNullException>(fun () -> backend.CopyRows(source, 0, nullTensor)) |> ignore
+
+    use vector = backend.Allocate(TensorShape.Create [| 0 |])
+    use rank3 = backend.Allocate(TensorShape.Create [| 0; 3; 1 |])
+    use narrow = backend.Allocate(TensorShape.Create [| 0; 2 |])
+    use halfTensor = backend.Allocate(TensorShape.Create [| 0; 3 |], TensorEncoding.F16)
+    use foreign = otherBackend.Allocate(TensorShape.Create [| 0; 3 |])
+    use host = cpu.Allocate(TensorShape.Create [| 0; 3 |])
+    for invalid in [ vector; rank3; narrow; halfTensor; foreign; host ] do
+        Assert.Throws<ArgumentException>(fun () -> backend.CopyRows(invalid, 0, destination)) |> ignore
+        Assert.Throws<ArgumentException>(fun () -> backend.CopyRows(source, 0, invalid)) |> ignore
+
+    for firstRow in [ -1; 1; Int32.MaxValue ] do
+        Assert.Throws<ArgumentOutOfRangeException>(fun () -> backend.CopyRows(source, firstRow, destination)) |> ignore
+
+    let disposed = backend.Allocate(TensorShape.Create [| 0; 3 |])
+    disposed.Dispose()
+    Assert.Throws<ObjectDisposedException>(fun () -> backend.CopyRows(disposed, 0, destination)) |> ignore
+    Assert.Throws<ObjectDisposedException>(fun () -> backend.CopyRows(source, 0, disposed)) |> ignore
+    backend.Dispose()
+    Assert.Throws<ObjectDisposedException>(fun () -> backend.CopyRows(source, 0, destination)) |> ignore
+
+[<CudaFact>]
+[<Trait("Category", "CUDA")>]
+let ``CUDA row copies match CPU for every range and preserve the source`` () =
+    use backend = new CudaBackend() :> ITensorBackend
+    use cpu = new CpuBackend() :> ITensorBackend
+    for sourceRows, columns in [ 1, 1; 5, 3; 7, 257; 3, 65537 ] do
+        let shape = TensorShape.Create [| sourceRows; columns |]
+        let values = Array.init shape.ElementCount (fun index -> single index * 0.5f - 7.0f)
+        use source = backend.Upload(shape, ReadOnlyMemory<single>(values))
+        use cpuSource = cpu.Upload(shape, ReadOnlyMemory<single>(values))
+
+        // Every start row and length, including empty copies at firstRow = source.Rows.
+        for firstRow in 0 .. sourceRows do
+            for rows in 0 .. sourceRows - firstRow do
+                let destinationShape = TensorShape.Create [| rows; columns |]
+                let sentinel = Array.create destinationShape.ElementCount 42.0f
+                use destination = backend.Upload(destinationShape, ReadOnlyMemory<single>(sentinel))
+                use cpuDestination = cpu.Allocate(destinationShape)
+                backend.CopyRows(source, firstRow, destination)
+                cpu.CopyRows(cpuSource, firstRow, cpuDestination)
+                Assert.Equal<single>(download cpu cpuDestination, download backend destination)
+
+        backend.CopyRows(source, 0, source)
+        Assert.Equal<single>(values, download backend source)
+
+[<CudaFact>]
+[<Trait("Category", "CUDA")>]
+let ``CUDA row copies preserve F16 bits including NaN payloads`` () =
+    use backend = new CudaBackend() :> ITensorBackend
+    let bits = [| 0x7E01us; 0xFC00us; 0x8000us; 0x0001us; 0x3C00us; 0xFFFFus; 0x7BFFus; 0x7D55us; 0x1234us |]
+    let values = MemoryMarshal.Cast<uint16, Half>(bits.AsSpan()).ToArray()
+    use source = backend.Upload(TensorShape.Create [| 3; 3 |], ReadOnlyMemory<Half>(values))
+    use destination = backend.Allocate(TensorShape.Create [| 2; 3 |], TensorEncoding.F16)
+
+    backend.CopyRows(source, 1, destination)
+    backend.CopyRows(source, 0, source)
+
+    let downloadBits (tensor: ITensor) =
+        let result = Array.zeroCreate<Half> tensor.Shape.ElementCount
+        backend.Download(tensor, result.AsMemory())
+        MemoryMarshal.Cast<Half, uint16>(result.AsSpan()).ToArray()
+
+    Assert.Equal<uint16>(bits[3..], downloadBits destination)
+    Assert.Equal<uint16>(bits, downloadBits source)
+
+[<CudaFact>]
+[<Trait("Category", "CUDA")>]
+let ``CUDA row copies run in stream order between dependent operations`` () =
+    use backend = new CudaBackend() :> ITensorBackend
+    let columns = 65537
+    let shape = TensorShape.Create [| 3; columns |]
+    let values = Array.init shape.ElementCount (fun index -> single (index / columns + 1))
+    use source = backend.Upload(shape, ReadOnlyMemory<single>(values))
+    use destination = backend.Allocate(TensorShape.Create [| 1; columns |])
+
+    // Rows hold 1, 2 and 3. The doubling queued before the copy must be visible in the
+    // destination; the one queued after must not, so 3 × 2 × 2 = 12 on both sides.
+    backend.Add(source, source, source)
+    backend.CopyRows(source, 2, destination)
+    backend.Add(source, source, source)
+    backend.Add(destination, destination, destination)
+
+    Assert.All(download backend destination, fun value -> Assert.Equal(12.0f, value))
+    Assert.All((download backend source)[2 * columns ..], fun value -> Assert.Equal(12.0f, value))
+
+[<CudaFact>]
+[<Trait("Category", "CUDA")>]
+let ``CUDA row copies reject invalid tensors before changing destination`` () =
+    use backend = new CudaBackend() :> ITensorBackend
+    use otherBackend = new CudaBackend() :> ITensorBackend
+    use cpu = new CpuBackend() :> ITensorBackend
+    let sourceShape = TensorShape.Create [| 3; 2 |]
+    use source = backend.Upload(sourceShape, ReadOnlyMemory<single>(Array.init 6 single))
+    use destination = backend.Upload(TensorShape.Create [| 2; 2 |], ReadOnlyMemory<single>(Array.create 4 42.0f))
+    use halfSource = backend.Upload(sourceShape, ReadOnlyMemory<Half>(Array.create 6 Half.One))
+    use foreign = otherBackend.Allocate(sourceShape)
+    use host = cpu.Allocate(sourceShape)
+    use vector = backend.Allocate(TensorShape.Create [| 6 |])
+    use narrow = backend.Allocate(TensorShape.Create [| 3; 1 |])
+    let disposed = backend.Allocate(sourceShape)
+    disposed.Dispose()
+
+    for firstRow in [ -1; 2; 3; Int32.MaxValue ] do
+        Assert.Throws<ArgumentOutOfRangeException>(fun () -> backend.CopyRows(source, firstRow, destination)) |> ignore
+    for invalid in [ halfSource; foreign; host; vector; narrow ] do
+        Assert.Throws<ArgumentException>(fun () -> backend.CopyRows(invalid, 0, destination)) |> ignore
+    Assert.Throws<ObjectDisposedException>(fun () -> backend.CopyRows(disposed, 0, destination)) |> ignore
+
     Assert.All(download backend destination, fun value -> Assert.Equal(42.0f, value))

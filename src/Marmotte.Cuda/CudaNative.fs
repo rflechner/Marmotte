@@ -65,6 +65,9 @@ module private CudaApi =
     extern int marmotte_cuda_rmsnorm(SafeHandle context, nativeint input, nativeint weight, single epsilon, nativeint destination, int rows, int columns)
 
     [<DllImport(library, CallingConvention = CallingConvention.Cdecl)>]
+    extern int marmotte_cuda_copy_rows(SafeHandle context, nativeint source, int sourceRows, int firstRow, nativeint destination, int rows, int columns)
+
+    [<DllImport(library, CallingConvention = CallingConvention.Cdecl)>]
     extern int marmotte_cuda_synchronize(SafeHandle context)
 
     let check operation status =
@@ -191,6 +194,10 @@ type internal CudaSession(deviceIndex: int) =
     member _.RmsNorm(input, weight, epsilon, destination, rows, columns) =
         CudaApi.marmotte_cuda_rmsnorm(context, input, weight, epsilon, destination, rows, columns)
         |> CudaApi.check "RMS normalization launch"
+
+    member _.CopyRows(source, sourceRows, firstRow, destination, rows, columns) =
+        CudaApi.marmotte_cuda_copy_rows(context, source, sourceRows, firstRow, destination, rows, columns)
+        |> CudaApi.check "row copy"
 
     member _.Synchronize() = CudaApi.marmotte_cuda_synchronize(context) |> CudaApi.check "synchronization"
 

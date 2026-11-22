@@ -60,7 +60,7 @@ For scheduling, arithmetic policies and measurements shared by MatVec and
 MatMul, continue with [CPU matrix products](kernels/matrix-products.md).
 
 All listed kernels and the key-value cache have CPU implementations. CUDA also
-implements Add, SwiGLU and RMS normalization, all in F32 and F16, F32/F16
+implements Add, SwiGLU, RMS normalization and row copies, all in F32 and F16, F32/F16
 device storage/transfers and stored weight uploads in all fourteen runtime
 encodings; its remaining kernels and Metal
 remain placeholders. See the [CUDA build and implementation guide](cuda.md).
@@ -144,7 +144,7 @@ them one row at a time.
 | `ISwiGluKernel.SwiGlu` | Safe `Vector<T>` loop with `Vector.Exp`, remainder in one zero-padded vector | F32/F16 kernels with the device `expf`, 256 threads per block; F16 is computed in F32 and rounded once | `NotImplementedException` |
 | `IRmsNormKernel.RmsNorm` | Safe `Vector<T>` loops, sum of squares in double precision | F32/F16 kernels, one block per row, double-precision reduction; F16 widens to F32 and rounds once | `NotImplementedException` |
 | `IEmbeddingKernel.EmbeddingLookup` | Decodes selected rows with `RowDecoder` directly into F32 output | `NotImplementedException` | `NotImplementedException` |
-| `IRowCopyKernel.CopyRows` | Validated contiguous row copy over safe spans | `NotImplementedException` | `NotImplementedException` |
+| `IRowCopyKernel.CopyRows` | Validated contiguous row copy over safe spans | F32/F16: one asynchronous device-to-device copy on the stream, no kernel | `NotImplementedException` |
 | `IMatVecKernel.MatVec` | Parallel rows, safe intrinsics and double-precision dot products | `NotImplementedException` | `NotImplementedException` |
 | `IMatMulKernel.MatMul` | Each integer or decoded row shared by every token of the batch | `NotImplementedException` | `NotImplementedException` |
 | `IRopeKernel.Rope` | Angles in double precision once per token, shared by every head | `NotImplementedException` | `NotImplementedException` |

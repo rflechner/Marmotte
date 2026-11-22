@@ -1070,9 +1070,7 @@ let ``row copies validate ranges shapes ownership and disposal before writing`` 
     Assert.Throws<ObjectDisposedException>(fun () -> backend.CopyRows(disposed, 0, result)) |> ignore
     Assert.Equal<single>(Array.create 4 42.0f, download backend result)
 
-[<Theory>]
-[<InlineData("CUDA")>]
-[<InlineData("Metal")>]
-let ``GPU row copies remain explicit placeholders`` name =
-    use backend = createBackend name
+[<Fact>]
+let ``Metal row copies remain explicit placeholders`` () =
+    use backend = createBackend "Metal"
     Assert.Throws<NotImplementedException>(fun () -> backend.CopyRows(Unchecked.defaultof<ITensor>, 0, Unchecked.defaultof<ITensor>)) |> ignore

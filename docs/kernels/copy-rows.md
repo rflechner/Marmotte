@@ -77,8 +77,9 @@ instead selects vocabulary weight rows using token IDs.
 
 ## Contract and implementation
 
-[`IRowCopyKernel`](../../src/Marmotte.Core/Compute.fs) requires rank-2 F32 source
-and destination tensors with the same column count. Both must be live and
+[`IRowCopyKernel`](../../src/Marmotte.Core/Compute.fs) requires rank-2 source
+and destination tensors with the same column count and encoding: F32 on the CPU,
+F32 or F16 on CUDA. Both must be live and
 owned by the executing backend instance. The full selected range must fit:
 `0 <= firstRow <= source.Rows` and
 `destination.Rows <= source.Rows - firstRow`.
@@ -95,6 +96,8 @@ raises `ObjectDisposedException`. CPU F16 input is unsupported and raises
 
 The [CPU implementation](../../src/Marmotte.Cpu/CpuBackend.fs) copies one
 contiguous span and completes before returning. Its work is proportional to
-the copied element count, with no temporary tensor. CUDA and Metal currently
-raise `NotImplementedException`. The [backend tests](../../tests/Marmotte.Backends.Tests/BackendTests.fs)
+the copied element count, with no temporary tensor. The CUDA backend queues one
+device-to-device copy of the same byte range on its stream, without a kernel, and
+copies F16 bits unchanged; see the [CUDA CopyRows contract](../../src/Marmotte.Cuda/native/kernels/README.md#copyrows-contract-and-supported-formats).
+Metal currently raises `NotImplementedException`. The [backend tests](../../tests/Marmotte.Backends.Tests/BackendTests.fs)
 cover selected ranges, identity and empty copies, and validation failures.
