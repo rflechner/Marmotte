@@ -62,6 +62,11 @@ on the distance between positions. The rotation loop is scalar: RoPE touches
 5,120 values per token for the target model's queries and keys, little next to
 the matrix products.
 
+CUDA uses the same host-prepared double-precision angles and rounded F32
+coefficients, then rotates F32/F16 tensors on the GPU. Both pairings and head
+layouts are supported, including in-place rotation. F16 widens to F32 and
+rounds once on output. See [CUDA RoPE/YaRN](../cuda.md#rope-and-yarn-on-cuda).
+
 The target model uses [YaRN preparation](yarn.md) to adjust its frequencies
 and magnitude before rotation. The [original illustration prompts](rope-yarn-illustrations.prompt.txt)
 are kept with these guides.
