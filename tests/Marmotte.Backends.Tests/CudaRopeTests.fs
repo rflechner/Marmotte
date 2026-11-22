@@ -37,7 +37,7 @@ let private assertClose (expected: single) (actual: single) =
                     $"Expected {expected}, got {actual} (tolerance {tolerance}).")
 
 [<Fact>]
-let `CUDA RoPE validates empty shapes positions and ownership without a driver` () =
+let ``CUDA RoPE validates empty shapes positions and ownership without a driver`` () =
     use backend = new CudaBackend() :> ITensorBackend
     use other = new CudaBackend() :> ITensorBackend
     let embedding = RotaryEmbedding.Standard(8, 10000.0, RopePairing.AdjacentPairs)
@@ -76,7 +76,7 @@ let `CUDA RoPE validates empty shapes positions and ownership without a driver` 
 
 [<CudaFact>]
 [<Trait("Category", "CUDA")>]
-let `CUDA RoPE matches CPU for plain and YaRN angles with both pairings and head layouts` () =
+let ``CUDA RoPE matches CPU for plain and YaRN angles with both pairings and head layouts`` () =
     use backend = new CudaBackend() :> ITensorBackend
     let positions = [| 0; 1; 16383; 262143 |]
     let random = Random(3024)
@@ -104,7 +104,7 @@ let `CUDA RoPE matches CPU for plain and YaRN angles with both pairings and head
 
 [<CudaFact>]
 [<Trait("Category", "CUDA")>]
-let `CUDA RoPE preserves stream ordering and copies positions before returning` () =
+let ``CUDA RoPE preserves stream ordering and copies positions before returning`` () =
     use backend = new CudaBackend() :> ITensorBackend
     let shape = TensorShape.Create [| 2; 8 |]
     let values = Array.init 16 (fun i -> single (i - 8) / 5.0f)
@@ -126,7 +126,7 @@ let `CUDA RoPE preserves stream ordering and copies positions before returning` 
 
 [<CudaFact>]
 [<Trait("Category", "CUDA")>]
-let `CUDA RoPE F16 widens before arithmetic and rounds output once` () =
+let ``CUDA RoPE F16 widens before arithmetic and rounds output once`` () =
     use backend = new CudaBackend() :> ITensorBackend
     let shape = TensorShape.Create [| 3; 2; 128 |]
     let positions = [| 0; 16384; 262143 |]
@@ -159,7 +159,7 @@ let `CUDA RoPE F16 widens before arithmetic and rounds output once` () =
 
 [<CudaFact>]
 [<Trait("Category", "CUDA")>]
-let `CUDA RoPE rejects invalid tensors before touching destination` () =
+let ``CUDA RoPE rejects invalid tensors before touching destination`` () =
     use backend = new CudaBackend() :> ITensorBackend
     use other = new CudaBackend() :> ITensorBackend
     let embedding = RotaryEmbedding.Standard(4, 10000.0, RopePairing.AdjacentPairs)
