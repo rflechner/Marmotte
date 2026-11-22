@@ -73,9 +73,12 @@ MARMOTTE_EXPORT int marmotte_cuda_rope(CudaContext* context, void* input, void* 
     if (!context || !coefficients || tokens <= 0 || heads <= 0 || headDimension <= 0 ||
         headDimension % 2 != 0 || (pairing != 0 && pairing != 1)) return cudaErrorInvalidValue;
 
+    // Validate each product before multiplication, including callers outside .NET.
+    if (heads > std::numeric_limits<int>::max() / headDimension ||
+        tokens > std::numeric_limits<int>::max() / (heads * headDimension))
+        return cudaErrorInvalidValue;
     const auto values = static_cast<std::size_t>(tokens) * static_cast<std::size_t>(heads) *
                         static_cast<std::size_t>(headDimension);
-    if (values > static_cast<std::size_t>(std::numeric_limits<int>::max())) return cudaErrorInvalidValue;
     const auto allocation = findBuffer(context, input, static_cast<int>(values));
     if (!allocation || !containsBuffer(context, destination, static_cast<int>(values), allocation->encoding))
         return cudaErrorInvalidValue;
