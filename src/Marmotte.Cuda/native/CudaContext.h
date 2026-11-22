@@ -36,7 +36,14 @@ struct CudaContext {
     int device;
     cudaStream_t stream = nullptr;
     std::unordered_map<void*, CudaAllocation> buffers;
+    // Reusable device staging for RoPE/YaRN coefficients, owned until context release.
+    float* ropeCoefficients = nullptr;
+    std::size_t ropeCoefficientCapacity = 0;
 };
+
+// Copies a host coefficient table to reusable device staging and waits for the transfer.
+// The caller can release its pinned/marshalled array immediately afterwards.
+int stageRopeCoefficients(CudaContext* context, const float* coefficients, std::size_t count);
 
 inline const CudaAllocation* findBuffer(CudaContext* context, void* buffer, int count) {
     if (!context || count <= 0) return nullptr;
