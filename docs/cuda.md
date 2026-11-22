@@ -606,6 +606,13 @@ computes cos/sin in double precision on the host for each requested position,
 multiplies by the magnitude, rounds once to F32, and copies the coefficients
 to the GPU. Each head of a token shares the same coefficients.
 
+For a runnable comparison against the CPU reference, use:
+
+```powershell
+dotnet build Marmotte.slnx -p:MarmotteBuildCuda=true
+dotnet fsi examples/CudaRope.fsx
+```
+
 For example, after building with `-p:MarmotteBuildCuda=true`:
 
 ```fsharp
