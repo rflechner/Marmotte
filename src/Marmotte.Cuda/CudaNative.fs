@@ -65,6 +65,9 @@ module private CudaApi =
     extern int marmotte_cuda_rmsnorm(SafeHandle context, nativeint input, nativeint weight, single epsilon, nativeint destination, int rows, int columns)
 
     [<DllImport(library, CallingConvention = CallingConvention.Cdecl)>]
+    extern int marmotte_cuda_rope(SafeHandle context, nativeint input, nativeint destination, [<In>] single[] coefficients, int tokens, int heads, int headDimension, int pairing)
+
+    [<DllImport(library, CallingConvention = CallingConvention.Cdecl)>]
     extern int marmotte_cuda_synchronize(SafeHandle context)
 
     let check operation status =
@@ -191,6 +194,12 @@ type internal CudaSession(deviceIndex: int) =
     member _.RmsNorm(input, weight, epsilon, destination, rows, columns) =
         CudaApi.marmotte_cuda_rmsnorm(context, input, weight, epsilon, destination, rows, columns)
         |> CudaApi.check "RMS normalization launch"
+
+    /// The native call consumes the coefficient array before returning; the rotation may still
+    /// be running. Coefficients are shared across heads of a token.
+    member _.Rope(input, destination, coefficients: single array, tokens, heads, headDimension, pairing) =
+        CudaApi.marmotte_cuda_rope(context, input, destination, coefficients, tokens, heads, headDimension, pairing)
+        |> CudaApi.check "RoPE launch"
 
     member _.Synchronize() = CudaApi.marmotte_cuda_synchronize(context) |> CudaApi.check "synchronization"
 
