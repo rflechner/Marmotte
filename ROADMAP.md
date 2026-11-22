@@ -284,6 +284,15 @@ the reference for results.
 - [x] **L.8** Keep GPU tests optional, so that normal development does not require a GPU.
 - [ ] **L.9** Measure each backend with the same workloads as the CPU recorded in
   `docs/kernels.md`, and report the CUDA timings in `docs/cuda.md`.
+- [ ] **L.10** Make CUDA threads per block configurable through backend options, with
+  per-kernel overrides and documented defaults, replacing the fixed 256-thread
+  launches in Add, SwiGLU, RMS normalization and RoPE. This controls block size,
+  not the total thread count or the GPU's physical core count. Validate overrides
+  against device and kernel limits; adapt RMS normalization's shared-memory sizing
+  and reduction constraints before allowing other block sizes. Benchmark supported
+  sizes across GPUs, kernels and tensor shapes, and compare results with the CPU
+  reference in opt-in CUDA tests. Document measured defaults and tuning guidance in
+  `docs/cuda.md`; a larger block does not necessarily improve performance.
 
 ## GGUF reader and quantizer
 
