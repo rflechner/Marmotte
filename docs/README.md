@@ -17,12 +17,13 @@ work. Illustrations are conceptual aids, not executable format specifications.
 | [Transformer layer tensors](transformer-layer-tensors.md) | Illustrated guide to the nine per-layer weight descriptors and their shapes | Dense mistral3 mapping, validation and forward pass implemented |
 | [Prompt processing and decoding](generation-session.md) | Batched prefill, incremental tokens, session cache and failure handling | GenerationSession, seeded sampling and TokenGenerator stopping implemented |
 | [Dense forward pass](forward-pass.md) | Runnable synthetic model, loading, logits and cache ownership | Dense mistral3 implemented through backend contracts |
-| [Execution tensors and kernels](kernels.md) | Index of the kernel guides, formula notation, GGUF-to-kernel diagram and shared contracts | CPU kernels and cache implemented; CUDA Add and SwiGLU; other CUDA kernels and Metal are placeholders |
+| [Execution tensors and kernels](kernels.md) | Index of the kernel guides, formula notation, GGUF-to-kernel diagram and shared contracts | CPU kernels and cache implemented; CUDA Add, SwiGLU, RMS normalization and CopyRows; other CUDA kernels and Metal are placeholders |
 | [Add](kernels/add.md) | Illustrated addition, buffer reuse, F16 arithmetic and memory use | F32 and F16 on CPU and CUDA |
 | [SwiGLU](kernels/swiglu.md) | Illustrated element-wise gating algorithm, worked example, CPU numerical notes and F16 rounding on CUDA | F32 on CPU; F32 and F16 on CUDA; Metal remains a placeholder |
-| [RMSNorm](kernels/rmsnorm.md) | Row magnitude, normalization and learned scales, with an illustration and runnable F# example | F32 on CPU; CUDA and Metal remain placeholders |
+| [RMSNorm](kernels/rmsnorm.md) | Row magnitude, normalization and learned scales, with an illustration and runnable F# example | F32 on CPU; F32 and F16 on CUDA; Metal remains a placeholder |
 | [Embedding lookup](kernels/embedding.md) | Illustrated token-ID lookup and stored row decoding | CPU lookup supports all fourteen runtime encodings |
-| [CopyRows](kernels/copy-rows.md) | Consecutive activation rows and a runnable CPU example | F32 on CPU |
+| [CUDA embedding lookup (R.4)](kernels/embedding-cuda.md) | Beginner walkthrough of host/device data flow, quantized blocks and the Q6_K target, with two infographics | Planned CUDA lookup; CPU examples and stored CUDA weight uploads already work |
+| [CopyRows](kernels/copy-rows.md) | Consecutive activation rows and a runnable CPU example | F32 on CPU; F32 and F16 on CUDA |
 | [MatVec](kernels/matvec.md) | Illustrated dot products for one token | CPU products with stored weights |
 | [MatMul](kernels/matmul.md) | Illustrated weight-row reuse across a token batch | CPU batched products with stored weights |
 | [CPU matrix products](kernels/matrix-products.md) | Shared scheduling, quantized activations, error bounds and measurements | DecodedFloat and QuantizedK arithmetic policies |

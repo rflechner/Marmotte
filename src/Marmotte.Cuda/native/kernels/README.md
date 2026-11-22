@@ -13,6 +13,7 @@ native/
     Add.cu                     F32/F16 GPU functions and host dispatch
     SwiGlu.cu                  F32/F16 GPU functions and host dispatch
     RmsNorm.cu                 F32/F16 GPU functions and host dispatch
+    CopyRows.cu                F32/F16 device-to-device copy, no GPU function
     Rope.cu                    F32/F16 RoPE pair rotation and host dispatch
 ```
 
@@ -184,3 +185,39 @@ against a double-precision reference. [HalfTests.fs](../../../../tests/Marmotte.
 checks CUDA F16: exact bits for independently computed fixtures that lie far from
 a rounding midpoint, and at most one unit in the last place from a double-precision
 reference across every binary16 input pattern.
+
+## CopyRows contract and supported formats
+
+`CopyRows.cu` copies F32 and F16 rows, both exposed through the managed backend:
+`destination[r, c] = source[firstRow + r, c]` for a rank-2 `[sourceRows; columns]`
+source and a `[rows; columns]` destination. It is the one operation without a
+GPU function. Contiguous row-major rows form a single byte range, so the entry
+point issues one `cudaMemcpyAsync` with `cudaMemcpyDeviceToDevice` on the
+context's stream. The copy engine moves the bytes in stream order without a
+launch configuration; a hand-written kernel would only repeat that work.
+The file still follows the one-operation layout: its exported entry point validates
+the registry before any copy, and the runtime keeps host transfers.
+
+Values are copied bit for bit, including F16 NaN payloads; there is no arithmetic,
+rounding or conversion. Both tensors must belong to the same backend instance and
+share one encoding; mixing F32 and F16 raises `ArgumentException` in
+`CudaBackend.fs`, and any other format returns `cudaErrorNotSupported` natively.
+`sourceRows`, `firstRow`, `rows` and `columns` count rows and elements, not bytes.
+The managed backend validates rank, column counts and the range
+`0 <= firstRow <= sourceRows - rows` before dispatch, and handles empty
+destinations, including `firstRow = sourceRows`, without native calls.
+
+The native entry point checks again that the source and destination are execution
+allocations registered with exactly `sourceRows × columns` and `rows × columns`
+elements. It computes those products and the byte offset in 64-bit arithmetic,
+so stored weights, foreign pointers and inconsistent counts are rejected before a
+copy. Distinct allocations never overlap. The contract's only aliasing case is
+the identity copy, the same tensor with `firstRow = 0` and every row; it returns
+without a copy, because overlapping device copies are undefined.
+
+[CudaTests.fs](../../../../tests/Marmotte.Backends.Tests/CudaTests.fs) compares every
+start row and length with the CPU, checks F16 bits including NaN payloads, the
+identity copy, stream order between Add operations queued before and after the copy,
+and rejection before writes. [CudaWeightTests.fs](../../../../tests/Marmotte.Backends.Tests/CudaWeightTests.fs)
+calls the C ABI directly with inconsistent counts, ranges, encodings, stored weights and
+another context.

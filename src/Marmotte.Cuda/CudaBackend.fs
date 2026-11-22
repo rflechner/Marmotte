@@ -5,11 +5,11 @@ open System.Collections.Generic
 open Marmotte.Core
 
 /// Owned contiguous F32/F16 device tensors, stored-encoding weight uploads, F32/F16 Add,
-/// SwiGLU, RMS normalization and RoPE/YaRN, using one CUDA stream per instance.
+/// SwiGLU, RMS normalization, row copies and RoPE/YaRN, using one CUDA stream per instance.
 /// deviceIndex is a zero-based CUDA device ordinal (default 0), and must be non-negative.
 /// Native loading and device initialization happen at the first non-empty allocation; construction,
 /// empty tensors and an unused Synchronize require no CUDA installation. No CPU fallback is used.
-/// Add, SwiGLU, RMS normalization, RoPE and zero-initialization may return before completion. Transfers, tensor disposal and
+/// Add, SwiGLU, RMS normalization, row copies, RoPE and zero-initialization may return before completion. Transfers, tensor disposal and
 /// Synchronize wait for preceding work. Backend disposal waits and releases all remaining tensors
 /// and weights.
 /// UploadWeights copies the whole stored payload to device memory, so the WeightMatrix's source
@@ -241,7 +241,24 @@ type CudaBackend(?deviceIndex: int) =
         member _.EmbeddingLookup(_, _, _) = notImplemented "embedding lookup kernel"
 
     interface IRowCopyKernel with
-        member _.CopyRows(_, _, _) = notImplemented "row copy"
+        member _.CopyRows(source, firstRow, destination) =
+            checkDisposed ()
+            let sourcePointer = pointerOf (nameof source) source
+            let destinationPointer = pointerOf (nameof destination) destination
+
+            let sourceShape = source.Shape.Dimensions
+            let destinationShape = destination.Shape.Dimensions
+            if sourceShape.Count <> 2 || destinationShape.Count <> 2 || sourceShape[1] <> destinationShape[1] then
+                invalidArg (nameof destination) $"Row copies require rank-2 tensors with equal column counts, not {source.Shape} and {destination.Shape}."
+            requireEncoding source.Encoding (nameof destination) destination
+
+            let sourceRows = sourceShape[0]
+            let rows = destinationShape[0]
+            if firstRow < 0 || firstRow > sourceRows || rows > sourceRows - firstRow then
+                raise (ArgumentOutOfRangeException(nameof firstRow, firstRow, $"Copying {rows} rows from row {firstRow} must fit the {sourceRows} source rows."))
+
+            if destination.Shape.ElementCount > 0 then
+                getSession().CopyRows(sourcePointer, sourceRows, firstRow, destinationPointer, rows, sourceShape[1])
 
     interface IMatVecKernel with
         member _.MatVec(_, _, _) = notImplemented "matrix-vector product"

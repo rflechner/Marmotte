@@ -2,7 +2,7 @@
 
 Marmotte's CUDA backend implements contiguous F32 and F16 tensors, zero-initialized
 allocation, uploads, downloads, stored weight uploads, element-wise Add, SwiGLU,
-RMS normalization and RoPE/YaRN rotation in both formats. It uses
+RMS normalization, row copies and RoPE/YaRN in both formats. It uses
 native CUDA C++ through P/Invoke, with no additional NuGet dependency. Other
 kernels and the key-value cache still throw
 `NotImplementedException`.
@@ -239,6 +239,7 @@ system C/C++ libraries. We do not package a driver or prebuilt native binaries.
 | [`native/kernels/Add.cu`](../src/Marmotte.Cuda/native/kernels/Add.cu) | F32/F16 GPU functions and the shared CPU entry point, `marmotte_cuda_add`: native validation, format dispatch and launch configuration. |
 | [`native/kernels/SwiGlu.cu`](../src/Marmotte.Cuda/native/kernels/SwiGlu.cu) | F32/F16 GPU functions and the shared CPU entry point, `marmotte_cuda_swiglu`: native validation, format dispatch and launch configuration. |
 | [`native/kernels/RmsNorm.cu`](../src/Marmotte.Cuda/native/kernels/RmsNorm.cu) | F32/F16 GPU functions (one block per row) and the shared CPU entry point, `marmotte_cuda_rmsnorm`: native validation, format dispatch and launch configuration. |
+| [`native/kernels/CopyRows.cu`](../src/Marmotte.Cuda/native/kernels/CopyRows.cu) | The shared CPU entry point `marmotte_cuda_copy_rows`: native validation and one device-to-device copy on the stream, without a GPU function. |
 | [`native/CMakeLists.txt`](../src/Marmotte.Cuda/native/CMakeLists.txt) | Native sources, compiler settings and output location. |
 
 ```mermaid
@@ -408,6 +409,10 @@ readback and byte accounting let the tests verify device contents and releases
 without adding a public pointer or weight-download API. Matrix products and
 embedding lookup remain separate roadmap items.
 
+The next step for token embeddings is to decode requested rows on the GPU.
+The [R.4 beginner guide](kernels/embedding-cuda.md) illustrates this planned
+lookup, its F32 output and the existing stored-weight upload it builds on.
+
 ## Compare VRAM and mapped host weights (Q.3)
 
 Q.3 is an optional storage alternative, evaluated separately from inference.
@@ -574,8 +579,8 @@ patterns. The empty F16 CUDA cases still need no native library or device.
 bit-for-bit device storage for all fourteen encodings, host slices, mutation after
 upload, closed mapped sources, staging boundaries inside quantization blocks,
 native byte accounting, partial-upload cleanup, ownership and stream-ordered
-disposal. Direct C ABI checks reject overflowing ranges and attempts to pass
-stored weights to Add. The lifetime state tests also run without CUDA.
+disposal. Direct C ABI checks reject overflowing ranges, attempts to pass
+stored weights to Add, and row copies with inconsistent counts, encodings or contexts. The lifetime state tests also run without CUDA.
 
 ## Diagnose common failures
 
@@ -591,7 +596,7 @@ stored weights to Add. The lifetime state tests also run without CUDA.
 | No kernel image for this device | Rebuild with an architecture supported by both the GPU and Toolkit. |
 | `OutOfMemoryException` | Device allocation failed or the host staging array could not be allocated. Dispose unused tensors and reduce sizes. |
 | An error appears at Download or Synchronize | An asynchronous kernel may have failed earlier. Add a temporary Synchronize after the suspected launch to locate it. |
-| `NotImplementedException` from another kernel | Only Add, SwiGLU, RMS normalization and RoPE/YaRN (both formats) are implemented on CUDA at this stage. |
+| `NotImplementedException` from another kernel | Only Add, SwiGLU, RMS normalization, row copies and RoPE/YaRN (both formats) are implemented on CUDA at this stage. |
 
 CUDA runtime failures include the operation, numeric error code and native
 message in `InvalidOperationException`; `cudaErrorMemoryAllocation` (status 2)
@@ -667,6 +672,7 @@ native/
     Add.cu             addValuesF32, addValuesF16 and marmotte_cuda_add
     SwiGlu.cu          swiGluF32, swiGluF16 and marmotte_cuda_swiglu
     RmsNorm.cu         rmsNormF32, rmsNormF16 and marmotte_cuda_rmsnorm
+    CopyRows.cu        marmotte_cuda_copy_rows, a device-to-device copy
     Rope.cu            ropeF32, ropeF16 and marmotte_cuda_rope
 ```
 
@@ -690,6 +696,13 @@ input. The F16 variant widens its inputs to F32, applies the same formula and
 rounds once to F16, so it behaves like the F32 kernel followed by a single
 conversion; the CPU backend implements F32 only and rejects F16 with
 `NotSupportedException`.
+
+`CopyRows` selects consecutive rows of a rank-2 F32 or F16 tensor, as
+`TransformerModel` does for last-token logits. Contiguous rows form one byte
+range, so `CopyRows.cu` issues a single asynchronous device-to-device copy on the
+backend stream instead of launching a kernel; values keep their exact bits. Both
+tensors must share one encoding. An identity copy is a no-op. The CPU backend
+copies F32 only. See the [CopyRows contract](../src/Marmotte.Cuda/native/kernels/README.md#copyrows-contract-and-supported-formats).
 
 The F16 GPU function uses `__hadd` with `half*` inputs and output, rounding to
 nearest with ties to even. Storage and transfers stay at two bytes per element.

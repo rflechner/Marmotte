@@ -279,7 +279,7 @@ The three backend projects share these contracts:
   the default; `CpuAttentionMode.Reference` preserves the score-buffer algorithm.
   See [H.3 measurements](docs/kernels/attention.md#online-attention-and-h3-measurements).
 - `Marmotte.Cuda`: owned F32 or F16 device tensors, transfers, Add, SwiGLU, RMS
-  normalization and RoPE/YaRN through a native CUDA library. Build it automatically with
+  normalization, row copies and RoPE/YaRN through a native CUDA library. Build it automatically with
   `dotnet build Marmotte.slnx -p:MarmotteBuildCuda=true`.
   Native compilation and GPU tests are optional; see the
   [CUDA guide](docs/cuda.md) for prerequisites, builds and how the backend works.
@@ -287,7 +287,8 @@ The three backend projects share these contracts:
   [F32 and F16 implementations](docs/cuda.md#kernel-formats-and-file-layout);
   F16 SwiGLU, RMS normalization and RoPE compute in F32 and round once. The CPU backend
   implements SwiGLU and RMS normalization in F32 only. The sum of squares accumulates
-  in double precision on both backends.
+  in double precision on both backends. `CopyRows` is one device-to-device copy
+  on the stream, preserving F32 or F16 bits.
   `UploadWeights` copies all fourteen runtime encodings to VRAM without decoding,
   with at most 4 MiB of host staging per upload. Weight and backend disposal wait
   for queued work and release storage. Try `dotnet fsi examples/CudaWeights.fsx`.

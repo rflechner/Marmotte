@@ -65,6 +65,9 @@ module private CudaApi =
     extern int marmotte_cuda_rmsnorm(SafeHandle context, nativeint input, nativeint weight, single epsilon, nativeint destination, int rows, int columns)
 
     [<DllImport(library, CallingConvention = CallingConvention.Cdecl)>]
+    extern int marmotte_cuda_copy_rows(SafeHandle context, nativeint source, int sourceRows, int firstRow, nativeint destination, int rows, int columns)
+
+    [<DllImport(library, CallingConvention = CallingConvention.Cdecl)>]
     extern int marmotte_cuda_rope(SafeHandle context, nativeint input, nativeint destination, [<In>] single[] coefficients, int tokens, int heads, int headDimension, int pairing)
 
     [<DllImport(library, CallingConvention = CallingConvention.Cdecl)>]
@@ -194,6 +197,10 @@ type internal CudaSession(deviceIndex: int) =
     member _.RmsNorm(input, weight, epsilon, destination, rows, columns) =
         CudaApi.marmotte_cuda_rmsnorm(context, input, weight, epsilon, destination, rows, columns)
         |> CudaApi.check "RMS normalization launch"
+
+    member _.CopyRows(source, sourceRows, firstRow, destination, rows, columns) =
+        CudaApi.marmotte_cuda_copy_rows(context, source, sourceRows, firstRow, destination, rows, columns)
+        |> CudaApi.check "row copy"
 
     /// The native call consumes the coefficient array before returning; the rotation may still
     /// be running. Coefficients are shared across heads of a token.

@@ -10,6 +10,7 @@ add_library(marmotte_cuda SHARED
     kernels/Add.cu
     kernels/SwiGlu.cu
     kernels/RmsNorm.cu
+    kernels/CopyRows.cu
     kernels/Rope.cu
 )
 set_target_properties(marmotte_cuda PROPERTIES

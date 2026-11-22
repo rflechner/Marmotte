@@ -169,11 +169,14 @@ type IEmbeddingKernel =
 
 /// Copy consecutive rows without transferring tensor contents to the host.
 type IRowCopyKernel =
-    /// Source and destination are rank-2 F32 tensors with the same column count.
+    /// Source and destination are rank-2 tensors with the same column count and encoding.
+    /// CPU requires F32 and raises NotSupportedException for F16; CUDA also copies F16 bits.
     /// Copies destination.Rows rows starting at firstRow, validating the full range
-    /// before writing. Empty copies allow firstRow = source.Rows. Identity copies
-    /// are valid. Ownership, disposal and submission ordering follow IAddKernel.Add.
-    /// Invalid shapes raise ArgumentException; invalid ranges raise ArgumentOutOfRangeException.
+    /// before writing. Values are copied exactly, without arithmetic or conversion.
+    /// Empty copies allow firstRow = source.Rows. Identity copies are valid no-ops.
+    /// Ownership, disposal and submission ordering follow IAddKernel.Add.
+    /// Invalid shapes or mixed encodings raise ArgumentException; invalid ranges raise
+    /// ArgumentOutOfRangeException.
     abstract CopyRows: source: ITensor * firstRow: int * destination: ITensor -> unit
 
 /// Matrix-vector product with weights kept in their stored encoding:
