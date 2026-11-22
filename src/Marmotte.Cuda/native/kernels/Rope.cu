@@ -16,26 +16,39 @@ __device__ __forceinline__ void rotatePair(float a, float b, float cosine, float
     second = __fadd_rn(__fmul_rn(a, sine), __fmul_rn(b, cosine));
 }
 
+// Element and coefficient positions of one pair, shared by both storage types.
+// The cos/sin pair sits at token * headDimension + 2 * pair in the
+// tokens * headDimension interleaved coefficient table.
+struct PairLocation {
+    std::size_t first;
+    std::size_t second;
+    std::size_t coefficient;
+};
+
+__device__ __forceinline__ PairLocation locatePair(std::size_t index, int heads,
+                                                   int headDimension, int pairing) {
+    const auto pairsPerHead = static_cast<std::size_t>(headDimension / 2);
+    const auto tokenHead = index / pairsPerHead;
+    const auto pair = index % pairsPerHead;
+    const auto token = tokenHead / static_cast<std::size_t>(heads);
+    const auto first = tokenHead * static_cast<std::size_t>(headDimension) +
+                       (pairing == 0 ? 2 * pair : pair);
+    return { first, first + (pairing == 0 ? 1 : pairsPerHead),
+             token * static_cast<std::size_t>(headDimension) + 2 * pair };
+}
+
 __global__ void ropeF32(const float* input, float* destination, const float* coefficients,
                         int heads, int headDimension, int pairing, std::size_t pairCount) {
     const auto index = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
     if (index >= pairCount) return;
 
-    const auto pairsPerHead = static_cast<std::size_t>(headDimension / 2);
-    const auto tokenHead = index / pairsPerHead;
-    const auto pair = index % pairsPerHead;
-    const auto token = tokenHead / static_cast<std::size_t>(heads);
-    const auto base = tokenHead * static_cast<std::size_t>(headDimension);
-    const auto firstIndex = base + (pairing == 0 ? 2 * pair : pair);
-    const auto secondIndex = firstIndex + (pairing == 0 ? 1 : pairsPerHead);
-    const auto coefficientIndex = 2 * (token * pairsPerHead + pair);
-
-    const auto a = input[firstIndex];
-    const auto b = input[secondIndex];
+    const auto location = locatePair(index, heads, headDimension, pairing);
+    const auto a = input[location.first];
+    const auto b = input[location.second];
     float first, second;
-    rotatePair(a, b, coefficients[coefficientIndex], coefficients[coefficientIndex + 1], first, second);
-    destination[firstIndex] = first;
-    destination[secondIndex] = second;
+    rotatePair(a, b, coefficients[location.coefficient], coefficients[location.coefficient + 1], first, second);
+    destination[location.first] = first;
+    destination[location.second] = second;
 }
 
 __global__ void ropeF16(const half* input, half* destination, const float* coefficients,
@@ -43,21 +56,13 @@ __global__ void ropeF16(const half* input, half* destination, const float* coeff
     const auto index = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
     if (index >= pairCount) return;
 
-    const auto pairsPerHead = static_cast<std::size_t>(headDimension / 2);
-    const auto tokenHead = index / pairsPerHead;
-    const auto pair = index % pairsPerHead;
-    const auto token = tokenHead / static_cast<std::size_t>(heads);
-    const auto base = tokenHead * static_cast<std::size_t>(headDimension);
-    const auto firstIndex = base + (pairing == 0 ? 2 * pair : pair);
-    const auto secondIndex = firstIndex + (pairing == 0 ? 1 : pairsPerHead);
-    const auto coefficientIndex = 2 * (token * pairsPerHead + pair);
-
-    const float a = __half2float(input[firstIndex]);
-    const float b = __half2float(input[secondIndex]);
+    const auto location = locatePair(index, heads, headDimension, pairing);
+    const float a = __half2float(input[location.first]);
+    const float b = __half2float(input[location.second]);
     float first, second;
-    rotatePair(a, b, coefficients[coefficientIndex], coefficients[coefficientIndex + 1], first, second);
-    destination[firstIndex] = __float2half_rn(first);
-    destination[secondIndex] = __float2half_rn(second);
+    rotatePair(a, b, coefficients[location.coefficient], coefficients[location.coefficient + 1], first, second);
+    destination[location.first] = __float2half_rn(first);
+    destination[location.second] = __float2half_rn(second);
 }
 }
 
