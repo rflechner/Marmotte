@@ -426,9 +426,11 @@ without waiting; `Download` and `Synchronize` wait. GPU tests stay opt-in
 
 ### T. CUDA position kernels, key-value cache and attention
 
-- [ ] **T.1** RoPE over Q and K: "normal" pairing plus YaRN, with angles in double
+- [x] **T.1** RoPE over Q and K: "normal" pairing plus YaRN, with angles in double
   precision per token, either from cos/sin tables prepared by Core's `RotaryEmbedding` or
-  computed on the device (G.1, G.2).
+  computed on the device (G.1, G.2). The CUDA F32/F16 kernel consumes F32
+  cos/sin coefficients prepared on the host using double-precision angles;
+  coefficient staging synchronizes before an asynchronous rotation launch.
 - [ ] **T.2** Attention temperature: one F32 factor per token from
   `AttentionTemperature.Factor` (G.3).
 - [ ] **T.3** Key-value cache in device memory: allocate `layers × capacity × rowBytes`
