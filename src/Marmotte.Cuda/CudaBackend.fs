@@ -4,12 +4,12 @@ open System
 open System.Collections.Generic
 open Marmotte.Core
 
-/// Owned contiguous F32/F16 device tensors, stored-encoding weight uploads, Add and F32 SwiGLU,
-/// using one CUDA stream per instance.
+/// Owned contiguous F32/F16 device tensors, stored-encoding weight uploads, and F32/F16 Add and
+/// SwiGLU, using one CUDA stream per instance.
 /// deviceIndex is a zero-based CUDA device ordinal (default 0), and must be non-negative.
 /// Native loading and device initialization happen at the first non-empty allocation; construction,
 /// empty tensors and an unused Synchronize require no CUDA installation. No CPU fallback is used.
-/// Add and zero-initialization may return before completion. Transfers, tensor disposal and
+/// Add, SwiGLU and zero-initialization may return before completion. Transfers, tensor disposal and
 /// Synchronize wait for preceding work. Backend disposal waits and releases all remaining tensors
 /// and weights.
 /// UploadWeights copies the whole stored payload to device memory, so the WeightMatrix's source
@@ -75,11 +75,6 @@ type CudaBackend(?deviceIndex: int) =
     let requireEncoding encoding argumentName (tensor: ITensor) =
         if tensor.Encoding <> encoding then
             invalidArg argumentName $"Expected an {encoding} tensor, not {tensor.Encoding}; implicit conversion is not supported."
-
-    /// Kernels implemented for F32 only reject other encodings before writing any output.
-    let requireEncodingF32 operation argumentName (tensor: ITensor) =
-        if tensor.Encoding <> TensorEncoding.F32 then
-            raise (NotSupportedException($"{operation} requires F32 {argumentName}; {tensor.Encoding} is supported by Add and transfers only."))
 
     let notImplemented operation =
         checkDisposed ()
@@ -159,7 +154,7 @@ type CudaBackend(?deviceIndex: int) =
                 try (tensor :> IDisposable).Dispose() with _ -> ()
                 reraise ()
 
-        member _.AllocateKeyValueCache(_) = notImplemented "key-value cache allocation"
+        member _.AllocateKeyValueCache _ = notImplemented "key-value cache allocation"
 
         member _.Download(tensor, destination: Memory<single>) =
             checkDisposed ()
@@ -213,9 +208,8 @@ type CudaBackend(?deviceIndex: int) =
             let destinationPointer = pointerOf (nameof destination) destination
             requireSameShape "SwiGLU" gate (nameof up) up
             requireSameShape "SwiGLU" gate (nameof destination) destination
-            requireEncodingF32 "SwiGLU" (nameof gate) gate
-            requireEncodingF32 "SwiGLU" (nameof up) up
-            requireEncodingF32 "SwiGLU" (nameof destination) destination
+            requireEncoding gate.Encoding (nameof up) up
+            requireEncoding gate.Encoding (nameof destination) destination
 
             if gate.Shape.ElementCount > 0 then
                 getSession().SwiGlu(gatePointer, upPointer, destinationPointer, gate.Shape.ElementCount)

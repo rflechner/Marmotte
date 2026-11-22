@@ -738,7 +738,7 @@ let ``unfinished GPU operations explicitly fail without requiring GPU hardware``
           (fun () -> backend.ApplyAttentionTemperature(tensor, ReadOnlyMemory<int>([| 0 |]), AttentionTemperature.Create(0.1, 16384), tensor))
           (fun () -> backend.StoreKeyValues(cache, 0, 0, tensor, tensor))
           (fun () -> backend.ReadKeyValues(cache, 0, 0, tensor, tensor)) ]
-    // SwiGLU F32 is implemented on CUDA; Metal still rejects it.
+    // SwiGLU is implemented on CUDA for F32 and F16; Metal still rejects it.
     let operations =
         if name = "Metal" then (fun () -> backend.SwiGlu(tensor, tensor, tensor)) :: operations
         else operations

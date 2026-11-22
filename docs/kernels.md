@@ -49,8 +49,8 @@ use unrounded intermediates.
 | StoreKeyValues / ReadKeyValues | One cached key or value of a past position, encoded and decoded back to F32 | [Key-value cache](#key-value-cache) |
 
 All eight kernels and the key-value cache have CPU implementations. CUDA also
-implements Add, F32 SwiGLU, F32/F16 device storage/transfers and stored weight
-uploads in all fourteen runtime encodings; its remaining kernels and Metal
+implements Add and SwiGLU, both in F32 and F16, F32/F16 device storage/transfers
+and stored weight uploads in all fourteen runtime encodings; its remaining kernels and Metal
 remain placeholders. See the [CUDA build and implementation guide](cuda.md).
 Core implements YaRN parameter preparation. Attention temperature has a worked
 example in text. The seven walkthrough images on this page, and the one in the
@@ -130,7 +130,7 @@ them one row at a time.
 | `UploadWeights` | Retains the payload without copying | `NotImplementedException` | `NotImplementedException` |
 | `Synchronize` | Nothing to wait for | Waits for the instance's stream | `NotImplementedException` |
 | `IAddKernel.Add` | F32: safe `Vector<T>` loop with a scalar tail; F16: scalar Half loop | Separate F32/F16 kernels, 256 threads per block | `NotImplementedException` |
-| `ISwiGluKernel.SwiGlu` | Safe `Vector<T>` loop with `Vector.Exp`, scalar tail with `MathF.Exp` | F32 kernel with the device `expf`, 256 threads per block; F16 raises `NotSupportedException` | `NotImplementedException` |
+| `ISwiGluKernel.SwiGlu` | Safe `Vector<T>` loop with `Vector.Exp`, scalar tail with `MathF.Exp` | F32/F16 kernels with the device `expf`, 256 threads per block; F16 is computed in F32 and rounded once | `NotImplementedException` |
 | `IRmsNormKernel.RmsNorm` | Safe `Vector<T>` loops, sum of squares in double precision | `NotImplementedException` | `NotImplementedException` |
 | `IEmbeddingKernel.EmbeddingLookup` | Decodes selected rows with `RowDecoder` directly into F32 output | `NotImplementedException` | `NotImplementedException` |
 | `IRowCopyKernel.CopyRows` | Validated contiguous row copy over safe spans | `NotImplementedException` | `NotImplementedException` |

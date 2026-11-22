@@ -17,8 +17,8 @@ work. Illustrations are conceptual aids, not executable format specifications.
 | [Transformer layer tensors](transformer-layer-tensors.md) | Illustrated guide to the nine per-layer weight descriptors and their shapes | Dense mistral3 mapping, validation and forward pass implemented |
 | [Prompt processing and decoding](generation-session.md) | Batched prefill, incremental tokens, session cache and failure handling | GenerationSession, seeded sampling and TokenGenerator stopping implemented |
 | [Dense forward pass](forward-pass.md) | Runnable synthetic model, loading, logits and cache ownership | Dense mistral3 implemented through backend contracts |
-| [Execution tensors and kernels](kernels.md) | Seven illustrations covering kernels and YaRN, formula notation, GGUF-to-kernel diagram and backend contracts | Eight CPU kernels, a key-value cache and YaRN preparation implemented; CUDA Add and F32 SwiGLU; other CUDA kernels and Metal are placeholders |
-| [SwiGLU](kernels/swiglu.md) | Illustrated element-wise gating algorithm, worked example and CPU numerical notes | F32 kernel on CPU and CUDA; Metal remains a placeholder |
+| [Execution tensors and kernels](kernels.md) | Seven illustrations covering kernels and YaRN, formula notation, GGUF-to-kernel diagram and backend contracts | Eight CPU kernels, a key-value cache and YaRN preparation implemented; CUDA Add and SwiGLU; other CUDA kernels and Metal are placeholders |
+| [SwiGLU](kernels/swiglu.md) | Illustrated element-wise gating algorithm, worked example, CPU numerical notes and F16 rounding on CUDA | F32 on CPU; F32 and F16 on CUDA; Metal remains a placeholder |
 | [Q2_K, Q3_K and BitNet b1.58](quantization.md) | Three illustrations of code levels, `twoBitQuant` packing, storage cost and ternary training | Q2_K/Q3_K decoding implemented; BitNet execution not implemented |
 | Storage and strides below | Concepts for tensor access and execution | Copying tensor source and weight matrix rows implemented; no mapped storage or strided views |
 

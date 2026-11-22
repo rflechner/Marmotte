@@ -43,6 +43,33 @@ let private additionCases =
        0x7e35us, 0x0000us, 0x7e00us
        0x7d01us, 0x0000us, 0x7e00us |]
 
+// Independent binary16 SwiGLU fixtures: gate, up and destination = silu(gate) × up, rounded once
+// to nearest-even. Finite results were computed in double precision; each lies at least 0.08
+// units in the last place from a rounding midpoint, so a few F32 ULP of exponential error
+// cannot change the expected bits.
+let private swiGluCases =
+    [| 0x4000us, 0x4500us, 0x4867us // silu(2) × 5 ≈ 8.80797 rounds to 8.8046875
+       0xc000us, 0x4200us, 0xb9b9us // silu(-2) × 3 ≈ -0.715218
+       0x3c00us, 0x3c00us, 0x39d9us // silu(1) ≈ 0.731059
+       0xbe00us, 0xc400us, 0x3c61us // silu(-1.5) × -4 ≈ 1.094553
+       0x3400us, 0x4700us, 0x3bdfus // silu(0.25) × 7 ≈ 0.983809
+       0x4200us, 0xc000us, 0xc5b7us // silu(3) × -2 ≈ -5.715445
+       0x5640us, 0x3800us, 0x5240us // silu(100) × 0.5 = 50
+       0xca00us, 0x3c00us, 0x84d5us // silu(-12) ≈ -7.373e-5, in the smallest normal binade
+       0xcd00us, 0x3c00us, 0x8001us // silu(-20) ≈ -4.12e-8 rounds to the smallest subnormal
+       0x0003us, 0x4000us, 0x0003us // A subnormal gate is not flushed to zero
+       0x0000us, 0x4200us, 0x0000us
+       0x8000us, 0x3c00us, 0x8000us // silu(-0) keeps its sign
+       0xd640us, 0x3c00us, 0x8000us // e^100 overflows in F32: -100 / ∞ is a signed zero
+       0x7bffus, 0x4000us, 0x7c00us // 65504 × 2 overflows binary16
+       0x7bffus, 0xc000us, 0xfc00us
+       0x7c00us, 0x3c00us, 0x7c00us // silu(+∞) = +∞
+       0x7c00us, 0xc000us, 0xfc00us
+       0xfc00us, 0x3c00us, 0x7e00us // silu(-∞) = -∞ / ∞ is NaN
+       0x7e00us, 0x3c00us, 0x7e00us
+       0x3c00us, 0x7e00us, 0x7e00us
+       0x7c00us, 0x0000us, 0x7e00us |] // ∞ × 0 is NaN
+
 let private assertResults (expected: uint16 array) (actual: Half array) =
     Assert.Equal(expected.Length, actual.Length)
     for index = 0 to expected.Length - 1 do
@@ -50,6 +77,32 @@ let private assertResults (expected: uint16 array) (actual: Half array) =
             Assert.True(Half.IsNaN actual[index], $"Expected NaN at {index}.")
         else
             Assert.Equal(expected[index], bits actual[index])
+
+/// silu(gate) × up computed in double precision, independent of any device exponential,
+/// then rounded once to binary16.
+let private swiGluHalfReference (gate: Half) (up: Half) : Half =
+    let x = float gate
+    Half.op_Explicit (x / (1.0 + Math.Exp(-x)) * float up)
+
+/// Position on an integer line where neighbouring binary16 values, including the largest
+/// finite value and infinity, are one step apart. Both zeros map to 0.
+let private halfOrdinal (value: Half) =
+    let raw = int (bits value)
+    if raw &&& 0x8000 = 0 then raw else -(raw &&& 0x7fff)
+
+/// The device rounds an F32 result whose exponential carries a few ULP of error, so a value
+/// within that error of a binary16 rounding midpoint may land on either neighbour.
+let private assertWithinOneHalfUlp (expected: Half) (actual: Half) =
+    if Half.IsNaN expected then
+        Assert.True(Half.IsNaN actual, $"Expected NaN, got 0x{bits actual:x4}.")
+    else
+        let distance = abs (halfOrdinal expected - halfOrdinal actual)
+        Assert.False(Half.IsNaN actual, $"Expected 0x{bits expected:x4}, got NaN.")
+        Assert.True(distance <= 1, $"Expected 0x{bits expected:x4}, got 0x{bits actual:x4}.")
+
+        // A zero result keeps the sign of the exact product.
+        if halfOrdinal expected = 0 && halfOrdinal actual = 0 then
+            Assert.Equal(bits expected, bits actual)
 
 let private checkArithmetic (backend: ITensorBackend) =
     for dimensions in [ [||]; [| 0 |]; [| 2; 10 |]; [| 255 |]; [| 256 |]; [| 257 |]; [| 65537 |] ] do
@@ -181,6 +234,7 @@ let ``CUDA F16 empty tensors validate without loading the runtime`` () =
     use other = new CudaBackend() :> ITensorBackend
     use empty = backend.Upload(TensorShape.Create [| 0 |], ReadOnlyMemory<Half>.Empty)
     backend.Add(empty, empty, empty)
+    backend.SwiGlu(empty, empty, empty)
     backend.Download(empty, Memory<Half>.Empty)
     backend.Synchronize()
     checkValidationAndLifetime backend other (TensorShape.Create [| 0 |])
@@ -223,3 +277,54 @@ let ``CUDA F16 validates encodings shapes ownership and disposal before writing`
     use backend = new CudaBackend() :> ITensorBackend
     use other = new CudaBackend() :> ITensorBackend
     checkValidationAndLifetime backend other (TensorShape.Create [| 3 |])
+
+[<CudaFact; Trait("Category", "CUDA")>]
+let ``CUDA F16 SwiGlu matches independent rounding and special value fixtures`` () =
+    use backend = new CudaBackend() :> ITensorBackend
+
+    for dimensions in [ [||]; [| 0 |]; [| 2; 11 |]; [| 255 |]; [| 256 |]; [| 257 |]; [| 65537 |] ] do
+        let shape = TensorShape.Create dimensions
+        let cases = Array.init shape.ElementCount (fun i -> swiGluCases[i % swiGluCases.Length])
+        let gateValues = cases |> Array.map (fun (gate, _, _) -> half gate)
+        let upValues = cases |> Array.map (fun (_, up, _) -> half up)
+        let expected = cases |> Array.map (fun (_, _, result) -> result)
+        use gate = upload backend shape gateValues
+        use up = upload backend shape upValues
+        use destination = backend.Allocate(shape, TensorEncoding.F16)
+
+        backend.SwiGlu(gate, up, destination)
+        assertResults expected (download backend destination)
+        Assert.Equal<uint16>(Array.map bits gateValues, download backend gate |> Array.map bits)
+        Assert.Equal<uint16>(Array.map bits upValues, download backend up |> Array.map bits)
+
+        // Either input may be the destination; the other input keeps its original values.
+        backend.SwiGlu(gate, up, up)
+        assertResults expected (download backend up)
+        use originalUp = upload backend shape upValues
+        backend.SwiGlu(gate, originalUp, gate)
+        assertResults expected (download backend gate)
+
+[<CudaFact; Trait("Category", "CUDA")>]
+let ``CUDA F16 SwiGlu stays within one unit in the last place of a double-precision reference for every gate`` () =
+    use backend = new CudaBackend() :> ITensorBackend
+    // Every binary16 gate pattern, with up values that change the sign and scale the result
+    // into the subnormal and overflow ranges.
+    let upCycle = [| half 0x3c00us; half 0xc100us; half 0x3800us; half 0x7800us |] // 1, -2.5, 0.5, 32768
+    let gateValues = Array.init 65536 (uint16 >> half)
+    let upValues = Array.init gateValues.Length (fun index -> upCycle[index % upCycle.Length])
+    let expected = Array.map2 swiGluHalfReference gateValues upValues
+    let shape = TensorShape.Create [| gateValues.Length |]
+    use gate = upload backend shape gateValues
+    use up = upload backend shape upValues
+
+    backend.SwiGlu(gate, up, up)
+    Array.iter2 assertWithinOneHalfUlp expected (download backend up)
+
+    // A queued F16 Add observes the SwiGlu result on the same stream:
+    // silu(1) rounds to 0x39d9, and doubling it is exact.
+    let smallShape = TensorShape.Create [| 3 |]
+    use ones = upload backend smallShape (Array.create 3 (half 0x3c00us))
+    use output = backend.Allocate(smallShape, TensorEncoding.F16)
+    backend.SwiGlu(ones, ones, output)
+    backend.Add(output, output, output)
+    assertResults (Array.create 3 0x3dd9us) (download backend output)

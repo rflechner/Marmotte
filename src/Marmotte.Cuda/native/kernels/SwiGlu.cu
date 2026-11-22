@@ -1,4 +1,5 @@
 #include "../CudaContext.h"
+#include <cuda_fp16.h>
 #include <cmath>
 #include <cstddef>
 
@@ -14,6 +15,18 @@ namespace {
 
             const auto x = gate[index];
             destination[index] = x / (1.0f + expf(-x)) * up[index];
+        }
+    }
+
+    // The F16 variant widens both inputs exactly to F32, evaluates the F32 formula and rounds
+    // once to nearest-even. Half intermediates would round four times, and e^-x already
+    // exceeds the largest finite half (65504) for x below about -11.1.
+    __global__ void swiGluF16(const half* gate, const half* up, half* destination, int count) {
+        const auto index = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+        if (index < static_cast<std::size_t>(count)) {
+            const float x = __half2float(gate[index]);
+            const float u = __half2float(up[index]);
+            destination[index] = __float2half_rn(x / (1.0f + expf(-x)) * u);
         }
     }
 }
@@ -38,8 +51,13 @@ MARMOTTE_EXPORT int marmotte_cuda_swiglu(CudaContext* context, void* gate, void*
                 static_cast<const float*>(up), static_cast<float*>(destination), count);
             break;
 
+        case CudaEncoding::F16:
+            swiGluF16<<<blocks, threads, 0, context->stream>>>(static_cast<const half*>(gate),
+                static_cast<const half*>(up), static_cast<half*>(destination), count);
+            break;
+
         default:
-            // Only F32 is implemented; reject every other format before any output write.
+            // Only F32 and F16 are implemented; reject every other format before any output write.
             return cudaErrorNotSupported;
     }
     return cudaGetLastError();

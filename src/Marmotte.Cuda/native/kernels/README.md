@@ -11,7 +11,7 @@ native/
   kernels/
     README.md                  Shared development guide
     Add.cu                     F32/F16 GPU functions and host dispatch
-    SwiGlu.cu                  F32 GPU function and host dispatch
+    SwiGlu.cu                  F32/F16 GPU functions and host dispatch
 ```
 
 These files appear in the F# project. CMake compiles the `.cu` sources.
@@ -95,19 +95,37 @@ CUDA, including all 65,536 transfer bit patterns.
 
 ## SwiGlu contract and supported formats
 
-Only F32 is implemented in `SwiGlu.cu` and exposed through the managed backend;
-F16 raises `NotSupportedException` in `CudaBackend.fs` and `cudaErrorNotSupported`
-natively, before any output write. The operation computes
+`SwiGlu.cu` implements F32 and F16, both exposed through the managed backend.
+The operation computes
 `destination[i] = silu(gate[i]) × up[i]` with `silu(x) = x / (1 + e^-x)` over
 contiguous values, using the device `expf` with no fast math. All tensors must
 have identical shapes and encodings and belong to the same backend instance;
-`count` counts elements, not bytes. The managed backend validates and handles
-empty tensors before native dispatch.
+mixing F32 and F16 raises `ArgumentException` in `CudaBackend.fs`, as for Add,
+and any other format returns `cudaErrorNotSupported` natively, before any output
+write. `count` counts elements, not bytes. The managed backend validates and
+handles empty tensors before native dispatch.
+
+The F16 kernel widens both inputs exactly to F32 with `__half2float`, evaluates
+the same F32 formula and rounds once with `__float2half_rn`, to nearest with ties
+to even. Computing in half precision instead would round after each of the four
+operations, and `e^-x` alone exceeds the largest finite half (65,504) once x is
+below about -11.1, although the final product is still representable. Overflow
+of the final product produces infinity; subnormal inputs and results are kept,
+not flushed to zero.
 
 Each thread reads its gate and up values and writes only its own index, so the
 destination may be either input or both; do not add `__restrict__` promises that
 would invalidate this contract. Launches use 256 threads per block and check the
 final block's bounds. Because the CPU and the device approximate the exponential
-differently, results may differ by a few units in the last place: compare them
+differently, F32 results may differ by a few units in the last place: compare them
 with a relative tolerance. Where `e^-x` overflows (x below about -88.7), the
-F32 result is a signed zero, and `silu(-∞)` is NaN, as the formula gives.
+F32 result is a signed zero, and `silu(-∞)` is NaN, as the formula gives; F16
+inherits both behaviors through its F32 evaluation.
+
+[CudaTests.fs](../../../../tests/Marmotte.Backends.Tests/CudaTests.fs) covers F32
+against a double-precision reference. The CPU backend does not implement F16
+SwiGLU, so [HalfTests.fs](../../../../tests/Marmotte.Backends.Tests/HalfTests.fs)
+checks CUDA alone: exact bits for independently computed fixtures that lie far from
+a rounding midpoint, and at most one unit in the last place from a double-precision
+reference for all 65,536 gate bit patterns, since an F32 result within the
+exponential's error of a midpoint may round to either neighbour.

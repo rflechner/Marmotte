@@ -80,11 +80,10 @@ let ``CUDA validates arguments before native loading or host writes`` () =
         Assert.Throws<ArgumentNullException>(fun () -> backend.Add(a, b, output)) |> ignore
         Assert.Throws<ArgumentNullException>(fun () -> backend.SwiGlu(a, b, output)) |> ignore
 
-    // F32-only kernels reject F16 before any native dispatch, even for empty tensors.
+    // As for Add, SwiGLU requires one encoding for all three tensors, even when they are empty.
     use emptyHalf = backend.Upload(emptyShape, ReadOnlyMemory<Half>.Empty)
-    Assert.Throws<NotSupportedException>(fun () -> backend.SwiGlu(emptyHalf, empty, empty)) |> ignore
-    Assert.Throws<NotSupportedException>(fun () -> backend.SwiGlu(empty, emptyHalf, empty)) |> ignore
-    Assert.Throws<NotSupportedException>(fun () -> backend.SwiGlu(empty, empty, emptyHalf)) |> ignore
+    for a, b, output in [ emptyHalf, empty, empty; empty, emptyHalf, empty; empty, empty, emptyHalf ] do
+        Assert.Throws<ArgumentException>(fun () -> backend.SwiGlu(a, b, output)) |> ignore
 
     let sentinel = [| 42.0f |]
     Assert.Throws<ArgumentNullException>(fun () -> backend.Download(nullTensor, sentinel.AsMemory())) |> ignore
@@ -303,10 +302,12 @@ let ``CUDA SwiGlu validates shapes encodings ownership and disposal before writi
         for a, b, output in [ invalid, up, destination; gate, invalid, destination; gate, up, invalid ] do
             Assert.Throws<ArgumentException>(fun () -> backend.SwiGlu(a, b, output)) |> ignore
 
-    // F16 is rejected with NotSupportedException, not an argument error.
-    Assert.Throws<NotSupportedException>(fun () -> backend.SwiGlu(halfGate, up, destination)) |> ignore
-    Assert.Throws<NotSupportedException>(fun () -> backend.SwiGlu(gate, halfGate, destination)) |> ignore
-    Assert.Throws<NotSupportedException>(fun () -> backend.SwiGlu(gate, up, halfGate)) |> ignore
+    // F16 is supported, but mixing it with F32 is an argument error, as for Add.
+    for a, b, output in [ halfGate, up, destination; gate, halfGate, destination; gate, up, halfGate ] do
+        Assert.Throws<ArgumentException>(fun () -> backend.SwiGlu(a, b, output)) |> ignore
 
     Assert.Throws<ObjectDisposedException>(fun () -> backend.SwiGlu(gate, disposed, destination)) |> ignore
     Assert.All(download backend destination, fun value -> Assert.Equal(42.0f, value))
+    let halfValues = Array.zeroCreate<Half> shape.ElementCount
+    backend.Download(halfGate, halfValues.AsMemory())
+    Assert.All(halfValues, fun value -> Assert.Equal(Half.One, value))
