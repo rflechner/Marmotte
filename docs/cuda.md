@@ -1,8 +1,8 @@
-# CUDA: from the first build to an Add on the GPU
+# CUDA: from the first build to RoPE on the GPU
 
 Marmotte's CUDA backend implements contiguous F32 and F16 tensors, zero-initialized
-allocation, uploads, downloads, stored weight uploads, element-wise Add, SwiGLU
-and RMS normalization in both formats. It uses
+allocation, uploads, downloads, stored weight uploads, element-wise Add, SwiGLU,
+RMS normalization and RoPE/YaRN rotation in both formats. It uses
 native CUDA C++ through P/Invoke, with no additional NuGet dependency. Other
 kernels and the key-value cache still throw
 `NotImplementedException`.
@@ -555,6 +555,11 @@ while work is pending. The example and GPU tests were exercised on the Windows
 setup above. No model files are required. These are correctness checks, not
 performance measurements; no speedup is claimed.
 
+[`CudaRopeTests.fs`](../tests/Marmotte.Backends.Tests/CudaRopeTests.fs) compares plain RoPE
+and YaRN to the CPU reference for long positions, both pair layouts, Q/K head
+counts, F32/F16, in-place rotation, stream ordering and invalid calls. The empty
+and validation tests do not load CUDA; device tests require explicit opt-in.
+
 [`HalfTests.fs`](../tests/Marmotte.Backends.Tests/HalfTests.fs) adds the same
 independent binary16 fixtures on CPU and CUDA: halfway rounding, overflow,
 normal/subnormal transitions, signed zero, infinities and NaNs. It checks all
@@ -586,7 +591,7 @@ stored weights to Add. The lifetime state tests also run without CUDA.
 | No kernel image for this device | Rebuild with an architecture supported by both the GPU and Toolkit. |
 | `OutOfMemoryException` | Device allocation failed or the host staging array could not be allocated. Dispose unused tensors and reduce sizes. |
 | An error appears at Download or Synchronize | An asynchronous kernel may have failed earlier. Add a temporary Synchronize after the suspected launch to locate it. |
-| `NotImplementedException` from another kernel | Only Add, SwiGLU and RMS normalization (both formats) are implemented on CUDA at this stage. |
+| `NotImplementedException` from another kernel | Only Add, SwiGLU, RMS normalization and RoPE/YaRN (both formats) are implemented on CUDA at this stage. |
 
 CUDA runtime failures include the operation, numeric error code and native
 message in `InvalidOperationException`; `cudaErrorMemoryAllocation` (status 2)
@@ -620,6 +625,7 @@ native/
     Add.cu             addValuesF32, addValuesF16 and marmotte_cuda_add
     SwiGlu.cu          swiGluF32, swiGluF16 and marmotte_cuda_swiglu
     RmsNorm.cu         rmsNormF32, rmsNormF16 and marmotte_cuda_rmsnorm
+    Rope.cu            ropeF32, ropeF16 and marmotte_cuda_rope
 ```
 
 Both Add variants are implemented and available through `ITensorBackend`, and so
