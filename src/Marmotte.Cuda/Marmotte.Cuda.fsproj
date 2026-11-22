@@ -30,10 +30,12 @@
     <Compile Include="CudaBackend.fs" />
   </ItemGroup>
   <ItemGroup>
-    <None Include="native/**/*.cu" />
-    <None Include="native/**/*.h" />
+    <None Include="native/kernels/*.cu" />
+    <None Include="native/kernels/*.h" />
+    <None Include="native/kernels/*.md" />
+    <None Include="native/*.cu" />
+    <None Include="native/*.h" />
     <None Include="native/**/CMakeLists.txt" />
-    <None Include="native/**/*.md" />
   </ItemGroup>
   <!-- Both built and prebuilt native libraries propagate to consumers and publish output. -->
   <ItemGroup Condition="'$(MarmotteCudaNativePath)' != ''">

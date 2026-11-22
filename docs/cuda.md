@@ -1,7 +1,8 @@
 # CUDA: from the first build to an Add on the GPU
 
 Marmotte's CUDA backend implements contiguous F32 and F16 tensors, zero-initialized
-allocation, uploads, downloads, stored weight uploads and element-wise Add. It uses
+allocation, uploads, downloads, stored weight uploads, element-wise Add and F32
+SwiGLU. It uses
 native CUDA C++ through P/Invoke, with no additional NuGet dependency. Other
 kernels and the key-value cache still throw
 `NotImplementedException`.
@@ -236,6 +237,7 @@ system C/C++ libraries. We do not package a driver or prebuilt native binaries.
 | [`native/CudaContext.h`](../src/Marmotte.Cuda/native/CudaContext.h) | Private shared state: selected device, stream and owned allocations with their element counts, encodings and byte sizes. |
 | [`native/CudaRuntime.cu`](../src/Marmotte.Cuda/native/CudaRuntime.cu) | Device initialization, allocation, copies, synchronization and cleanup. |
 | [`native/kernels/Add.cu`](../src/Marmotte.Cuda/native/kernels/Add.cu) | F32/F16 GPU functions and the shared CPU entry point, `marmotte_cuda_add`: native validation, format dispatch and launch configuration. |
+| [`native/kernels/SwiGlu.cu`](../src/Marmotte.Cuda/native/kernels/SwiGlu.cu) | F32 GPU function and the shared CPU entry point, `marmotte_cuda_swiglu`: native validation, format dispatch and launch configuration. |
 | [`native/CMakeLists.txt`](../src/Marmotte.Cuda/native/CMakeLists.txt) | Native sources, compiler settings and output location. |
 
 ```mermaid
@@ -580,7 +582,7 @@ stored weights to Add. The lifetime state tests also run without CUDA.
 | No kernel image for this device | Rebuild with an architecture supported by both the GPU and Toolkit. |
 | `OutOfMemoryException` | Device allocation failed or the host staging array could not be allocated. Dispose unused tensors and reduce sizes. |
 | An error appears at Download or Synchronize | An asynchronous kernel may have failed earlier. Add a temporary Synchronize after the suspected launch to locate it. |
-| `NotImplementedException` from another kernel | Only Add is implemented on CUDA at this stage. |
+| `NotImplementedException` from another kernel | Only Add and F32 SwiGLU are implemented on CUDA at this stage. |
 
 CUDA runtime failures include the operation, numeric error code and native
 message in `InvalidOperationException`; `cudaErrorMemoryAllocation` (status 2)
@@ -612,9 +614,13 @@ native/
   kernels/
     README.md          Shared developer guide and kernel contracts
     Add.cu             addValuesF32, addValuesF16 and marmotte_cuda_add
+    SwiGlu.cu          swiGluF32 and marmotte_cuda_swiglu
 ```
 
 Both Add variants are implemented and available through `ITensorBackend`.
+SwiGLU is implemented for F32 only: it computes
+`destination[i] = silu(gate[i]) × up[i]` with the device `expf`, and F16 tensors
+are rejected with `NotSupportedException` before any write.
 `Allocate(shape)` remains F32; `Allocate(shape, TensorEncoding.F16)` creates
 zero-initialized Half storage. Uploading `ReadOnlyMemory<Half>` also creates F16
 storage, and downloading it requires `Memory<Half>`. All three tensors passed

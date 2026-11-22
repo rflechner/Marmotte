@@ -4,8 +4,8 @@ open System
 open System.Collections.Generic
 open Marmotte.Core
 
-/// Owned contiguous F32/F16 device tensors, stored-encoding weight uploads and Add, using one
-/// CUDA stream per instance.
+/// Owned contiguous F32/F16 device tensors, stored-encoding weight uploads, Add and F32 SwiGLU,
+/// using one CUDA stream per instance.
 /// deviceIndex is a zero-based CUDA device ordinal (default 0), and must be non-negative.
 /// Native loading and device initialization happen at the first non-empty allocation; construction,
 /// empty tensors and an unused Synchronize require no CUDA installation. No CPU fallback is used.
@@ -68,13 +68,18 @@ type CudaBackend(?deviceIndex: int) =
         liveStorage.Add(tensor) |> ignore
         tensor :> ITensor
 
-    let requireSameShape (reference: ITensor) argumentName (tensor: ITensor) =
+    let requireSameShape operation (reference: ITensor) argumentName (tensor: ITensor) =
         if reference.Shape <> tensor.Shape then
-            invalidArg argumentName $"Add requires identical shapes, not {reference.Shape} and {tensor.Shape}; broadcasting is not supported."
+            invalidArg argumentName $"{operation} requires identical shapes, not {reference.Shape} and {tensor.Shape}; broadcasting is not supported."
 
     let requireEncoding encoding argumentName (tensor: ITensor) =
         if tensor.Encoding <> encoding then
             invalidArg argumentName $"Expected an {encoding} tensor, not {tensor.Encoding}; implicit conversion is not supported."
+
+    /// Kernels implemented for F32 only reject other encodings before writing any output.
+    let requireEncodingF32 operation argumentName (tensor: ITensor) =
+        if tensor.Encoding <> TensorEncoding.F32 then
+            raise (NotSupportedException($"{operation} requires F32 {argumentName}; {tensor.Encoding} is supported by Add and transfers only."))
 
     let notImplemented operation =
         checkDisposed ()
@@ -192,8 +197,8 @@ type CudaBackend(?deviceIndex: int) =
             let leftPointer = pointerOf (nameof left) left
             let rightPointer = pointerOf (nameof right) right
             let destinationPointer = pointerOf (nameof destination) destination
-            requireSameShape left (nameof right) right
-            requireSameShape left (nameof destination) destination
+            requireSameShape "Add" left (nameof right) right
+            requireSameShape "Add" left (nameof destination) destination
             requireEncoding left.Encoding (nameof right) right
             requireEncoding left.Encoding (nameof destination) destination
 
@@ -201,7 +206,19 @@ type CudaBackend(?deviceIndex: int) =
                 getSession().Add(leftPointer, rightPointer, destinationPointer, left.Shape.ElementCount)
 
     interface ISwiGluKernel with
-        member _.SwiGlu(_, _, _) = notImplemented "SwiGLU kernel"
+        member _.SwiGlu(gate, up, destination) =
+            checkDisposed ()
+            let gatePointer = pointerOf (nameof gate) gate
+            let upPointer = pointerOf (nameof up) up
+            let destinationPointer = pointerOf (nameof destination) destination
+            requireSameShape "SwiGLU" gate (nameof up) up
+            requireSameShape "SwiGLU" gate (nameof destination) destination
+            requireEncodingF32 "SwiGLU" (nameof gate) gate
+            requireEncodingF32 "SwiGLU" (nameof up) up
+            requireEncodingF32 "SwiGLU" (nameof destination) destination
+
+            if gate.Shape.ElementCount > 0 then
+                getSession().SwiGlu(gatePointer, upPointer, destinationPointer, gate.Shape.ElementCount)
 
     interface IRmsNormKernel with
         member _.RmsNorm(_, _, _, _) = notImplemented "RMS normalization kernel"

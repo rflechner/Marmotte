@@ -11,6 +11,7 @@ native/
   kernels/
     README.md                  Shared development guide
     Add.cu                     F32/F16 GPU functions and host dispatch
+    SwiGlu.cu                  F32 GPU function and host dispatch
 ```
 
 These files appear in the F# project. CMake compiles the `.cu` sources.
@@ -91,3 +92,22 @@ without an F32 buffer. See [Half arithmetic and memory use](../../../../docs/ker
 F32. [HalfTests.fs](../../../../tests/Marmotte.Backends.Tests/HalfTests.fs)
 shares independent F16 fixtures and transfer/validation tests between CPU and
 CUDA, including all 65,536 transfer bit patterns.
+
+## SwiGlu contract and supported formats
+
+Only F32 is implemented in `SwiGlu.cu` and exposed through the managed backend;
+F16 raises `NotSupportedException` in `CudaBackend.fs` and `cudaErrorNotSupported`
+natively, before any output write. The operation computes
+`destination[i] = silu(gate[i]) × up[i]` with `silu(x) = x / (1 + e^-x)` over
+contiguous values, using the device `expf` with no fast math. All tensors must
+have identical shapes and encodings and belong to the same backend instance;
+`count` counts elements, not bytes. The managed backend validates and handles
+empty tensors before native dispatch.
+
+Each thread reads its gate and up values and writes only its own index, so the
+destination may be either input or both; do not add `__restrict__` promises that
+would invalidate this contract. Launches use 256 threads per block and check the
+final block's bounds. Because the CPU and the device approximate the exponential
+differently, results may differ by a few units in the last place: compare them
+with a relative tolerance. Where `e^-x` overflows (x below about -88.7), the
+F32 result is a signed zero, and `silu(-∞)` is NaN, as the formula gives.

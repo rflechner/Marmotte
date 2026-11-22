@@ -33,6 +33,8 @@ let ``CUDA empty tensors need no runtime and still enforce shape ownership and l
 
     backend.Add(left, right, destination)
     backend.Add(left, left, left)
+    backend.SwiGlu(left, right, destination)
+    backend.SwiGlu(left, left, left)
     backend.Synchronize()
     Assert.Empty(download backend destination)
     Assert.Equal(BackendKind.Cuda, destination.Backend)
@@ -41,6 +43,7 @@ let ``CUDA empty tensors need no runtime and still enforce shape ownership and l
     for invalid in [ differentShape; foreign; host ] do
         for a, b, output in [ invalid, right, destination; left, invalid, destination; left, right, invalid ] do
             Assert.Throws<ArgumentException>(fun () -> backend.Add(a, b, output)) |> ignore
+            Assert.Throws<ArgumentException>(fun () -> backend.SwiGlu(a, b, output)) |> ignore
 
     for tensor in [ foreign; host ] do
         Assert.Throws<ArgumentException>(fun () -> backend.Download(tensor, Memory<single>.Empty)) |> ignore
@@ -50,6 +53,9 @@ let ``CUDA empty tensors need no runtime and still enforce shape ownership and l
     Assert.Throws<ObjectDisposedException>(fun () -> backend.Add(left, right, destination)) |> ignore
     Assert.Throws<ObjectDisposedException>(fun () -> backend.Add(right, left, destination)) |> ignore
     Assert.Throws<ObjectDisposedException>(fun () -> backend.Add(right, right, left)) |> ignore
+    Assert.Throws<ObjectDisposedException>(fun () -> backend.SwiGlu(left, right, destination)) |> ignore
+    Assert.Throws<ObjectDisposedException>(fun () -> backend.SwiGlu(right, left, destination)) |> ignore
+    Assert.Throws<ObjectDisposedException>(fun () -> backend.SwiGlu(right, right, left)) |> ignore
     Assert.Throws<ObjectDisposedException>(fun () -> backend.Download(left, Memory<single>.Empty)) |> ignore
     backend.Dispose()
     destination.Dispose()
@@ -72,6 +78,13 @@ let ``CUDA validates arguments before native loading or host writes`` () =
 
     for a, b, output in [ nullTensor, empty, empty; empty, nullTensor, empty; empty, empty, nullTensor ] do
         Assert.Throws<ArgumentNullException>(fun () -> backend.Add(a, b, output)) |> ignore
+        Assert.Throws<ArgumentNullException>(fun () -> backend.SwiGlu(a, b, output)) |> ignore
+
+    // F32-only kernels reject F16 before any native dispatch, even for empty tensors.
+    use emptyHalf = backend.Upload(emptyShape, ReadOnlyMemory<Half>.Empty)
+    Assert.Throws<NotSupportedException>(fun () -> backend.SwiGlu(emptyHalf, empty, empty)) |> ignore
+    Assert.Throws<NotSupportedException>(fun () -> backend.SwiGlu(empty, emptyHalf, empty)) |> ignore
+    Assert.Throws<NotSupportedException>(fun () -> backend.SwiGlu(empty, empty, emptyHalf)) |> ignore
 
     let sentinel = [| 42.0f |]
     Assert.Throws<ArgumentNullException>(fun () -> backend.Download(nullTensor, sentinel.AsMemory())) |> ignore
@@ -195,3 +208,105 @@ let ``CUDA disposal waits for queued work and releases only its own resources`` 
     Assert.Throws<ObjectDisposedException>(fun () -> backend.Download(output, Memory<single>(Array.zeroCreate shape.ElementCount))) |> ignore
     otherBackend.Add(survivor, survivor, survivor)
     Assert.All(download otherBackend survivor, fun value -> Assert.Equal(14.0f, value))
+
+/// SwiGLU in double precision, independent of both the CPU and the device exponential.
+let private swiGluReference (gate: single) (up: single) =
+    let x = float gate
+    x / (1.0 + Math.Exp(-x)) * float up
+
+/// A relative tolerance plus an absolute floor for results that the F32 formula
+/// flushes to zero when e^-x overflows.
+let private assertSwiGluClose (expected: float) (actual: single) =
+    let tolerance = 1e-6 * abs expected + 1e-30
+    Assert.True(abs (float actual - expected) <= tolerance, $"Expected {expected}, got {actual}.")
+
+[<CudaFact>]
+[<Trait("Category", "CUDA")>]
+let ``CUDA SwiGlu matches a double-precision reference for block boundaries and aliasing`` () =
+    use backend = new CudaBackend() :> ITensorBackend
+    let random = Random(5678)
+    let randomValues length range = Array.init length (fun _ -> float32 ((random.NextDouble() * 2.0 - 1.0) * range))
+    let shapes = [ [||]; [| 0 |]; [| 2; 3 |]; [| 255 |]; [| 256 |]; [| 257 |]; [| 65537 |] ]
+
+    for dimensions in shapes do
+        let shape = TensorShape.Create dimensions
+        let gateValues = randomValues shape.ElementCount 30.0
+        let upValues = randomValues shape.ElementCount 5.0
+        let expected = Array.map2 swiGluReference gateValues upValues
+        use gate = backend.Upload(shape, ReadOnlyMemory<single>(gateValues))
+        use up = backend.Upload(shape, ReadOnlyMemory<single>(upValues))
+        use destination = backend.Allocate(shape)
+
+        backend.SwiGlu(gate, up, destination)
+        Array.iter2 assertSwiGluClose expected (download backend destination)
+        Assert.Equal<single>(gateValues, download backend gate)
+        Assert.Equal<single>(upValues, download backend up)
+
+        // Either input may be the destination; the other input keeps its original values.
+        backend.SwiGlu(gate, up, up)
+        Array.iter2 assertSwiGluClose expected (download backend up)
+
+        use upAgain = backend.Upload(shape, ReadOnlyMemory<single>(upValues))
+        backend.SwiGlu(gate, upAgain, gate)
+        Array.iter2 assertSwiGluClose expected (download backend gate)
+
+[<CudaFact>]
+[<Trait("Category", "CUDA")>]
+let ``CUDA SwiGlu handles extreme gates and queues after Add`` () =
+    use backend = new CudaBackend() :> ITensorBackend
+    // 21 values cycle through each case in full blocks and in the scalar tail.
+    let cases = [| -100.0f; 100.0f; 0.0f; Single.NaN; Single.PositiveInfinity; Single.NegativeInfinity; -0.001f |]
+    let gateValues = Array.init 21 (fun index -> cases[index % cases.Length])
+    let shape = TensorShape.Create [| 21 |]
+    use gate = backend.Upload(shape, ReadOnlyMemory<single>(gateValues))
+    use up = backend.Upload(shape, ReadOnlyMemory<single>(Array.create 21 2.0f))
+
+    backend.SwiGlu(gate, up, up)
+
+    let result = download backend up
+    for index in 0 .. 20 do
+        match gateValues[index] with
+        | gateValue when Single.IsNaN gateValue -> Assert.True(Single.IsNaN result[index])
+        | gateValue when Single.IsNegativeInfinity gateValue -> Assert.True(Single.IsNaN result[index])
+        | gateValue when Single.IsPositiveInfinity gateValue -> Assert.Equal(Single.PositiveInfinity, result[index])
+        | gateValue -> assertSwiGluClose (swiGluReference gateValue 2.0f) result[index]
+
+    // A queued Add observes the SwiGlu result on the same stream.
+    use finiteGate = backend.Upload(shape, ReadOnlyMemory<single>(Array.create 21 1.0f))
+    use ones = backend.Upload(shape, ReadOnlyMemory<single>(Array.create 21 1.0f))
+    backend.SwiGlu(finiteGate, ones, up)
+    backend.Add(up, up, up)
+    Assert.All(download backend up, fun value -> assertSwiGluClose (2.0 * swiGluReference 1.0f 1.0f) value)
+
+[<CudaFact>]
+[<Trait("Category", "CUDA")>]
+let ``CUDA SwiGlu validates shapes encodings ownership and disposal before writing`` () =
+    use backend = new CudaBackend() :> ITensorBackend
+    use otherBackend = new CudaBackend() :> ITensorBackend
+    use cpu = new CpuBackend() :> ITensorBackend
+    let shape = TensorShape.Create [| 2; 3 |]
+    use gate = backend.Upload(shape, ReadOnlyMemory<single>(Array.create 6 1.0f))
+    use up = backend.Upload(shape, ReadOnlyMemory<single>(Array.create 6 2.0f))
+    use destination = backend.Upload(shape, ReadOnlyMemory<single>(Array.create 6 42.0f))
+    use foreign = otherBackend.Allocate(shape)
+    use host = cpu.Allocate(shape)
+    use halfGate = backend.Upload(shape, ReadOnlyMemory<Half>(Array.create 6 Half.One))
+    use disposed = backend.Allocate(shape)
+    disposed.Dispose()
+
+    for dimensions in [ [| 6 |]; [| 3; 2 |]; [| 1; 3 |] ] do
+        use differentShape = backend.Allocate(TensorShape.Create dimensions)
+        Assert.Throws<ArgumentException>(fun () -> backend.SwiGlu(gate, differentShape, destination)) |> ignore
+        Assert.Throws<ArgumentException>(fun () -> backend.SwiGlu(gate, up, differentShape)) |> ignore
+
+    for invalid in [ foreign; host ] do
+        for a, b, output in [ invalid, up, destination; gate, invalid, destination; gate, up, invalid ] do
+            Assert.Throws<ArgumentException>(fun () -> backend.SwiGlu(a, b, output)) |> ignore
+
+    // F16 is rejected with NotSupportedException, not an argument error.
+    Assert.Throws<NotSupportedException>(fun () -> backend.SwiGlu(halfGate, up, destination)) |> ignore
+    Assert.Throws<NotSupportedException>(fun () -> backend.SwiGlu(gate, halfGate, destination)) |> ignore
+    Assert.Throws<NotSupportedException>(fun () -> backend.SwiGlu(gate, up, halfGate)) |> ignore
+
+    Assert.Throws<ObjectDisposedException>(fun () -> backend.SwiGlu(gate, disposed, destination)) |> ignore
+    Assert.All(download backend destination, fun value -> Assert.Equal(42.0f, value))

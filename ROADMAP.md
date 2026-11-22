@@ -397,7 +397,7 @@ without waiting; `Download` and `Synchronize` wait. GPU tests stay opt-in
 
 ### R. CUDA element-wise, normalization and lookup kernels
 
-- [ ] **R.1** SwiGLU F32: `silu(gate) × up` per element, in one `kernels/SwiGlu.cu`.
+- [x] **R.1** SwiGLU F32: `silu(gate) × up` per element, in one `kernels/SwiGlu.cu`.
 - [ ] **R.2** RMS normalization F32: per-row mean of squares with a block reduction, then
   scaling by the weight vector; document the accumulation precision.
 - [ ] **R.3** `CopyRows`: device-to-device copy of contiguous rank-2 rows, needed by

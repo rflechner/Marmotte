@@ -278,11 +278,12 @@ The three backend projects share these contracts:
   key-value cache and causal grouped-query attention. Online fused attention is
   the default; `CpuAttentionMode.Reference` preserves the score-buffer algorithm.
   See [H.3 measurements](docs/kernels.md#online-attention-and-h3-measurements).
-- `Marmotte.Cuda`: owned F32 or F16 device tensors, transfers and Add through a native
-  CUDA library. Build it automatically with `dotnet build Marmotte.slnx -p:MarmotteBuildCuda=true`.
+- `Marmotte.Cuda`: owned F32 or F16 device tensors, transfers, Add and F32 SwiGLU through a
+  native CUDA library. Build it automatically with `dotnet build Marmotte.slnx -p:MarmotteBuildCuda=true`.
   Native compilation and GPU tests are optional; see the
   [CUDA guide](docs/cuda.md) for prerequisites, builds and how the backend works.
-  Add has separate [F32 and F16 implementations](docs/cuda.md#kernel-formats-and-file-layout).
+  Add has separate [F32 and F16 implementations](docs/cuda.md#kernel-formats-and-file-layout);
+  SwiGLU is F32 only.
   `UploadWeights` copies all fourteen runtime encodings to VRAM without decoding,
   with at most 4 MiB of host staging per upload. Weight and backend disposal wait
   for queued work and release storage. Try `dotnet fsi examples/CudaWeights.fsx`.
@@ -548,7 +549,7 @@ addition, SwiGLU, RMS normalization and matrix-vector products against scalar
 and double-precision references, embedding lookup against independently
 specified floating-point and quantized bytes, shape and ID validation, buffer
 ownership, transfers and disposal, plus explicit failures for unfinished GPU
-operations. CUDA Add and stored weight transfers have optional GPU tests; see [how to run them](docs/cuda.md#run-the-tests).
+operations. CUDA Add, F32 SwiGLU and stored weight transfers have optional GPU tests; see [how to run them](docs/cuda.md#run-the-tests).
 No model or weight download is required.
 
 ## Coding guidelines

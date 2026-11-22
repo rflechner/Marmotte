@@ -59,6 +59,9 @@ module private CudaApi =
     extern int marmotte_cuda_add(SafeHandle context, nativeint left, nativeint right, nativeint destination, int count)
 
     [<DllImport(library, CallingConvention = CallingConvention.Cdecl)>]
+    extern int marmotte_cuda_swiglu(SafeHandle context, nativeint gate, nativeint up, nativeint destination, int count)
+
+    [<DllImport(library, CallingConvention = CallingConvention.Cdecl)>]
     extern int marmotte_cuda_synchronize(SafeHandle context)
 
     let check operation status =
@@ -178,6 +181,9 @@ type internal CudaSession(deviceIndex: int) =
 
     member _.Add(left, right, destination, count) =
         CudaApi.marmotte_cuda_add(context, left, right, destination, count) |> CudaApi.check "Add launch"
+
+    member _.SwiGlu(gate, up, destination, count) =
+        CudaApi.marmotte_cuda_swiglu(context, gate, up, destination, count) |> CudaApi.check "SwiGLU launch"
 
     member _.Synchronize() = CudaApi.marmotte_cuda_synchronize(context) |> CudaApi.check "synchronization"
 

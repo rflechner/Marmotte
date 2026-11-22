@@ -38,7 +38,7 @@ use unrounded intermediates.
 | Kernel or technique | What one output represents | Walkthrough |
 | --- | --- | --- |
 | Add | Sum of two values at the same position | [Matching positions](#add-and-buffer-reuse) |
-| SwiGLU | One value multiplied by a smooth gate | [Three scalar steps](#swiglu) |
+| SwiGLU | One value multiplied by a smooth gate | [Three scalar steps](kernels/swiglu.md) |
 | RMSNorm | One value rescaled using its row's magnitude and a learned weight | [Measure, normalize, scale](#rms-normalization) |
 | EmbeddingLookup | A feature copied or decoded from the vocabulary row selected by an ID | [Select rows](#embedding-lookup) |
 | MatVec | Sum of products between one weight row and one input vector | [One dot product](#matrix-vector-product) |
@@ -49,16 +49,17 @@ use unrounded intermediates.
 | StoreKeyValues / ReadKeyValues | One cached key or value of a past position, encoded and decoded back to F32 | [Key-value cache](#key-value-cache) |
 
 All eight kernels and the key-value cache have CPU implementations. CUDA also
-implements Add, F32/F16 device storage/transfers and stored weight uploads in all
-fourteen runtime encodings; its remaining kernels and Metal
+implements Add, F32 SwiGLU, F32/F16 device storage/transfers and stored weight
+uploads in all fourteen runtime encodings; its remaining kernels and Metal
 remain placeholders. See the [CUDA build and implementation guide](cuda.md).
 Core implements YaRN parameter preparation. Attention temperature has a worked
-example in text. The eight walkthrough images were
+example in text. The seven walkthrough images on this page, and the one in the
+[SwiGLU guide](kernels/swiglu.md), were
 generated with the built-in `image_gen` tool, visually reviewed, and their
 numerical examples checked independently. The prompts for the
-[first six kernels](kernel-illustrations.prompt.txt) and for
-[RoPE and YaRN](rope-yarn-illustrations.prompt.txt) are kept alongside the
-images. The older overview below has its own status note.
+[first six kernels](kernel-illustrations.prompt.txt), SwiGLU included, and for
+[RoPE and YaRN](rope-yarn-illustrations.prompt.txt) are kept in this folder.
+The older overview below has its own status note.
 
 ## From GGUF to Add
 
@@ -129,7 +130,7 @@ them one row at a time.
 | `UploadWeights` | Retains the payload without copying | `NotImplementedException` | `NotImplementedException` |
 | `Synchronize` | Nothing to wait for | Waits for the instance's stream | `NotImplementedException` |
 | `IAddKernel.Add` | F32: safe `Vector<T>` loop with a scalar tail; F16: scalar Half loop | Separate F32/F16 kernels, 256 threads per block | `NotImplementedException` |
-| `ISwiGluKernel.SwiGlu` | Safe `Vector<T>` loop with `Vector.Exp`, scalar tail with `MathF.Exp` | `NotImplementedException` | `NotImplementedException` |
+| `ISwiGluKernel.SwiGlu` | Safe `Vector<T>` loop with `Vector.Exp`, scalar tail with `MathF.Exp` | F32 kernel with the device `expf`, 256 threads per block; F16 raises `NotSupportedException` | `NotImplementedException` |
 | `IRmsNormKernel.RmsNorm` | Safe `Vector<T>` loops, sum of squares in double precision | `NotImplementedException` | `NotImplementedException` |
 | `IEmbeddingKernel.EmbeddingLookup` | Decodes selected rows with `RowDecoder` directly into F32 output | `NotImplementedException` | `NotImplementedException` |
 | `IRowCopyKernel.CopyRows` | Validated contiguous row copy over safe spans | `NotImplementedException` | `NotImplementedException` |
@@ -255,38 +256,9 @@ The Metal backend remains a placeholder for both formats.
 
 ## SwiGLU
 
-![SwiGLU: compute sigmoid(g), multiply by g to obtain SiLU, then multiply by up; gate 2 and up 5 give approximately 8.8080](kernel-swiglu.png)
-
-[Open the SwiGLU illustration](kernel-swiglu.png).
-
-For each position, first compute `sigmoid(g) = 1 / (1 + exp(-g))`. Multiply
-that by `g` to get `silu(g)`, then multiply by the corresponding `up` value.
-For `gate = [-2; 0; 2]` and `up = [3; 4; 5]`, the output is approximately
-`[-0.7152; 0; 8.8080]`. This smooth multiplier can be negative or greater than
-one. The caller has already computed the `gate` and `up` projections before
-invoking this kernel.
-
-The feed-forward layer of LLaMA-family models, including `mistral3`, gates one
-projection with another. `SwiGlu(gate, up, destination)` writes
-`destination[i] = silu(gate[i]) × up[i]`, with `silu(x) = x / (1 + e^-x)`; see
-[GLU Variants Improve Transformer](https://arxiv.org/abs/2002.05202). In the
-target model, `gate` and `up` are the 9,216-value outputs of `ffn_gate` and
-`ffn_up`, and the result feeds `ffn_down`. The tensor rules are those of `Add`:
-identical shapes, the same backend instance, exact aliasing such as
-`backend.SwiGlu(gate, up, up)`, and validation before any write.
-
-Unlike addition, the result depends on how the exponential is approximated. The
-CPU backend uses `Vector.Exp` in vector lanes and `MathF.Exp` for the remaining
-values. Measured on ARM64 for gates from -87 to 90, both stay within 2.2e-7
-relative error of a double-precision SiLU, and they differ from each other by
-at most four units in the last place. Tests therefore compare with a relative
-tolerance of 1e-6. Below about -88.7, `e^-x` overflows in F32 and the result is
-a signed zero instead of a value smaller than 1e-36. NaN gates stay NaN, and
-`silu(-∞)` is NaN, as the formula gives.
-
-On an Apple M4 Max, single-threaded in Release, the vectorized kernel takes about
-0.63 ns per value, against 1.43 ns for a scalar loop with the same formula. One
-feed-forward layer of 9,216 values takes about 5.8 µs instead of 13.3 µs.
+`SwiGlu(gate, up, destination)` computes `silu(gate) × up` element by element.
+The [SwiGLU guide](kernels/swiglu.md) contains the illustration, worked example,
+tensor contract and CPU numerical and performance notes.
 
 ## RMS Normalization
 
