@@ -5,8 +5,7 @@
 ![SwiGLU: compute sigmoid(g), multiply by g to obtain SiLU, then multiply by up; gate 2 and up 5 give approximately 8.8080](swiglu.png)
 
 [Open the SwiGLU illustration](swiglu.png).
-Its [original generation prompt](../kernel-illustrations.prompt.txt) is kept
-with the other kernel prompts. The illustration's backend footer predates
+The illustration's backend footer predates
 CUDA SwiGLU support; see [On CUDA](#on-cuda) below.
 
 For each position, first compute `sigmoid(g) = 1 / (1 + exp(-g))`. Multiply
@@ -22,7 +21,7 @@ projection with another. `SwiGlu(gate, up, destination)` writes
 [GLU Variants Improve Transformer](https://arxiv.org/abs/2002.05202). In the
 target model, `gate` and `up` are the 9,216-value outputs of `ffn_gate` and
 `ffn_up`, and the result feeds `ffn_down`. The tensor rules are those of
-[Add](../kernels.md#add-and-buffer-reuse):
+[Add](add.md#add-and-buffer-reuse):
 identical shapes, the same backend instance, exact aliasing such as
 `backend.SwiGlu(gate, up, up)`, and validation before any write.
 

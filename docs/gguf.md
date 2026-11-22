@@ -267,7 +267,7 @@ occupy no managed heap and the operating system pages them in on demand. See
 that chose this design.
 
 `RowDecoder` in `Marmotte.Core` dequantizes one row at a time, only when a kernel
-needs it; see the [matrix-vector product](kernels.md#matrix-vector-product).
+needs it; see the [matrix-vector product](kernels/matvec.md#matrix-vector-product).
 
 ## Native Quantization
 

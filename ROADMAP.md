@@ -160,7 +160,7 @@ about 2 GiB, so the matrix products dominate the cost.
   compensation with ggml's RoPE scaling; `yarn_log_multiplier` = 1 cancels
   the correction for this model. Checked against a compiled ggml CPU kernel
   and retained numerical fixtures, including position 262,143. See the
-  [formulas and validation](docs/kernels.md#yarn-context-extension) and
+  [formulas and validation](docs/kernels/yarn.md#yarn-context-extension) and
   [runnable example](examples/Yarn.fsx).
 - [x] **G.3** Attention temperature: after RoPE, multiply Q by
   `1 + β × ln(floor(p / L) + 1)`, where `p` is the token position,
@@ -191,7 +191,7 @@ about 2 GiB, so the matrix products dominate the cost.
   (subtracting the maximum) and used to weight the cached values, with F32
   accumulation. `IAttentionKernel` and the CPU implementation support prompt batches
   and single-token decoding, with all nine cache encodings. See the
-  [walkthrough](docs/kernels.md#grouped-query-attention) and `examples/Attention.fsx`.
+  [walkthrough](docs/kernels/attention.md#grouped-query-attention) and `examples/Attention.fsx`.
 
 Not needed for the target model: the `mistral3` graph also handles biases and
 mixture-of-experts layers, but the file has neither, and the architecture has
@@ -202,17 +202,17 @@ soft-capping.
 
 - [x] **H.1** Matrix products use safe `Vector128`/`Vector256` intrinsics with
   a scalar fallback and parallel contiguous row partitions for large workloads.
-  Double-precision arithmetic is preserved; see [measurements and validation](docs/kernels.md#measure-parallel-matrix-products).
+  Double-precision arithmetic is preserved; see [measurements and validation](docs/kernels/matrix-products.md#measure-parallel-matrix-products).
 - [x] **H.2** K-quant products quantize each input token once to transient Q8_K,
   share it across row workers and accumulate integer products with block scales.
   All five K encodings are supported; `DecodedFloat` preserves the H.1 reference
-  policy. See [error bounds, fallback rules and measurements](docs/kernels.md#quantize-activations-once-for-k-quant-products).
+  policy. See [error bounds, fallback rules and measurements](docs/kernels/matrix-products.md#quantize-activations-once-for-k-quant-products).
 - [x] **H.3** `LogitSelection` limits the final feed-forward and LM head to needed
   positions; generation skips intermediate batch logits and downloads only the
   last row. CPU online fused attention replaces the score buffer with running
   softmax/value sums. Full-output and reference-attention paths remain available;
   see [selected logits](docs/forward-pass.md#request-only-the-logits-you-need) and
-  [attention measurements](docs/kernels.md#online-attention-and-h3-measurements).
+  [attention measurements](docs/kernels/attention.md#online-attention-and-h3-measurements).
   GPU tiling and sharing decoded K/V between query heads remain future work.
 
 ### I. Inference and generation

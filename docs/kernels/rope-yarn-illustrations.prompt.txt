@@ -6,14 +6,14 @@ Local contracts: src/Marmotte.Core/RotaryEmbedding.fs and src/Marmotte.Core/Comp
 Status snapshot: CPU RoPE is implemented; YaRN preparation remains planned.
 Generated with the built-in image_gen tool. Numerical examples independently checked.
 
-=== User-requested correction to kernel-yarn.png ===
+=== User-requested correction to yarn.png ===
 Edit this YaRN infographic to remove implementation planning status, as requested by its author. Preserve all formulas, numbers, examples, diagram arrows, layout, typography and colors except the specified status labels.
 1. Remove the entire upper-right amber dashed badge that says "Marmotte: YaRN preparation is PLANNED". Fill that area naturally with the existing plain white background. Do not replace the badge with another status.
 2. In the bottom "Marmotte connection" pipeline, remove the word "PLANNED" from the first box. Keep the text "Corrected frequencies + magnitude + pairing" and "(YaRN preparation)" centered clearly. Change this box's dashed border to a normal solid amber border so it does not denote planned work.
 There must be no occurrence of "planned", "PLANNED" or "not implemented" anywhere on this image.
 Do not change the formulas, numeric example, caution about the model-dependent magnitude, the existing RotaryEmbedding.Create(...) and IRopeKernel.Rope(...) labels, or any other content. Preserve the full canvas without cropping.
 
-=== kernel-rope.png ===
+=== rope.png ===
 
 Use case: infographic-diagram.
 Create an original technical teaching infographic for the Marmotte F# repository, aimed at a developer new to neural-network position encodings. All visible text must be in English. Landscape 3:2 format, ideally 1536x1024 or higher. Match a clean educational series: near-white background, navy title, blue input values, purple parameters, amber transformations, teal outputs, large readable text, generous space. Three clear numbered panels, with formulas, a small numerical example and an intuitive explanation. Exact identifiers and arithmetic matter more than decoration. No photos, logos, mascots, dense paragraphs or unlabeled plots. Scientific content must be correct. Draw new diagrams; do not reproduce any paper's figure. Use approximately signs for rounded values. Radians are not degrees.
@@ -54,7 +54,7 @@ Footer strip: "Pairing follows the model: adjacent (0,1),(2,3) or split halves (
 Status footer: "Marmotte CPU RoPE: implemented • CUDA / Metal: placeholders".
 No YaRN amplitude adjustment in this image. Preserve all exact numbers and signs.
 
-=== kernel-yarn.png ===
+=== yarn.png ===
 
 Use case: infographic-diagram.
 Create an original technical teaching infographic for the Marmotte F# repository, aimed at a developer new to neural-network position encodings. All visible text must be in English. Landscape 3:2 format, ideally 1536x1024 or higher. Match a clean educational series: near-white background, navy title, blue input values, purple parameters, amber transformations, teal outputs, large readable text, generous space. Three clear numbered panels, with formulas, a small numerical example and an intuitive explanation. Exact identifiers and arithmetic matter more than decoration. No photos, logos, mascots, dense paragraphs or unlabeled plots. Scientific content must be correct. Draw new diagrams; do not reproduce any paper's figure. Use approximately signs for rounded values. Radians are not degrees.

@@ -86,7 +86,7 @@ two-byte inputs and output, rounding to nearest with ties to even. Overflow
 produces infinity; subnormals and signed zero are supported. NaN payloads after
 arithmetic are unspecified. The runtime allocates two bytes per F16 element
 and transfers raw bits through `uint16[]` staging, preserving even NaN payloads
-without an F32 buffer. See [Half arithmetic and memory use](../../../../docs/kernels.md#half-add-and-memory-use).
+without an F32 buffer. See [Half arithmetic and memory use](../../../../docs/kernels/add.md#half-add-and-memory-use).
 
 [CudaTests.fs](../../../../tests/Marmotte.Backends.Tests/CudaTests.fs) covers
 F32. [HalfTests.fs](../../../../tests/Marmotte.Backends.Tests/HalfTests.fs)

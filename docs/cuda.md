@@ -636,7 +636,7 @@ The F16 GPU function uses `__hadd` with `half*` inputs and output, rounding to
 nearest with ties to even. Storage and transfers stay at two bytes per element.
 The matching CPU implementation owns `Half[]`, although individual additions
 can use scalar F32 arithmetic before rounding back to Half. See
-[Half Add and memory use](kernels.md#half-add-and-memory-use) for a shared F#
+[Half Add and memory use](kernels/add.md#half-add-and-memory-use) for a shared F#
 example, numerical behavior and the official arithmetic references.
 
 The F# project shows native sources and the developer guide. CMake compiles

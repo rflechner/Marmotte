@@ -144,7 +144,7 @@ they do not execute a specialized ternary product. `RowEncoder` rejects
 K-quants, and the GGUF quantizer writes Q4_0 or Q8_0. BitNet ternary execution
 and its storage encodings are not implemented.
 
-See [the kernel contracts](kernels.md#embedding-lookup),
+See [the kernel contracts](kernels/embedding.md#embedding-lookup),
 [tensor encoding sizes](../src/Marmotte.Core/Tensors.fs), and
 [CPU arithmetic](../src/Marmotte.Cpu/CpuKernels.fs). Binary layouts and the
 primary references linked above were checked on 2026-10-25. The illustrations

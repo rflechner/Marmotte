@@ -16,14 +16,6 @@
     <File Path="docs\inference-pipeline.md" />
     <File Path="docs\inference-pipeline.png" />
     <File Path="docs\kernels.md" />
-    <File Path="docs\kernel-add.png" />
-    <File Path="docs\kernel-rmsnorm.png" />
-    <File Path="docs\kernel-embedding.png" />
-    <File Path="docs\kernel-matvec.png" />
-    <File Path="docs\kernel-matmul.png" />
-    <File Path="docs\kernel-rope.png" />
-    <File Path="docs\kernel-yarn.png" />
-    <File Path="docs\rope-yarn-illustrations.prompt.txt" />
     <File Path="docs\safetensors-format.png" />
     <File Path="docs\safetensors.md" />
     <File Path="docs\tensor-storage-modes.png" />
@@ -37,8 +29,29 @@
     <File Path="ROADMAP.md" />
   </Folder>
   <Folder Name="/docs/kernels/">
+    <File Path="docs/kernels/add.md" />
+    <File Path="docs/kernels/add.png" />
+    <File Path="docs/kernels/attention-temperature.md" />
+    <File Path="docs/kernels/attention.md" />
+    <File Path="docs/kernels/attention.svg" />
+    <File Path="docs/kernels/copy-rows.md" />
+    <File Path="docs/kernels/embedding.md" />
+    <File Path="docs/kernels/embedding.png" />
+    <File Path="docs/kernels/key-value-cache.md" />
+    <File Path="docs/kernels/matmul.md" />
+    <File Path="docs/kernels/matmul.png" />
+    <File Path="docs/kernels/matrix-products.md" />
+    <File Path="docs/kernels/matvec.md" />
+    <File Path="docs/kernels/matvec.png" />
+    <File Path="docs/kernels/rmsnorm.md" />
+    <File Path="docs/kernels/rmsnorm.png" />
+    <File Path="docs/kernels/rope-yarn-illustrations.prompt.txt" />
+    <File Path="docs/kernels/rope.md" />
+    <File Path="docs/kernels/rope.png" />
     <File Path="docs/kernels/swiglu.md" />
     <File Path="docs/kernels/swiglu.png" />
+    <File Path="docs/kernels/yarn.md" />
+    <File Path="docs/kernels/yarn.png" />
   </Folder>
   <Folder Name="/examples/">
     <File Path="examples/Add.fsx" />

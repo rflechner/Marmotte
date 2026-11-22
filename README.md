@@ -57,7 +57,7 @@ context). Prompts must fit the selected context. The F32 key/value cache is
 allocated up front; keep the context small for initial CPU experiments. Weights
 are memory-mapped read-only. K-quant matrix products now use transient Q8_K
 activations by default; this introduces small additional rounding (see
-[H.2 arithmetic policies](docs/kernels.md#quantize-activations-once-for-k-quant-products)).
+[H.2 arithmetic policies](docs/kernels/matrix-products.md#quantize-activations-once-for-k-quant-products)).
 CPU execution still processes every weight row, so a
 large model can take substantial time before the first token.
 
@@ -271,13 +271,13 @@ The three backend projects share these contracts:
   retain the stored payload, `Add`, SwiGLU and RMS normalization kernels
   vectorized with `Vector<T>`, embedding lookup, and matrix-vector and
   matrix-matrix products with safe intrinsics and parallel weight rows (see
-  [H.1 measurements](docs/kernels.md#measure-parallel-matrix-products)). K-quant
+  [H.1 measurements](docs/kernels/matrix-products.md#measure-parallel-matrix-products)). K-quant
   products use Q8_K activations and integer arithmetic by default; other products
   use Core's `RowDecoder`. `CpuBackend(CpuMatrixProductMode.DecodedFloat)` retains
   the reference path. Also includes rotary position embedding, attention temperature and a
   key-value cache and causal grouped-query attention. Online fused attention is
   the default; `CpuAttentionMode.Reference` preserves the score-buffer algorithm.
-  See [H.3 measurements](docs/kernels.md#online-attention-and-h3-measurements).
+  See [H.3 measurements](docs/kernels/attention.md#online-attention-and-h3-measurements).
 - `Marmotte.Cuda`: owned F32 or F16 device tensors, transfers, Add and SwiGLU through a
   native CUDA library. Build it automatically with `dotnet build Marmotte.slnx -p:MarmotteBuildCuda=true`.
   Native compilation and GPU tests are optional; see the
@@ -294,7 +294,7 @@ row-major shapes and encodings (all F32 or all F16). `Allocate(shape)` remains F
 use `Allocate(shape, TensorEncoding.F16)` and the `Half` overloads of `Upload` and
 `Download` for two-byte F16 storage on CPU or CUDA. Transfers preserve the stored
 bits; no implicit conversion is performed. Other CPU kernels still require F32.
-See [Half Add and memory use](docs/kernels.md#half-add-and-memory-use).
+See [Half Add and memory use](docs/kernels/add.md#half-add-and-memory-use).
 In-place addition is supported. Operations on one backend take
 effect in submission order and may return before they complete; `Download` and
 `Synchronize` wait for them. Tensors belong to the backend instance that created
@@ -326,10 +326,10 @@ appends positions to a layer, or replaces them and discards the later ones;
 4,096-token context, the cache takes 832 MiB in F32, 416 MiB in F16 or BF16,
 221 MiB in Q8_0, 156 MiB in Q5_1, 143 MiB in Q5_0, 130 MiB in Q4_1, and 117 MiB
 in IQ4_NL or Q4_0. Quantized encodings are lossy: see the
-[precision notes](docs/kernels.md#key-value-cache).
+[precision notes](docs/kernels/key-value-cache.md#key-value-cache).
 `Attention(cache, layer, position, queries, destination)` reads cached heads directly,
 scales scores, applies a causal mask and computes a stable softmax with F32
-accumulation. See the [grouped-query attention walkthrough](docs/kernels.md#grouped-query-attention).
+accumulation. See the [grouped-query attention walkthrough](docs/kernels/attention.md#grouped-query-attention).
 
 `EmbeddingLookup(weights, tokenIds, destination)` decodes selected vocabulary
 rows into a preallocated F32 tensor of shape `[tokenIds.Length; weights.Columns]`,

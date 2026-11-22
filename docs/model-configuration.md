@@ -83,7 +83,7 @@ Metadata names, types and head dimensions were checked against the
 and the [mistral3 model definition](https://github.com/ggml-org/llama.cpp/blob/master/src/models/mistral3.cpp)
 on 2026-11-08. The implementation is original F#; its deliberately restricted
 acceptance policy is described above. YaRN defaults and magnitude follow the
-[existing kernel contract and reference checks](kernels.md#yarn-context-extension).
+[existing kernel contract and reference checks](kernels/yarn.md#yarn-context-extension).
 
 `ModelConfigurationTests` uses small typed metadata maps, including the target's
 hyperparameters, and checks defaults, missing keys, exact types, invalid numbers,

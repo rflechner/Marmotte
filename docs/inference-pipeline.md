@@ -132,7 +132,7 @@ The cache grows by one key row and one value row per layer and token, so its
 memory is proportional to the context length. Storing keys and values in F16,
 Q8_0 or Q4_0 instead of F32 divides it by about 2, 4 or 7, at the cost of
 precision; Marmotte, like llama.cpp, lets keys and values use different
-encodings. See the [key-value cache](kernels.md#key-value-cache).
+encodings. See the [key-value cache](kernels/key-value-cache.md#key-value-cache).
 
 For uniform full-attention layers, this approximate payload size follows from
 counting both K and V elements:
@@ -165,7 +165,7 @@ finished answers, and must match the exact processed prefix and positions.
 | Execution tensors and kernels | Contiguous F32 contracts with CPU Add, SwiGLU, RMS normalization, MatVec, MatMul, RoPE and attention temperature, plus YaRN parameter preparation in Core. CUDA implements F32 device storage, transfers and Add; other CUDA kernels and Metal remain placeholders. See [kernel contracts](kernels.md) and the [CUDA guide](cuda.md) |
 | Token embeddings | CPU lookup decodes selected rows in all seven runtime encodings into F32, without scaling; CUDA/Metal placeholders |
 | Tokenizer | Planned |
-| KV cache | CPU cache storing keys and values in F32, F16, BF16, Q8_0, Q5_1, Q5_0, Q4_1, IQ4_NL or Q4_0, chosen separately; CUDA/Metal placeholders. See the [key-value cache](kernels.md#key-value-cache) |
+| KV cache | CPU cache storing keys and values in F32, F16, BF16, Q8_0, Q5_1, Q5_0, Q4_1, IQ4_NL or Q4_0, chosen separately; CUDA/Metal placeholders. See the [key-value cache](kernels/key-value-cache.md#key-value-cache) |
 | Attention and response generation | Planned; CPU first, then CUDA/Metal |
 
 The illustration simplifies a text-only generation path. It does not specify

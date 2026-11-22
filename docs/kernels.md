@@ -7,7 +7,13 @@ activation of the feed-forward layer, RMS normalization, embedding lookup from
 stored weights, matrix-vector and matrix-matrix products with stored weights,
 rotary position embedding, and the attention temperature applied to queries. A
 key-value cache keeps the keys and values of past positions in an encoding
-chosen separately for each, from F32 down to Q4_0.
+chosen separately for each, from F32 down to Q4_0. Grouped-query attention
+reads that cache, and row copying selects activations for later computation.
+
+Each operation has a dedicated guide in `docs/kernels/`. Start with Add,
+RMSNorm and SwiGLU for basic operations, then follow embedding lookup,
+matrix products, RoPE and attention. Shared tensor ownership and ordering
+contracts remain on this page.
 
 ## Reading the Formulas
 
@@ -17,7 +23,7 @@ think of a tensor as an array with a shape: `[3]` holds three values, and
 **Activations** are intermediate values computed for the current input;
 **weights** are the model's learned parameters, reused across inputs.
 
-Each kernel below has an illustrated walkthrough with small, invented inputs.
+The guides below use small, invented inputs and reuse the existing illustrations.
 Read the input shapes first, follow one output value, then repeat the operation
 over the remaining positions or rows. Indexes start at zero. Approximate values
 in the pictures are rounded to four decimal places for display; calculations
@@ -37,28 +43,32 @@ use unrounded intermediates.
 
 | Kernel or technique | What one output represents | Walkthrough |
 | --- | --- | --- |
-| Add | Sum of two values at the same position | [Matching positions](#add-and-buffer-reuse) |
+| Add | Sum of two values at the same position | [Matching positions](kernels/add.md#add-and-buffer-reuse) |
 | SwiGLU | One value multiplied by a smooth gate | [Three scalar steps](kernels/swiglu.md) |
-| RMSNorm | One value rescaled using its row's magnitude and a learned weight | [Measure, normalize, scale](#rms-normalization) |
-| EmbeddingLookup | A feature copied or decoded from the vocabulary row selected by an ID | [Select rows](#embedding-lookup) |
-| MatVec | Sum of products between one weight row and one input vector | [One dot product](#matrix-vector-product) |
-| MatMul | The same dot product for one token in a batch | [Reuse rows across tokens](#matrix-matrix-product) |
-| Rope | One value of a pair turned by an angle that grows with the token's position | [Rotate pairs](#rotary-position-embedding) |
-| YaRN (parameter preparation) | Adjusted RoPE frequencies and an attention magnitude factor | [Extend context](#yarn-context-extension) |
-| AttentionTemperature | One query value multiplied by a factor of its position block | [Scale queries](#attention-temperature) |
-| StoreKeyValues / ReadKeyValues | One cached key or value of a past position, encoded and decoded back to F32 | [Key-value cache](#key-value-cache) |
+| RMSNorm | One value rescaled using its row's magnitude and a learned weight | [Measure, normalize, scale](kernels/rmsnorm.md) |
+| EmbeddingLookup | A feature copied or decoded from the vocabulary row selected by an ID | [Select rows](kernels/embedding.md#embedding-lookup) |
+| CopyRows | A value copied from a consecutive range of activation rows | [Select token rows](kernels/copy-rows.md) |
+| MatVec | Sum of products between one weight row and one input vector | [One dot product](kernels/matvec.md#matrix-vector-product) |
+| MatMul | The same dot product for one token in a batch | [Reuse rows across tokens](kernels/matmul.md#matrix-matrix-product) |
+| Rope | One value of a pair turned by an angle that grows with the token's position | [Rotate pairs](kernels/rope.md#rotary-position-embedding) |
+| YaRN (parameter preparation) | Adjusted RoPE frequencies and an attention magnitude factor | [Extend context](kernels/yarn.md#yarn-context-extension) |
+| AttentionTemperature | One query value multiplied by a factor of its position block | [Scale queries](kernels/attention-temperature.md#attention-temperature) |
+| StoreKeyValues / ReadKeyValues | One cached key or value of a past position, encoded and decoded back to F32 | [Key-value cache](kernels/key-value-cache.md#key-value-cache) |
+| Attention | A weighted combination of the visible cached values for one query head | [Grouped-query attention](kernels/attention.md) |
 
-All eight kernels and the key-value cache have CPU implementations. CUDA also
+For scheduling, arithmetic policies and measurements shared by MatVec and
+MatMul, continue with [CPU matrix products](kernels/matrix-products.md).
+
+All listed kernels and the key-value cache have CPU implementations. CUDA also
 implements Add and SwiGLU, both in F32 and F16, F32/F16 device storage/transfers
 and stored weight uploads in all fourteen runtime encodings; its remaining kernels and Metal
 remain placeholders. See the [CUDA build and implementation guide](cuda.md).
 Core implements YaRN parameter preparation. Attention temperature has a worked
-example in text. The seven walkthrough images on this page, and the one in the
-[SwiGLU guide](kernels/swiglu.md), were
+example in text. The eight walkthrough images in the dedicated
+[kernel guides](#reading-the-formulas) were
 generated with the built-in `image_gen` tool, visually reviewed, and their
-numerical examples checked independently. The prompts for the
-[first six kernels](kernel-illustrations.prompt.txt), SwiGLU included, and for
-[RoPE and YaRN](rope-yarn-illustrations.prompt.txt) are kept in this folder.
+numerical examples checked independently. The generation prompts for
+[RoPE and YaRN](kernels/rope-yarn-illustrations.prompt.txt) are kept alongside those guides.
 The older overview below has its own status note.
 
 ## From GGUF to Add
@@ -127,7 +137,7 @@ them one row at a time.
 | Owned tensor storage | Private `single array` or `Half array` | Private F32 or F16 device allocation | Future Metal buffer |
 | `Allocate` | Zero-filled array | Device allocation, zeroed on the stream | `NotImplementedException` |
 | `Upload` / `Download` | Explicit host copies | Explicit copies through managed staging arrays, complete on return | `NotImplementedException` |
-| `UploadWeights` | Retains the payload without copying | `NotImplementedException` | `NotImplementedException` |
+| `UploadWeights` | Retains the payload without copying | Stored-encoding device upload with bounded staging | `NotImplementedException` |
 | `Synchronize` | Nothing to wait for | Waits for the instance's stream | `NotImplementedException` |
 | `IAddKernel.Add` | F32: safe `Vector<T>` loop with a scalar tail; F16: scalar Half loop | Separate F32/F16 kernels, 256 threads per block | `NotImplementedException` |
 | `ISwiGluKernel.SwiGlu` | Safe `Vector<T>` loop with `Vector.Exp`, remainder in one zero-padded vector | F32/F16 kernels with the device `expf`, 256 threads per block; F16 is computed in F32 and rounded once | `NotImplementedException` |
@@ -140,11 +150,12 @@ them one row at a time.
 | `IAttentionTemperatureKernel.ApplyAttentionTemperature` | One F32 factor per token, `Vector<T>` multiplication | `NotImplementedException` | `NotImplementedException` |
 | `AllocateKeyValueCache` | Whole capacity up front: one byte array per layer for keys, one for values | `NotImplementedException` | `NotImplementedException` |
 | `IKeyValueCacheKernel` | Encodes whole batches with `RowEncoder`, reads them back with `RowDecoder` | `NotImplementedException` | `NotImplementedException` |
+| `IAttentionKernel.Attention` | Causal grouped-query attention over cached heads; online and reference modes | `NotImplementedException` | `NotImplementedException` |
 | SDK/driver required today | None | Toolkit for native builds, driver/GPU for non-empty tensors | None |
 
 `ITensorBackend` inherits `IAddKernel`, `ISwiGluKernel`, `IRmsNormKernel`,
 `IEmbeddingKernel`, `IRowCopyKernel`, `IMatVecKernel`, `IMatMulKernel`, `IRopeKernel`,
-`IAttentionTemperatureKernel` and `IKeyValueCacheKernel`, so orchestration can
+`IAttentionTemperatureKernel`, `IKeyValueCacheKernel` and `IAttentionKernel`, so orchestration can
 call each kernel directly on the backend.
 A consumer needing a single operation can accept its kernel interface directly.
 CUDA uses a small native library through P/Invoke. Construction and empty tensors
@@ -154,105 +165,11 @@ and unfinished CUDA operations fail explicitly, without a CPU fallback.
 
 ## Add and Buffer Reuse
 
-![Add: at each of three positions, add the two input values; [1, -2, 3] plus [4, 5, -1] gives [5, 3, 2]](kernel-add.png)
-
-[Open the Add illustration](kernel-add.png).
-
-Read `i` as the position being processed. At position `1`, read `-2` from
-`left` and `5` from `right`, then write `3` to the destination. Every position
-produces its own output; the output keeps the input shape. **In-place** means
-reusing an input's storage for that destination once its values have been read.
-
-```fsharp
-open System
-open Marmotte.Core
-open Marmotte.Cpu
-
-let addExample () =
-    use backend = new CpuBackend() :> ITensorBackend
-    let shape = TensorShape.Create [| 2; 3 |]
-    use left = backend.Upload(shape, ReadOnlyMemory<single>([| 1.0f; 2.0f; 3.0f; 4.0f; 5.0f; 6.0f |]))
-    use right = backend.Upload(shape, ReadOnlyMemory<single>([| 10.0f; 20.0f; 30.0f; 40.0f; 50.0f; 60.0f |]))
-    use destination = backend.Allocate(shape)
-
-    backend.Add(left, right, destination)
-
-    let result = Array.zeroCreate<single> shape.ElementCount
-    backend.Download(destination, result.AsMemory())
-    result // [| 11.0f; 22.0f; 33.0f; 44.0f; 55.0f; 66.0f |]
-```
-
-`Add(left, right, destination)` writes `destination[i] = left[i] + right[i]`.
-All three tensors must have exactly the same dimensions and encoding, not just
-the same number of elements. There is no broadcasting, type promotion or strided view.
-Empty tensors are valid no-ops; scalars add to scalars. NaN and infinities follow
-ordinary F32 addition rather than being rejected as malformed model data.
-
-For F32, the CPU backend processes `Vector<single>.Count` values at a time: four with
-ARM64 NEON, eight with AVX2. It reinterprets its arrays as vectors with
-`MemoryMarshal.Cast`, without unsafe code, and adds the remaining values one by
-one. Each lane performs the same single-precision addition as a scalar loop, so
-the results are identical. Kernels that reduce values, such as dot products,
-will not have that property: vectorizing them changes the summation order, and
-their tests will need tolerances.
-
-The destination is explicit so a caller can reuse its buffer. Exact aliasing is
-supported: `backend.Add(hidden, residual, hidden)` updates the hidden state in
-place, and `backend.Add(hidden, hidden, hidden)` doubles it. Otherwise inputs are
-unchanged. All arguments are validated before any destination write.
-
-Every tensor must come from the **same backend instance** executing the kernel.
-`BackendKind.Cpu` alone is insufficient: even another `CpuBackend` instance is a
-different ownership domain. This leaves room for distinct devices and contexts
-without treating their allocations as interchangeable. An explicit download and
-upload is currently the only way to move values between instances.
+See the [Add and Buffer Reuse guide](kernels/add.md#add-and-buffer-reuse).
 
 ## Half Add and memory use
 
-F16 is IEEE binary16, represented by .NET's
-[`System.Half`](https://learn.microsoft.com/dotnet/api/system.half) and CUDA's
-`half`. CPU and CUDA implement Add for this format, including in-place Add.
-The same code works with either backend:
-
-```fsharp
-let addHalf (backend: ITensorBackend) =
-    let shape = TensorShape.Create [| 3 |]
-    let leftValues = [| 1.0f; 2.0f; 3.0f |] |> Array.map Half.op_Explicit
-    let rightValues = [| 10.0f; 20.0f; 30.0f |] |> Array.map Half.op_Explicit
-    use left = backend.Upload(shape, ReadOnlyMemory<Half>(leftValues))
-    use right = backend.Upload(shape, ReadOnlyMemory<Half>(rightValues))
-    use destination = backend.Allocate(shape, TensorEncoding.F16)
-    backend.Add(left, right, destination)
-    let result = Array.zeroCreate<Half> shape.ElementCount
-    backend.Download(destination, result.AsMemory())
-    result // Half values: 11, 22, 33
-```
-
-The conversion of literals above is explicit application code. Internally, an
-F16 tensor has **2 × element count bytes of payload**, compared with 4 × count
-for F32; allocator and object overhead are additional. The CPU owns `Half[]`.
-CUDA allocates `count * sizeof(half)` bytes and copies the raw bits through a
-temporary `uint16[]` staging array, also two bytes per element. Neither backend
-creates an F32 shadow tensor or F32 transfer buffer. Upload and Download preserve
-all bits, including signed zero and NaN payloads.
-
-Storage precision and arithmetic implementation are distinct. The safe CPU
-loop uses `Half` addition; the runtime can promote individual operands to scalar
-F32 and round back to Half. This does not expand the tensor into an F32 array.
-CUDA uses [`__hadd`](https://docs.nvidia.com/cuda/archive/13.0.0/cuda-math-api/cuda_math_api/group__CUDA__MATH____HALF__ARITHMETIC.html)
-in a kernel with `half*` inputs and output. Both paths round to nearest F16,
-ties to even, retain subnormal results, and produce infinity on overflow.
-Arithmetic NaN payloads are unspecified. This smaller format has less range
-and precision; it is not an automatic performance improvement, and no speedup
-is claimed for the scalar CPU implementation.
-
-`HalfTests.fs` checks hand-specified binary16 results at rounding boundaries,
-overflow, normal/subnormal transitions, signed zero, infinities and NaNs, as
-well as transfer of all 65,536 bit patterns. It exercises the same cases on CPU
-and, when explicitly enabled, CUDA. Other CPU kernels still require F32 and
-reject F16 with `NotSupportedException` before writing; mixed-format Add and
-incorrect Download overloads raise `ArgumentException`, including for empties.
-The Metal backend remains a placeholder for both formats.
+See the [Half Add and memory use guide](kernels/add.md#half-add-and-memory-use).
 
 ## SwiGLU
 
@@ -262,825 +179,75 @@ tensor contract and CPU numerical and performance notes.
 
 ## RMS Normalization
 
-![RMSNorm: square [3, 4], average to 12.5, divide the original row by sqrt(12.5 + 0.01), then multiply by [2, 0.5] to obtain approximately [1.6964, 0.5655]](kernel-rmsnorm.png)
-
-[Open the RMSNorm illustration](kernel-rmsnorm.png).
-
-For the example row `[3; 4]`, the mean square is `(9 + 16) / 2 = 12.5`.
-With the teaching value `epsilon = 0.01`, divide both original values by
-`sqrt(12.51)`, giving approximately `[0.8482; 1.1309]`. Multiply by the learned
-column weights `[2; 0.5]` to obtain approximately `[1.6964; 0.5655]`.
-
-**RMS** means *root mean square*. Each row gets its own magnitude, while the
-learned weight vector is shared across rows. RMSNorm does not subtract the row
-mean. The positive `epsilon`, inside the square root, prevents division by zero
-for an all-zero row; the model supplies its actual value.
-
-Each block normalizes the hidden state before attention and before the
-feed-forward layer, and the model normalizes it once more before the LM head.
-`RmsNorm(input, weight, epsilon, destination)` normalizes every row along the
-last dimension, then multiplies each column by its weight:
-
-```text
-destination[r, c] = input[r, c] / sqrt(mean(input[r, *]²) + epsilon) × weight[c]
-```
-
-See [Root Mean Square Layer Normalization](https://arxiv.org/abs/1910.07467).
-For the target model, rows have 3,072 values, `epsilon` is
-`attention.layer_norm_rms_epsilon` (1e-5), and `weight` is one of the F32
-`attn_norm`, `ffn_norm` or `output_norm` vectors. `input` and `destination` have
-the same shape, of rank 1 or more, so one call can normalize every token of a
-prompt. `weight` is an F32 `ITensor` of shape `[columns]`, not an
-`IWeightTensor`: these vectors are small and already F32, so a caller can read
-their payload and upload them once. `epsilon` must be finite and positive, so
-that an all-zero row stays finite. Ownership, exact aliasing and validation
-follow `Add`; empty tensors are valid no-ops.
-
-The mean of the squares is a reduction, so its result depends on the summation
-order. The CPU backend widens each vector to double precision and sums the
-squares in two vector accumulators. This keeps rows of thousands of values
-accurate, and squares beyond the F32 range, such as that of 1e30, do not
-overflow. The scale `1 / sqrt(mean + epsilon)` is computed in double precision
-and rounded once, then each value is multiplied by the scale and by its weight
-in F32. Over 1,000 random rows of 3,072 values, the largest relative error
-against a double-precision reference was 1.6e-7, and tests use a relative
-tolerance of 1e-6. NaN or infinite values make their row's results NaN or zero,
-as the formula gives; other rows are unaffected.
-
-On an Apple M4 Max, single-threaded in Release, one row of 3,072 values takes
-about 0.73 µs, against 3.3 µs for the same algorithm without vectors, which is
-limited by its single chain of additions. The 53 normalizations of one token
-take about 39 µs.
+`RmsNorm(input, weight, epsilon, destination)` normalizes each row along the
+last dimension, then applies a learned weight per column. The
+[RMSNorm guide](kernels/rmsnorm.md) explains the three steps with an
+illustration, a runnable F# example, the tensor contract and CPU numerical notes.
 
 ## Embedding Lookup
 
-![Embedding lookup: IDs [2, 0, 2] select vocabulary rows 2, 0 and 2 in order, producing three rows of F32 activations](kernel-embedding.png)
-
-[Open the embedding illustration](kernel-embedding.png).
-
-Think of the vocabulary matrix as a table whose row number is a token ID.
-With IDs `[2; 0; 2]`, copy or decode row `2`, then row `0`, then row `2` again.
-The example produces rows `[2; 2; 2]`, `[1; 0; 2]`, `[2; 2; 2]`. The token's
-**position** chooses the destination row; its **ID** chooses the weight row.
-Repeated IDs therefore produce repeated embeddings, and no summation occurs.
-The picture uses F32 weights so that every value is directly visible; quantized
-weights require decoding the selected rows to recover their F32 values.
-
-`EmbeddingLookup(weights, tokenIds, destination)` selects vocabulary rows:
-`destination[i, column] = weights[tokenIds[i], column]`. It applies no scaling,
-normalization or special handling for padding tokens. IDs are zero-based signed
-integers in `[0, weights.Rows)` and can repeat or arrive in any order. The caller
-chooses the matrix; the kernel does not infer architecture or tensor names.
-
-```fsharp
-let tokenIds = [| 7; 0; 7 |]
-use activations = backend.Allocate(TensorShape.Create [| tokenIds.Length; weights.Columns |])
-backend.EmbeddingLookup(weights, ReadOnlyMemory<int>(tokenIds), activations)
-```
-
-Destination must have exactly `[tokenIds.Length; weights.Columns]` dimensions,
-including `[1; Columns]` for one token. An empty batch requires `[0; Columns]`
-and performs no writes. Both tensors must be live and owned by the executing
-backend instance. Shape and ownership errors raise `ArgumentException`, null
-tensors raise `ArgumentNullException`, and an out-of-range ID raises
-`ArgumentOutOfRangeException` identifying its position. Disposal raises
-`ObjectDisposedException`. All arguments and every ID are checked before any
-output is written, including for an empty batch.
-
-The CPU lookup decodes each selected row with Core's `RowDecoder`, through
-`WeightMatrix.DecodeRow`, which supports every current `TensorEncoding`: F32,
-F16, BF16, Q4_0, Q4_1, Q5_0, Q5_1, Q8_0, IQ4_NL, Q2_K, Q3_K, Q4_K, Q5_K and
-Q6_K. It uses safe spans and explicit
-little-endian reads, writing only requested rows directly into the destination,
-with no temporary decoded matrix, row or block buffers. Stored weights remain unchanged. `WeightMatrix`
-validates the payload length and whole blocks per row before upload; the source
-still loads the complete encoded matrix into a managed array. Lookup does not
-provide memory mapping or lazy file reads. Floating-point NaN, infinities,
-subnormals and signed zeros follow F32 conversion and arithmetic.
-
-The block layouts and reconstruction formulas were checked on 2026-10-25 against
-[GGML block definitions](https://github.com/ggml-org/llama.cpp/blob/master/ggml/src/ggml-common.h)
-and [GGML reconstruction formulas](https://github.com/ggml-org/llama.cpp/blob/master/ggml/src/ggml-quants.c):
-
-| Encoding | Stored block | Reconstruction |
-| --- | --- | --- |
-| Q4_0 | 32 values, 18 bytes | `scale × (q − 8)` with an F16 scale and four-bit `q`; low nibbles precede high nibbles |
-| Q4_1 | 32 values, 20 bytes | `q × scale + minimum` with an F16 scale and minimum and four-bit `q` packed as in Q4_0 |
-| Q5_0 | 32 values, 22 bytes | `scale × (q − 16)` with five-bit `q`: fifth bits in a little-endian 32-bit word, bit `j` for value `j`, then low bits as in Q4_0 |
-| Q5_1 | 32 values, 24 bytes | `q × scale + minimum` with five-bit `q` stored as in Q5_0 |
-| Q8_0 | 32 values, 34 bytes | F16 scale times a signed byte |
-| IQ4_NL | 32 values, 18 bytes | `scale × level[q]` with four-bit indices into 16 non-uniform levels from −127 to 113 (`kvalues_iq4nl`) |
-| Q2_K | 256 values, 84 bytes | Sixteen groups of 16, each with four-bit scale and minimum factors and two-bit `q`; `d × scale × q − dmin × minimum`, with `d` and `dmin` last |
-| Q3_K | 256 values, 110 bytes | Sixteen groups of 16 with signed six-bit scales; `q` is two low bits minus 4 when its separate high bit is clear; `d × scale × q` |
-| Q4_K | 256 values, 144 bytes | Eight groups of 32, each with six-bit scale and minimum factors; `d × scale × q − dmin × minimum` |
-| Q5_K | 256 values, 176 bytes | Q4_K with a fifth bit per value, stored in 32 bytes between the scales and the low bits |
-| Q6_K | 256 values, 210 bytes | Sixteen groups of 16; signed group scales and six-bit values centered at 32; `d × scale × (q − 32)` |
-
-The illustrated [Q2_K, Q3_K and BitNet b1.58 guide](quantization.md) follows
-`twoBitQuant` from packed bits to reconstructed values, and separates K-quant
-storage costs from BitNet's ternary alphabet and training method.
-
-`RowDecoder` is an original scalar reference implementation, without unsafe
-code or a native dependency. Embedding tests specify bytes and expected values
-independently of Marmotte's quantizer, exercising packed fields, signed scales, block and row
-boundaries, repeated IDs, and validation before writing. GPU lookup remains an
-explicit placeholder. Unsupported encodings on a future backend must raise
-`NotSupportedException` before submission.
-
-IDs are consumed or copied before the call returns; callers may immediately
-reuse the host ID buffer, but must not mutate it during the call. The CPU
-operation completes before returning. An asynchronous backend must copy IDs
-before returning and follow the same ordering rules as the other kernels.
+See the [Embedding Lookup guide](kernels/embedding.md#embedding-lookup).
 
 ## Matrix-Vector Product
 
-![MatVec: multiply each row of [[1, 2, -1], [0, 3, 2]] by the vector [2, 1, 4] and sum the products, producing [0, 11]](kernel-matvec.png)
-
-[Open the MatVec illustration](kernel-matvec.png).
-
-A **dot product** multiplies corresponding values and adds those products.
-For the first weight row, `1 × 2 + 2 × 1 + (-1) × 4 = 0`; for the second,
-`0 × 2 + 3 × 1 + 2 × 4 = 11`. Thus a `[2; 3]` weight matrix transforms a
-three-value vector into two outputs, `[0; 11]`. Each output needs the whole
-input vector, so the destination must use different storage from the input.
-Each CPU worker processes one weight row at a time, reusing its temporary
-integer or F32 row buffer. The default K-quant path is described in
-[H.2](#quantize-activations-once-for-k-quant-products).
-
-Every projection of a block and the LM head multiply a stored weight matrix by
-one F32 vector. `MatVec(weights, input, destination)` computes
-
-```text
-destination[r] = Σ weights[r, c] × input[c]
-```
-
-where `weights` is an `IWeightTensor` of `Rows` × `Columns` values, `input` has
-shape `[Columns]` and `destination` has shape `[Rows]`. In the target model,
-`attn_q` maps 3,072 values to 4,096, and the LM head maps them to the 131,072
-logits of the vocabulary. Every tensor must belong to the executing backend.
-`destination` must differ from `input`, because each output reads the whole
-input. Validation and ordering otherwise follow `Add`.
-
-The weights stay in their stored encoding. Core's `RowDecoder` decodes one row
-of any `TensorEncoding` into F32, and `WeightMatrix.DecodeRow` applies it to a
-row of a matrix. Block layouts and arithmetic follow `block_q4_0`, `block_q4_1`,
-`block_q5_0`, `block_q5_1`, `block_q8_0`, `block_iq4_nl`, `block_q2_K`,
-`block_q3_K`, `block_q4_K`, `block_q5_K` and `block_q6_K` in llama.cpp's
-`ggml-common.h`, with the IQ4_NL levels of
-`kvalues_iq4nl`, and its reference `dequantize_row_*` functions in
-`ggml-quants.c`. Tests pack blocks of every quantized encoding by hand from
-chosen scales, minimums and quants, and check every decoded value exactly. The
-Q5_K and Q5_0 tensors of local `Q4_K_S` and `Q4_K_M` files decode to the same
-mean, spread and range as Q4_K or Q8_0 tensors of the same roles, an optional
-check; no local Q2_K or Q3_K file has been decoded yet. Embedding lookup uses
-the same decoder.
-
-In `DecodedFloat` mode, the CPU backend decodes one row at a time per worker into a pooled buffer.
-`CpuMatrixKernels` uses safe `Vector256` or `Vector128` intrinsics when accelerated,
-with a scalar fallback. Operands are widened before multiplication and summed
-in four double-precision vector accumulators. Large products partition weight
-rows between workers; each worker writes distinct output columns. Each output is rounded to F32 once. Because outputs are
-sums of many products that can cancel, tests compare them with a tolerance
-relative to the sum of the absolute products, not to the output itself.
-
-On the local Ministral `Q4_K_M` file, decoded weights have a mean near zero, a
-standard deviation of 0.004 to 0.012 and no NaN or infinity. Applying the LM head
-to the normalized embedding of 10 sample tokens gives each token the highest
-logit. On an Apple M4 Max, single-threaded in Release, a `Q4_K` product takes
-about 0.5 ns per weight and a `Q6_K` product about 0.83 ns: 7 ms for `attn_q`,
-336 ms for the LM head, and about 2.1 s for all matrix products of one token.
-These are historical measurements before H.1. See the updated
-[parallel matrix measurements](#measure-parallel-matrix-products) below;
-vectorizing the decoders remains separate work.
+See the [Matrix-Vector Product guide](kernels/matvec.md#matrix-vector-product).
 
 ## Matrix-Matrix Product
 
-![MatMul: apply the same two weight rows to token inputs [2, 1, 4] and [1, 0, -1], producing rows [0, 11] and [2, -2]; decode each weight row once for both tokens](kernel-matmul.png)
-
-[Open the MatMul illustration](kernel-matmul.png).
-
-Reuse the `MatVec` weights, but provide two token rows: `[2; 1; 4]` and
-`[1; 0; -1]`. Their outputs are `[0; 11]` and `[2; -2]`. Tokens remain
-independent: the kernel sums across feature columns, not across tokens.
-
-The CPU's outer loop selects a weight row and decodes it once; its inner loop
-uses that row for every token. Weight row `0` therefore fills output column `0`
-with `[0; 2]`. Weight row `1` fills column `1` with `[11; -2]`. This is why
-`Y = X × Wᵀ` has shape `[tokens; output features]`. The transpose describes
-the mathematical relationship; the implementation reads stored rows directly
-without creating a transposed copy.
-
-Prompt processing runs the same projections for every token of the prompt.
-`MatMul(weights, input, destination)` multiplies a batch of token rows by the
-same stored weights:
-
-```text
-destination[t, r] = Σ weights[r, c] × input[t, c]
-```
-
-`input` has shape `[tokens; Columns]` and `destination` `[tokens; Rows]`: each
-token's row of `input` gives its row of `destination`, as `MatVec` would for that
-token alone. In matrix terms, this multiplies `input` by the transposed weight
-matrix, because weight rows are the outputs. A batch of zero tokens is a valid
-no-op. `destination` must differ from `input`. Ownership, validation, ordering
-and tolerances follow `MatVec`.
-
-The row preparation cost is what a batch saves. The CPU backend decodes or
-unpacks each weight row once into its buffer, then sums its products with the
-input row of every token. Each output is computed exactly as `MatVec` computes it, so batched and
-token-by-token results are identical on the CPU; a test checks this. `MatVec`
-itself is the one-token case of the same kernel.
-
-Before H.1, on the local Ministral file, single-threaded in Release on an Apple M4 Max:
-
-| Matrix | `MatVec` | 4 tokens | 16 tokens | 64 tokens |
-| --- | --- | --- | --- | --- |
-| `attn_q` (`Q4_K`, 4,096 × 3,072) | 7.4 ms | 2.8 ms per token | 2.2 ms per token | 2.05 ms per token |
-| `ffn_down` (`Q6_K`, 3,072 × 9,216) | 24.6 ms | 9.8 ms per token | 5.8 ms per token | 4.9 ms per token |
-
-With 64-token batches, all matrix products of the model take about 0.57 s per
-prompt token, against about 1.8 s one token at a time in the same run. Beyond
-about 16 tokens, the double-precision sums of products dominate, at about
-0.17 ns per weight and token.
+See the [Matrix-Matrix Product guide](kernels/matmul.md#matrix-matrix-product).
 
 ## Measure parallel matrix products
 
-To measure H.1 independently of model loading, select `DecodedFloat`, build
-.NET 10 in Release and run the synthetic benchmark. No model download is needed:
-
-```sh
-dotnet build src/Marmotte.Cpu -c Release
-DOTNET_TieredCompilation=0 dotnet fsi --optimize+ examples/MatrixProducts.fsx -- --decoded
-DOTNET_PROCESSOR_COUNT=1 DOTNET_TieredCompilation=0 dotnet fsi --optimize+ examples/MatrixProducts.fsx -- --decoded
-```
-
-The second run constrains scheduling to one worker, separating the intrinsics
-change from row parallelism. Disabling tiered compilation keeps short workloads
-from being measured partly before JIT optimization. Each case warms up ten calls,
-then reports the median and range of seven groups of ten calls. Timings include
-row decoding, dot products, pooled row buffers and scheduling; they exclude
-fixture creation, uploads and downloads. One-token `MatMul` uses the same kernel
-as `MatVec`. Checksums help spot differences but do not replace the scalar-reference
-tests. Before/after runs use the same script; the baseline is commit `0cea0b3`.
-
-Recorded on 2026-11-08, ARM64, .NET 10.0.12, 14 logical processors,
-`Vector128.IsHardwareAccelerated = true`, `Vector256.IsHardwareAccelerated = false`:
-
-| Stored encoding, 1,024 × 3,072 | Tokens | Before (ms) | Intrinsics, one worker (ms) | Intrinsics, parallel (ms) | Total speedup |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| F32 | 1 | 1.991 | 1.915 | 0.387 | 5.1× |
-| F32 | 8 | 5.467 | 4.694 | 0.741 | 7.4× |
-| Q4_K | 1 | 1.388 | 1.243 | 0.283 | 4.9× |
-| Q4_K | 8 | 4.800 | 3.994 | 0.681 | 7.0× |
-| Q6_K | 1 | 2.798 | 2.673 | 0.485 | 5.8× |
-| Q6_K | 8 | 6.297 | 5.433 | 0.827 | 7.6× |
-
-Small 16 × 64 F32 matrices remain serial (about 0.001 ms for one token,
-0.002 ms for eight). At 64 × 256, eight-token products use two partitions:
-F32 improves from 0.024 to 0.015 ms, Q4_K from 0.022 to 0.012 ms, and Q6_K
-from 0.029 to 0.016 ms. These measurements motivate a minimum of 65,536
-multiply terms per scheduled partition. They are local kernel timings, not a
-claim about full-model throughput or a universal optimum for other CPUs.
+See the [Measure parallel matrix products guide](kernels/matrix-products.md#measure-parallel-matrix-products).
 
 ### Follow ownership through the workers
 
-For `Rows * Columns * Tokens` work, the number of partitions is bounded by
-`Environment.ProcessorCount`, `Rows`, and `floor(work / 65536)`. Zero or one
-partition runs serially. Contiguous row ranges are computed with 64-bit arithmetic,
-including uneven division; each row belongs to exactly one partition. Each active
-worker rents one row buffer and returns it in `finally`. The pool may round its
-capacity up; scratch storage is O(workers × columns), independent of tokens.
-
-```mermaid
-flowchart LR
-    W["Stored weights: rows 0–3"] --> A["Worker A: decode rows 0–1"]
-    W --> B["Worker B: decode rows 2–3"]
-    X["Shared input: all token rows"] --> A
-    X --> B
-    A --> Y0["Output columns 0–1 for every token"]
-    B --> Y1["Output columns 2–3 for every token"]
-    Y0 --> J["Join workers before returning"]
-    Y1 --> J
-```
-
-The diagram shows a two-partition example. Only memory values cross task
-boundaries; spans are created inside the worker. Weights and inputs are read-only
-throughout the call. The backend retains ownership and rejects aliasing before
-execution, and the parallel loop joins before the call returns, including on
-failure. A batch still decodes each weight row exactly once. There is no native
-pointer, pinning, global mutable scratch buffer or new package dependency.
-
-SIMD may change addition order relative to the former `Vector<T>` implementation,
-so cross-version results are compared with numerical tolerances. Scheduling never
-splits an individual dot product: repeated calls and batch/single-token execution
-remain identical on the same runtime and hardware. Tests cover all fourteen
-encodings, uneven partitions, SIMD boundaries and tails, large cancelling
-products, repeated writes, empty batches, and existing ownership/shape validation.
-The matrix tests also pass with `DOTNET_EnableHWIntrinsic=0`; the 256-bit path
-compiles but still needs execution on an accelerated x64 host.
-
-The intrinsic operations and feature guards follow the contracts in Microsoft's
-[SIMD and hardware intrinsics documentation](https://learn.microsoft.com/en-us/dotnet/standard/simd).
-The arithmetic and partitioning are original Marmotte code. H.2 adds the
-quantized-input policy below. H.3 adds selected-logit execution and online
-attention; their measurements are separate from these matrix-product results.
+See [Follow ownership through the workers](kernels/matrix-products.md#follow-ownership-through-the-workers).
 
 ## Quantize activations once for K-quant products
 
-H.2 adds a CPU arithmetic policy that avoids reconstructing every K-quant weight
-as F32. Build with .NET 10, then compare both policies on the same synthetic rows:
-
-```sh
-dotnet build src/Marmotte.Cpu -c Release
-DOTNET_TieredCompilation=0 dotnet fsi --optimize+ examples/MatrixProducts.fsx -- --decoded
-DOTNET_TieredCompilation=0 dotnet fsi --optimize+ examples/MatrixProducts.fsx
-```
-
-The script prints its policy, timings and checksums. Different checksums are
-expected because activations are rounded. Add `--large` for 4,096 × 3,072 and
-3,072 × 9,216 matrices. Upload and download are excluded; activation quantization,
-integer unpacking, dot products, scheduling and temporary allocations are timed.
+See the [Quantize activations once for K-quant products guide](kernels/matrix-products.md#quantize-activations-once-for-k-quant-products).
 
 ### Choose the arithmetic policy
 
-```fsharp
-// Default, also used by the generate CLI:
-use fast = new CpuBackend()
-// Same H.1 parallelism, but without additional activation rounding:
-use reference = new CpuBackend(CpuMatrixProductMode.DecodedFloat)
-// Explicit equivalent of the default:
-use quantized = new CpuBackend(CpuMatrixProductMode.QuantizedK)
-```
-
-`QuantizedK` handles Q2_K, Q3_K, Q4_K, Q5_K and Q6_K. The other nine stored
-encodings retain the H.1 F32-input path. Input/output tensors remain F32 and the
-caller's input is never modified. Q8_K is a transient activation representation,
-not a newly supported weight-file or cache encoding: `TensorEncoding`, GGUF
-quantization, embedding lookup and cache storage are unchanged.
+See [Choose the arithmetic policy](kernels/matrix-products.md#choose-the-arithmetic-policy).
 
 ### Follow one block through the product
 
-Each token is split into blocks of 256 activations. The first value with largest
-absolute magnitude determines a signed reciprocal `r = -127 / extreme`, computed
-in F32. The stored scale is `d = 1 / r`; quants are nearest-even rounded `r*x`,
-clamped to [-127,127]. Zero blocks have zero quants, sums and scale. Sixteen
-integer sums, each covering 16 quants, are prepared alongside them.
-
-For example, a block starting with `127, -127, 0.5, 1.5, 2.5, -1.5` and otherwise
-zero has scale -1 and starts with quants `-127, 127, 0, -2, -2, 2`. Its first
-16-value sum is -2. This signed scale and tie rule are tested explicitly.
-
-```mermaid
-flowchart LR
-    X["F32 token inputs"] --> Q["Quantize once: Q8_K scales, quants, sums"]
-    W["Stored K-quant row"] --> U["Unpack integer quants and coefficients"]
-    Q --> D["Integer products and minimum corrections"]
-    U --> D
-    D --> S["Apply block scales; accumulate in double"]
-    S --> Y["One F32 output per token and weight row"]
-```
-
-The quantized batch is shared read-only by all row workers. A worker unpacks each
-weight row once and reuses it for all tokens, just as H.1 shared a decoded row.
-Weight group scales remain integers. For each 256-value block, compute
-`P = sum(groupScale * weightQuant * inputQuant)` and
-`M = sum(groupMinimum * inputGroupSum)`. Its contribution is
-`inputScale * (weightScale * P - weightMinimumScale * M)`.
-Q3_K and Q6_K have no minimum correction. Only these block-level operations are
-floating point; the dot products and group coefficients accumulate in Int32.
-
-Quants are promoted to Int16 in memory to use safe `Vector128` multiplication.
-The products fit Int16. The largest absolute scaled Q6_K block sum is bounded by
-`256 * 32 * 127 * 128 = 133169152`, within Int32; other K formats are smaller.
-Tests include this extreme case. Packed extraction uses bounds-checked spans and
-portable vectors; dot products have a scalar fallback when SIMD is disabled.
-There are no pointers, native dependencies or copied upstream kernels.
-
-Scratch is O(tokens × columns + workers × columns), not O(weights). Shared
-activation arrays cost approximately 2.266 bytes per input element plus one
-validity flag per token. Worker scratch uses one pooled Int16 row and per-group/
-per-block coefficient arrays (approximately 2.531 bytes per column, before pool
-rounding and array headers). Arrays are private to the call; the row buffer is
-returned in `finally`, and all workers join before return.
+See [Follow one block through the product](kernels/matrix-products.md#follow-one-block-through-the-product).
 
 ### Account for error and exceptional values
 
-This is an approximation, so it is not bit-identical to `DecodedFloat`. With
-reconstructed activations `xHat`, the additional dot-product error is bounded by
-`sum(abs(weight) * abs(x - xHat))`, plus floating-point rounding. Away from scale
-underflow, each activation's rounding error is approximately at most half a
-block scale; reciprocal/scale rounding contributes as well. Cancellation can
-make relative error against a small output arbitrarily large, so a blanket
-percentage tolerance against the result is inappropriate.
-
-Tests compare integer products with a separate scalar calculation over decoded
-weights and reconstructed activations, then independently check the above bound
-against the original F32 input. The existing strict product tests still exercise
-`DecodedFloat`. Additional tests cover every K encoding, multiple blocks/tokens,
-uneven row partitions, zero blocks, ties, signed scales, integer extremes,
-non-K encodings, repeated calls and exact batch/individual-token agreement.
-
-A token containing NaN/infinity or an unrepresentable reciprocal/scale uses the
-F32 reference arithmetic. This includes tiny subnormals whose reciprocal would
-overflow. The fallback is per token, so other tokens in the batch behave exactly
-as they would alone. A weight row containing non-finite super-block scales also
-uses the reference path. No invalid values are silently turned into finite zeros.
-Small matrices can be slower because input preparation and scheduling costs are
-not fully amortized. Select `DecodedFloat` when extra activation error is unwanted.
+See [Account for error and exceptional values](kernels/matrix-products.md#account-for-error-and-exceptional-values).
 
 ### Recorded kernel timings
 
-On 2026-11-08, ARM64, .NET 10.0.12, 14 logical processors, using the same warmup
-and seven-by-ten median protocol as H.1, for matrices of 1,024 × 3,072:
-
-| Encoding | One token: F32 input → Q8_K (ms) | Eight tokens: F32 input → Q8_K (ms) |
-| --- | ---: | ---: |
-| Q2_K | 0.535 → 0.250 | 0.894 → 0.605 |
-| Q3_K | 1.919 → 0.302 | 2.499 → 0.637 |
-| Q4_K | 0.307 → 0.308 | 0.675 → 0.628 |
-| Q5_K | 0.334 → 0.308 | 0.743 → 0.647 |
-| Q6_K | 0.530 → 0.276 | 0.870 → 0.624 |
-
-Q6_K improves by about 1.9× for one token; Q4_K is effectively unchanged there
-and improves modestly for eight tokens. Small 64 × 256 Q4_K products regress
-from 0.006 to 0.008 ms (one token) and 0.012 to 0.015 ms (eight tokens). These are
-kernel measurements, not full-generation throughput or proof of model quality.
-Both the SIMD and software paths pass the focused tests; accelerated x64 still
-needs hardware validation.
-
-An optional local check with Ministral-3-3B-Instruct-2512-Q4_K_M and the prompt
-`La capitale de la France est` completed its eight-token budget. The Q8_K policy
-produced ` **Paris**. La capitale de la Belgique`; the H.1 path had produced
-` **Paris**. La ville est située dans`. The first answer remains correct, but
-the continuation changed. This illustrates token sensitivity to approximation;
-it is not a general quality evaluation or comparison with a native runtime.
+See [Recorded kernel timings](kernels/matrix-products.md#recorded-kernel-timings).
 
 ### Reference contracts
 
-The block sizes, signed quants, scale/minimum packing and 16-value sums were
-checked against [ggml's block declarations](https://github.com/ggml-org/ggml/blob/master/src/ggml-common.h).
-The signed 127 reciprocal and nearest-even convention follow the Q8_K reference
-quantizer inspected on 2026-11-08 in
-[ggml-quants.c](https://github.com/ggml-org/ggml/blob/master/src/ggml-quants.c).
-Marmotte uses its own grouped integer representation and portable arithmetic;
-it does not serialize Q8_K blocks or claim bit-identical accumulation with a
-native backend. The fallback behavior for non-finite or unrepresentable input
-is Marmotte's explicit extension.
+See [Reference contracts](kernels/matrix-products.md#reference-contracts).
 
 ## Rotary Position Embedding
 
-![RoPE: split a four-value head into pairs, compute position-dependent angles, rotate each pair, and apply the same convention to queries and keys](kernel-rope.png)
-
-[Open the RoPE illustration](kernel-rope.png).
-
-Think of each pair `[a; b]` as an arrow in a two-dimensional plane. The token's
-position determines how far that arrow turns, and the pair's frequency
-determines its rotation speed. Plain RoPE changes its direction while keeping
-its length. The illustrated angle of one radian is about 57.3 degrees.
-
-Attention needs to know where each token is. Rotary position embedding (RoPE)
-encodes positions by rotating the queries and keys of every head, two values at
-a time. For a head of `D` values, pair `j` of a token at position `p` turns by
-the angle `θ = p × ω[j]`, with `ω[j] = base^(-2j / D)`:
-
-```text
-a' = m × (a × cos θ - b × sin θ)
-b' = m × (a × sin θ + b × cos θ)
-```
-
-`m` is a magnitude factor, 1 for plain RoPE. Rotating a query and a key by their
-own positions makes the positional part of their dot product depend on their
-relative offset. The vectors' content still matters: holding the unrotated
-query and key fixed, positions `(2, 5)` and `(12, 15)` give the same dot product.
-See [RoFormer](https://arxiv.org/abs/2104.09864).
-
-Take a head of four values `[1; 0; 0; 1]` at position 1, with base 10,000. Pair 0
-turns by 1 radian and becomes `[cos 1; sin 1] ≈ [0.5403; 0.8415]`. Pair 1 turns
-by 0.01 radian and becomes `[-sin 0.01; cos 0.01] ≈ [-0.0100; 1.0000]`. At
-position 0, every value stays unchanged.
-
-`Rope(input, positions, embedding, destination)` rotates every head of every
-token. `input` has rank 2 or more, `[tokens; heads × D]` as `MatMul` produces it,
-or `[tokens; heads; D]`, and `positions` holds one absolute position per token.
-A `RotaryEmbedding` describes the model's frequencies, magnitude and pairing:
-`RotaryEmbedding.Standard(128, 1000000.0, RopePairing.AdjacentPairs)` gives plain
-RoPE at the target model's base frequency. Use `RotaryEmbedding.Yarn` for its
-context extension, or `RotaryEmbedding.Create` for custom frequencies.
-`RopePairing.AdjacentPairs` rotates values `2j` and `2j + 1`, llama.cpp's
-"normal" type, which it uses for `mistral3`. `RopePairing.SplitHalves` rotates
-values `j` and `j + D / 2`, llama.cpp's NeoX type and the convention of Hugging
-Face checkpoints. Pairings and formulas follow `rotate_pairs` in llama.cpp's
-`ggml-cpu/ops.cpp`. `destination` may be `input`. Ownership, validation and
-ordering follow `Add`, and a negative position raises
-`ArgumentOutOfRangeException` before any write.
-
-The CPU backend computes the cosine and sine of each pair once per token, in
-double precision, multiplies them by `m`, rounds them once to F32, and uses them
-for every head. Frequencies are kept in double precision, while llama.cpp
-accumulates them in F32, so angles at long positions can differ slightly. Tests
-compare results with a double-precision reference up to position 262,143, and
-check that rotations preserve lengths and that query-key products depend only
-on the distance between positions. The rotation loop is scalar: RoPE touches
-5,120 values per token for the target model's queries and keys, little next to
-the matrix products.
-
-The target model uses the YaRN preparation described below to adjust its
-frequencies and magnitude before rotation.
+See the [Rotary Position Embedding guide](kernels/rope.md#rotary-position-embedding).
 
 ## YaRN Context Extension
 
-![YaRN: extend a toy context from 64 to 256 positions, preserve fast rotations, slow low frequencies, blend the middle band, then apply a model-dependent attention magnitude correction](kernel-yarn.png)
-
-[Open the YaRN illustration](kernel-yarn.png).
-
-`RotaryEmbedding.Yarn` prepares frequencies and a magnitude in Core for the
-same `IRopeKernel.Rope` operation. The CPU kernel consumes these prepared
-parameters; CUDA and Metal remain placeholders. Preparation depends only on
-the configuration and can be shared across heads, layers and backends.
-
-Let `L` be the original context length and `s` the extension factor. The picture
-uses the teaching example `L = 64`, `s = 4`, giving `256` positions. These are
-not the target model's parameters. Keep fast rotations, slow the lowest
-frequencies by dividing by `s`, and blend the middle band:
-
-```text
-omegaY[j] = gamma[j] × omega[j] + (1 - gamma[j]) × (omega[j] / s)
-angle[p, j] = p × omegaY[j]
-```
-
-`gamma[j]` is the fraction of the original frequency to keep. The positions
-themselves remain unchanged. The [reference implementation](https://github.com/jquesnelle/yarn/blob/master/scaled_rope/LlamaYaRNScaledRotaryEmbedding.py)
-derives transition boundaries from how many rotations a pair makes within `L`,
-using `beta_fast` and `beta_slow`, then applies a clamped ramp across pair
-indices. The illustration's blend weights demonstrate the arithmetic; they
-are not a substitute for deriving that ramp from model parameters.
-
-For a full head of `D` values and frequency base `B`, Marmotte uses the
-following equations, verified against ggml's
-[`ggml_rope_yarn_corr_dims`](https://github.com/ggml-org/llama.cpp/blob/2280f0fd163b03d4331d49e08460f66502e35854/ggml/src/ggml.c#L4520-L4533)
-and [`rope_yarn`](https://github.com/ggml-org/llama.cpp/blob/2280f0fd163b03d4331d49e08460f66502e35854/ggml/src/ggml-cpu/ops.cpp#L6268-L6288):
-
-```text
-pairAtRotations(beta) = D × ln(L / (2π × beta)) / (2 × ln(B))
-low  = max(0, floor(pairAtRotations(beta_fast)))
-high = min(D - 1, ceil(pairAtRotations(beta_slow)))
-gamma[j] = 1 - clamp((j - low) / max(0.001, high - low), 0, 1)
-```
-
-`floor` rounds down, `ceil` rounds up, and `clamp` limits a value to the given
-interval. The first equation finds the pair that completes `beta` full turns
-within the original context. The ramp keeps fast pairs unchanged and gradually
-increases interpolation toward the slow pairs. The `0.001` denominator guard
-also covers coincident boundaries. The upper cutoff follows ggml's `D - 1`
-bound even though only `D / 2` pairs are sampled; a transition can extend past
-the last pair. This API uses the full blend, equivalent to `ext_factor = 1`.
-
-| Illustrative band | Original frequency | Keep-original weight `gamma` | Corrected frequency for `s = 4` |
-| --- | --- | --- | --- |
-| Fast | `1` | `1` | `1` |
-| Middle | `0.1` | `0.5` | `0.5 × 0.1 + 0.5 × 0.025 = 0.0625` |
-| Slow | `0.01` | `0` | `0.01 / 4 = 0.0025` |
-
-YaRN also adjusts attention magnitude. The [YaRN paper's LLaMA/Llama 2 reference rule](https://arxiv.org/html/2309.00071v2#S3.SS4)
-for extension factors greater than one is:
-
-```text
-m = 1 + 0.1 × ln(s)
-qY = m × rotatedQuery
-kY = m × rotatedKey
-dot(qY, kY) = m² × dot(rotatedQuery, rotatedKey)
-```
-
-`ln` is the natural logarithm. For `s = 4`, `m ≈ 1.1386` and `m² ≈ 1.2965`.
-The factor acts on attention scores before softmax, not on the resulting
-probabilities. Use the model's effective magnitude: this reference fit is not
-universal. Marmotte combines the general `mscale = 1` rule in
-[`llama-context.cpp`](https://github.com/ggml-org/llama.cpp/blob/2280f0fd163b03d4331d49e08460f66502e35854/src/llama-context.cpp#L269-L306)
-with the compensation inside ggml's kernel, so it applies the final magnitude
-exactly once:
-
-```text
-m = AttentionFactor × (1 + 0.1 × ln(s)) / (1 + 0.1 × LogMultiplier × ln(s))
-```
-
-`LogMultiplier` corresponds to `rope.scaling.yarn_log_multiplier`; use zero
-when absent to get the reference rule above. `AttentionFactor` corresponds to
-`rope.scaling.attn_factor`, with a default of one when absent. Model-specific
-policies such as DeepSeek's alternative numerator are not inferred. The
-position-dependent `attention.temperature_scale` is applied separately; see
-[Attention Temperature](#attention-temperature).
-
-For the target model, `D = 128`, `B = 1,000,000`, `L = 16,384`, `s = 16`,
-`beta_fast = 32` and `beta_slow = 1`. The unrounded cutoff indices are about
-20.385 and 36.440, giving `low = 20` and `high = 37`. Pair 27 therefore keeps
-`10/17` of its original frequency and takes `7/17` of its divided frequency:
-`0.00294272718` becomes `0.00180674794` radians per position. With
-`LogMultiplier = 1` and `AttentionFactor = 1`, the magnitude is exactly one;
-applying the paper's reference amplification again would incorrectly enlarge
-the attention scores.
-
-```fsharp
-let parameters =
-    { ScalingFactor = 16.0
-      OriginalContextLength = 16384
-      BetaFast = 32.0
-      BetaSlow = 1.0
-      LogMultiplier = 1.0
-      AttentionFactor = 1.0 }
-
-let embedding =
-    RotaryEmbedding.Yarn(128, 1000000.0, RopePairing.AdjacentPairs, parameters)
-
-backend.Rope(queries, positions, embedding, queries)
-backend.Rope(keys, positions, embedding, keys)
-```
-
-The factory requires a positive even head dimension, a finite base greater
-than one, `s >= 1`, a positive original context, finite thresholds with
-`BetaFast >= BetaSlow > 0`, a finite non-negative logarithmic multiplier and a
-finite positive attention factor. Invalid configuration raises an argument
-exception before allocating the frequency array; the final magnitude must
-also fit a finite positive F32 value. A scale of one leaves frequencies
-unchanged. Both pairings use the same frequencies and magnitude. Loading these
-parameters from model metadata remains part of the future model loader.
-
-Tests check the transition, magnitude cancellation and non-default magnitude
-parameters, invalid inputs, collapsed or out-of-range cutoffs, and CPU
-rotations of 32 query heads and 8 key heads through position 262,143 with both
-pairings. A separate check ran the unmodified ggml CPU kernel at revision
-`2280f0fd163b03d4331d49e08460f66502e35854` at positions 0, 1, 16,384 and
-262,143. It called `ggml_rope_ext` in NORMAL mode on an F32 `[128; 1; 4]` tensor
-whose every adjacent pair is `(1, 0)`, with the target configuration:
-`n_dims = 128`, `n_ctx_orig = 16384`, `freq_base = 1e6`, `freq_scale = 1/16`,
-`ext_factor = 1`, `beta_fast = 32`, `beta_slow = 1` and ggml's compensated
-`attn_factor = 1 / (1 + 0.1 × ln(16))`. The recorded outputs, not values
-computed by Marmotte or by a port of that kernel, are retained in
-[`YarnTests.fs`](../tests/Marmotte.Backends.Tests/YarnTests.fs); running the tests
-does not require ggml or GPU hardware. They account for ggml's F32 angle
-accumulation, while a separate double-precision reference checks Marmotte with
-a tighter tolerance. Neither check measures language-model accuracy at long
-context lengths.
-
-Run [`examples/Yarn.fsx`](../examples/Yarn.fsx) to inspect the frequencies and
-CPU rotations without a model file.
+See the [YaRN Context Extension guide](kernels/yarn.md#yarn-context-extension).
 
 ## Attention Temperature
 
-`mistral3` also multiplies its queries, after RoPE, by a factor that grows with
-the position:
-
-```text
-factor(p) = 1 + β × ln(floor(p / L) + 1)
-```
-
-`β` is `attention.temperature_scale` and `L` is
-`rope.scaling.original_context_length`: 0.1 and 16,384 for the target model.
-The factor is exactly 1 for the first 16,384 positions, then stays constant over
-each block of 16,384 positions: about 1.0693 (`1 + 0.1 × ln 2`) from position
-16,384, 1.1099 from 32,768, and 1.2773 at position 262,143, the last position of
-the training context. Multiplying a query multiplies all its attention scores by
-the same factor, which sharpens their softmax over long contexts. Keys and
-values are not scaled. This is unrelated to the sampling temperature of
-generated tokens.
-
-`AttentionTemperature.Create(float 0.1f, 16384)` holds these parameters, and
-`Factor(position)` returns the F32 factor of a position.
-`ApplyAttentionTemperature(queries, positions, temperature, destination)`
-multiplies every value of each token by the factor of its position. `queries`
-has rank 2 or more, with one token per row of the first dimension, as for
-`Rope`. `destination` may be `queries`, and a negative position raises
-`ArgumentOutOfRangeException` before any write.
-
-```fsharp
-let temperature = AttentionTemperature.Create(float 0.1f, 16384)
-
-backend.Rope(queries, positions, embedding, queries)
-backend.ApplyAttentionTemperature(queries, positions, temperature, queries)
-backend.Rope(keys, positions, embedding, keys)
-```
-
-The formula follows `llm_graph_input_attn_temp` in llama.cpp's
-`src/llama-graph.cpp`, which evaluates it in double precision and stores it in
-F32; its `mistral3` graph then multiplies the queries after RoPE. Marmotte
-computes the floor with an exact integer division. llama.cpp's position offset,
-zero for `mistral3`, and its power variant are not supported. The CPU backend
-computes one factor per token and multiplies with `Vector<T>`. Each value is
-multiplied once, so positions below `L` leave queries unchanged, bit for bit.
-Tests check the factors at block boundaries against values computed by hand,
-the per-token scaling in rank 2 and rank 3, in-place use, empty batches and
-validation.
+See the [Attention Temperature guide](kernels/attention-temperature.md#attention-temperature).
 
 ## Key-Value Cache
 
-Attention is the only operation in which a token reads the other positions: its
-query is compared with the keys of every earlier position, and their values are
-weighted by the result. Everything else in a block is computed token by token.
-Without a cache, generating a token would recompute the key and value
-projections of the whole prefix in every layer. The cache stores them instead,
-once per position and layer. Queries are not stored: a past token asks nothing
-more.
+See the [Key-Value Cache guide](kernels/key-value-cache.md#key-value-cache).
 
-`KeyValueCacheLayout` describes the cache: its layers, its capacity in
-positions, its key-value heads and their dimension, and one encoding for keys
-and another for values. Each position of a layer is a row of
-`KeyValueHeads × HeadDimension` values for keys and another for values, 1,024
-values for the target model:
+## Copy Rows
 
-| Encoding | Bytes per 32 values | Per token | 4,096 tokens | 32,768 tokens |
-| --- | --- | --- | --- | --- |
-| F32 | 128 | 208 KiB | 832 MiB | 6,656 MiB |
-| F16, BF16 | 64 | 104 KiB | 416 MiB | 3,328 MiB |
-| Q8_0 | 34 | 55.25 KiB | 221 MiB | 1,768 MiB |
-| Q5_1 | 24 | 39 KiB | 156 MiB | 1,248 MiB |
-| Q5_0 | 22 | 35.75 KiB | 143 MiB | 1,144 MiB |
-| Q4_1 | 20 | 32.5 KiB | 130 MiB | 1,040 MiB |
-| IQ4_NL, Q4_0 | 18 | 29.25 KiB | 117 MiB | 936 MiB |
-
-```fsharp
-let layout =
-    KeyValueCacheLayout.Create(
-        layers = 26,
-        capacity = 4096,
-        keyValueHeads = 8,
-        headDimension = 128,
-        keyEncoding = TensorEncoding.Q8_0,
-        valueEncoding = TensorEncoding.Q8_0)
-
-use cache = backend.AllocateKeyValueCache(layout)
-
-// In each layer: rotate the keys, then store keys and values at their positions.
-backend.Rope(keys, positions, embedding, keys)
-backend.StoreKeyValues(cache, layer, firstPosition, keys, values)
-```
-
-`BytesPerPosition` and `TotalBytes` give these sizes before allocating anything.
-Keys and values have separate encodings, like llama.cpp's `--cache-type-k` and
-`--cache-type-v` options, which LM Studio exposes as K and V cache quantization.
-Marmotte supports the same encodings as llama.cpp: F32, F16, BF16, Q8_0, Q5_1,
-Q5_0, Q4_1, IQ4_NL and Q4_0. llama.cpp's default is F16. K-quants such as Q4_K
-are rejected: their reference quantizers search for sub-block scales, which
-Marmotte does not implement. A head dimension must hold whole blocks, so a
-32-value block never spans two heads and attention can decode one head at a
-time.
-
-Unlike llama.cpp, a quantized value cache does not require flash attention.
-Without flash attention, llama.cpp stores values transposed, with positions
-contiguous, so that blocks would have to span positions; Marmotte stores every
-position as a row of whole blocks, for values as for keys.
-
-`RowEncoder` in Core writes the rows; it is the inverse of `RowDecoder` and also
-encodes the GGUF quantizer's blocks. F16 and BF16 round to nearest, ties to
-even. Q8_0 rounds each value to half a step of `max / 127`, where `max` is the
-largest magnitude of its block of 32. Q5_0 and Q4_0 use 32 and 16 steps of
-`max / 16` and `max / 8`, and can clip the end opposite to their scale by a
-whole step. Q5_1 and Q4_1 also store the block's minimum and divide its range
-into 31 and 15 steps, which suits blocks whose values are not centered on zero.
-IQ4_NL has the size of Q4_0 but 16 levels closer together near zero, where most
-values lie: its encoder tries 16 scales and keeps the one with the smallest
-error weighted by `x²`, as llama.cpp's `quantize_iq4_nl` does without an
-importance matrix, then picks each index against the F16 scale actually stored
-rather than the F32 one. On normally distributed values, its squared error is
-about 20% below Q4_0's. Every encoding stores its scale and minimum in F16.
-Quantization is lossy, and the precision attention needs is a measurement
-to make on the model, not a property of the cache: keys have outlier channels,
-which inflate the scale of every block that contains one
-([KIVI](https://arxiv.org/abs/2402.02750)), so they usually tolerate
-quantization less well than values. Q8_0 for both is a common starting point,
-and a lower-precision value cache the next step.
-
-`StoreKeyValues(cache, layer, position, keys, values)` encodes F32 tensors of
-shape `[tokens; KeyValueHeads × HeadDimension]` or
-`[tokens; KeyValueHeads; HeadDimension]` into positions `position` to
-`position + tokens - 1`. Each layer stores consecutive positions from 0, counted
-by `StoredPositions(layer)`: `position` may not leave a gap. Storing below that
-count replaces those positions and discards every later one, which was
-computed from the replaced tokens. Regenerating a response from position `p`
-therefore needs no separate truncation, and an empty batch at `p` only
-truncates. `position + tokens` may not exceed the capacity.
-
-`ReadKeyValues(cache, layer, position, keys, values)` decodes stored positions
-into two different F32 tensors of the same shapes. An F32 cache reads back bit
-for bit; another encoding reads back what `RowDecoder` decodes from the stored
-blocks. Attention decodes cached heads directly, without materializing all
-stored rows as execution tensors.
-
-Values that an encoding cannot hold are never replaced by plausible numbers.
-F16 and BF16 turn values beyond their range into infinities, and NaN stays NaN.
-A quantized block that contains NaN or an infinity, or whose scale or minimum
-exceeds the F16 range, is stored with a NaN scale: its 32 values read back as NaN, and
-the other blocks are unaffected. The GGUF quantizer is stricter and rejects
-such weights.
-
-The CPU backend allocates the whole capacity up front, as llama.cpp does: one
-byte array of `Capacity` rows per layer for keys and one for values. Blocks
-never span rows, so a batch of positions is encoded or decoded in one call. A
-layer's keys or values must fit in a managed array: 524,287 F32 positions for
-the target model, twice its 262,144-position context. Tests check
-hand-computed bytes of every encoding, rounding errors, non-finite blocks, the target model's sizes,
-appending, replacing and truncating positions, validation before any write,
-ownership and disposal. Run
-[`examples/KeyValueCache.fsx`](../examples/KeyValueCache.fsx) to print the sizes
-above and the error of each encoding.
+See the [CopyRows guide](kernels/copy-rows.md) for selecting contiguous token rows
+without a host transfer.
 
 ## Ordering, Completion and Lifetime
 
@@ -1128,183 +295,25 @@ cache and prints the root mean square and largest errors after reading them
 back. Tests also call GPU allocation, download and each
 kernel directly to verify that all unfinished operations fail explicitly.
 
-
 ## Grouped-query attention
 
-Learn how a query selects information from its causal prefix. Prerequisites:
-.NET 10 and the cache concepts above. Run the self-contained example without a
-model file:
-
-```sh
-dotnet fsi examples/Attention.fsx
-```
-
-### 1. Store the keys and values
-
-The example stores three positions, each with two KV heads of two channels.
-In a model, keys have already received RoPE; values have not. Queries have
-received RoPE and any position-dependent attention temperature scaling.
-Store the whole prompt batch before calling attention: the kernel's causal
-mask prevents earlier tokens from seeing later ones.
-
-### 2. Share the KV heads
-
-Allocate queries and destination with shape `[3; 4; 2]`: tokens, query heads,
-channels. Four query heads share two KV heads, in consecutive groups:
-
-![Two consecutive query heads share each KV head; position one sees only cached positions zero and one.](images/grouped-query-attention.svg)
-
-For query head `h`, the KV head is `h / (queryHeads / KeyValueHeads)` using
-integer division. This also covers multi-head attention (one query per KV head)
-and multi-query attention (one KV head shared by every query).
-
-```fsharp
-backend.Attention(cache, 0, 0, queries, output)
-```
-
-The arguments select the cache, layer, first absolute query position, queries
-and destination. Both tensors must have identical shapes, either
-`[tokens; queryHeads; HeadDimension]` or `[tokens; queryHeads × HeadDimension]`.
-The number of query heads must be positive and divisible by the KV head count.
-The destination cannot alias queries. All storage belongs to the same backend.
-
-### 3. Normalize only the visible scores
-
-For token `t` at absolute position `p = position + t`, each head computes:
-
-```text
-score[j] = sum(Q[c] × K[j,c]) / sqrt(HeadDimension), 0 <= j <= p
-weight[j] = exp(score[j] - max(score)) / sum(exp(score - max(score)))
-output[c] = sum(weight[j] × V[j,c])
-```
-
-The maximum subtraction prevents exponential overflow for large finite scores.
-CPU attention defaults to `CpuAttentionMode.Online`: scores use F32 and running
-value sums and the denominator use double precision, with O(head dimension)
-scratch. `Reference` retains the original F32 reduction and prefix-length score
-buffer. Both reuse scratch across tokens and heads. K and V can independently
-use any supported cache encoding. Each head slice contains whole encoding
-blocks, so no full-cache F32 copy is needed. Future rows are not decoded at all,
-including future rows containing NaN. Non-finite visible data or overflowing
-scores can produce NaN; finite inputs are not a guarantee against F32 overflow.
-
-The example uses zero queries, hence equal scores and uniform probabilities.
-It prints the causal averages (two identical outputs per KV group), shown
-rounded below; the reference F32 accumulation can print `60.00000381f` instead of `60.0f`:
-
-```text
-Position 0: [|2.0f; 4.0f; 2.0f; 4.0f; 20.0f; 40.0f; 20.0f; 40.0f|]
-Position 1: [|4.0f; 6.0f; 4.0f; 6.0f; 40.0f; 60.0f; 40.0f; 60.0f|]
-Position 2: [|6.0f; 8.0f; 6.0f; 8.0f; 60.0f; 80.0f; 60.0f; 80.0f|]
-```
-
-For generation, store the next K/V row, then pass a single query token and its
-absolute position. Batched queries can also start inside an existing prefix.
-Every query position must already be stored in that layer; an empty batch is
-valid at any position from zero through `StoredPositions(layer)`. Validation
-finishes before writing output. A replaced/truncated cache immediately limits
-which positions can be attended to. CUDA and Metal expose the contract but
-still throw `NotImplementedException`.
+See the [Grouped-query attention guide](kernels/attention.md#grouped-query-attention).
 
 ### Online attention and H.3 measurements
 
-To compare attention algorithms while keeping matrix arithmetic fixed:
+See the [attention measurements](kernels/attention.md#online-attention-and-h3-measurements).
+### 1. Store the keys and values
 
-```fsharp
-use online = new CpuBackend(CpuMatrixProductMode.QuantizedK, CpuAttentionMode.Online)
-use reference = new CpuBackend(CpuMatrixProductMode.QuantizedK, CpuAttentionMode.Reference)
-```
+See [1. Store the keys and values](kernels/attention.md#1-store-the-keys-and-values).
 
-The parameterless and one-policy constructors both select online attention.
-`examples/InferencePerformance.fsx` runs both algorithms against identical F32
-and Q8_0 caches, without a local model:
+### 2. Share the KV heads
 
-```sh
-dotnet build Marmotte.slnx -c Release
-DOTNET_TieredCompilation=0 dotnet fsi --optimize+ examples/InferencePerformance.fsx
-```
+See [2. Share the KV heads](kernels/attention.md#2-share-the-kv-heads).
 
-For each query head, online attention scans visible positions once. It maintains
-a maximum `m`, a denominator `l` and a vector of weighted values `a`. For the next
-finite score `s`, update:
+### 3. Normalize only the visible scores
 
-```text
-mNext = max(m, s)
-r = exp(m - mNext)
-w = exp(s - mNext)
-lNext = r * l + w
-aNext = r * a + w * value
-output = a / l after the final visible position
-```
-
-Initially `m = -infinity`, `l = 0`, and `a = 0`. An initial negative-infinity
-score has zero mass; a later finite score can still produce valid output. An
-all-negative-infinity sequence normalizes to NaN, as does the reference.
-Positive-infinity/NaN scores propagate NaN. Masked positions are never decoded.
-
-This fuses score normalization and value accumulation without a prefix-sized
-score array. Every K/V head is still decoded once per visible position **per
-query head**; this implementation does not yet tile multiple queries or share
-those decodes across a query group. It is a CPU online fused attention kernel,
-not a GPU-tiled FlashAttention implementation. It does not alter the attention
-formula or introduce quantization. The online normalization principle is
-explained by [Milakov and Gimelshein (2018)](https://arxiv.org/abs/1805.02867);
-[FlashAttention (Dao et al., 2022)](https://arxiv.org/abs/2205.14135) applies
-memory-aware fusion and tiling to exact attention on GPUs. Marmotte's loops are
-original code, and those papers' GPU speedups are not predictions for this CPU.
-
-Scores and exponentials use F32. Running weighted values and the denominator
-use double precision because their unnormalized sums can overflow F32 even
-when the final weighted average is finite. Safe `Vector<T>` operations widen
-values and accumulate the sums, followed by one final F32 rounding per channel.
-The scalar fallback uses the same precision. The order of arithmetic differs
-from `Reference`, so compare with tolerances rather than bit equality.
-
-Recorded on 2026-11-08, ARM64, .NET 10.0.12, 14 logical processors; head width
-128, eight query heads, two KV heads. Three warmup calls precede seven groups
-of three timed calls; fixture/cache setup and transfers are excluded.
-
-| K/V encoding | Prefix | Query tokens | Reference | Online |
-| --- | ---: | ---: | ---: | ---: |
-| F32 | 128 | 8 | 2.180 ms | 1.826 ms |
-| F32 | 2,048 | 1 | 4.504 ms | 3.799 ms |
-| F32 | 2,048 | 8 | 35.906 ms | 30.734 ms |
-| Q8_0 | 128 | 8 | 1.796 ms | 1.482 ms |
-| Q8_0 | 2,048 | 1 | 3.742 ms | 3.114 ms |
-| Q8_0 | 2,048 | 8 | 30.102 ms | 24.780 ms |
-
-Maximum absolute differences in these cases are below 4.6e-6. Managed allocations
-per call are 1,584 bytes online, independent of prefix length, versus 1,072 bytes
-for the 128-position reference and 8,752 bytes for 2,048 positions. Online scratch
-can therefore be larger for short prefixes because it stores a double value
-vector. Neither algorithm reduces the allocated KV cache. These are attention
-kernel measurements, not full-generation throughput; see [selected-logit
-measurements](forward-pass.md#request-only-the-logits-you-need) for the other
-part of H.3.
-
-An optional real-model check on Ministral-3-3B-Instruct-2512-Q4_K_M used
-`La capitale de la France est`. The selected/full final logit rows were exactly
-equal within each attention mode. Comparing attention modes with `DecodedFloat`
-matrix products gave a maximum final-logit difference of 1.91e-6. With H.2's
-`QuantizedK` policy, that difference reached 0.361 and the top token changed:
-intermediate rounding can cross later activation-quantization thresholds.
-The default CLI still completed its eight-token budget, producing
-` Paris. C'est une ville très connue`. This single prompt is not a model-quality
-evaluation. To retain the previous H.2 arithmetic, construct
-`CpuBackend(CpuMatrixProductMode.QuantizedK, CpuAttentionMode.Reference)`.
+See [3. Normalize only the visible scores](kernels/attention.md#3-normalize-only-the-visible-scores).
 
 ### Validation and references
 
-`AttentionTests` compares against an independent dense, double-precision
-reference, covers multi-query, grouped and multi-head layouts, and checks
-batch/single-token equivalence, nonzero batch offsets, causal masking, large
-scores, all 81 K/V encoding combinations, validation and lifetime failures.
-Quantized attention is compared with the actual decoded cached values; this
-does not establish model-quality tolerances for cache quantization. There is
-no end-to-end model inference or performance claim yet.
-
-The grouping follows [Ainslie et al., GQA (2023)](https://arxiv.org/abs/2305.13245).
-Scaled dot-product attention is defined in
-[Vaswani et al., Attention Is All You Need, section 3.2.1](https://arxiv.org/abs/1706.03762).
-The implementation is original; neither reference code nor a native library is
-required by the kernel or its tests.
+See [Validation and references](kernels/attention.md#validation-and-references).
