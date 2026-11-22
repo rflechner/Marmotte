@@ -62,6 +62,9 @@ module private CudaApi =
     extern int marmotte_cuda_swiglu(SafeHandle context, nativeint gate, nativeint up, nativeint destination, int count)
 
     [<DllImport(library, CallingConvention = CallingConvention.Cdecl)>]
+    extern int marmotte_cuda_rmsnorm(SafeHandle context, nativeint input, nativeint weight, single epsilon, nativeint destination, int rows, int columns)
+
+    [<DllImport(library, CallingConvention = CallingConvention.Cdecl)>]
     extern int marmotte_cuda_synchronize(SafeHandle context)
 
     let check operation status =
@@ -184,6 +187,10 @@ type internal CudaSession(deviceIndex: int) =
 
     member _.SwiGlu(gate, up, destination, count) =
         CudaApi.marmotte_cuda_swiglu(context, gate, up, destination, count) |> CudaApi.check "SwiGLU launch"
+
+    member _.RmsNorm(input, weight, epsilon, destination, rows, columns) =
+        CudaApi.marmotte_cuda_rmsnorm(context, input, weight, epsilon, destination, rows, columns)
+        |> CudaApi.check "RMS normalization launch"
 
     member _.Synchronize() = CudaApi.marmotte_cuda_synchronize(context) |> CudaApi.check "synchronization"
 

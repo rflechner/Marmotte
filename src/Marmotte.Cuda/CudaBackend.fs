@@ -4,12 +4,12 @@ open System
 open System.Collections.Generic
 open Marmotte.Core
 
-/// Owned contiguous F32/F16 device tensors, stored-encoding weight uploads, and F32/F16 Add and
-/// SwiGLU, using one CUDA stream per instance.
+/// Owned contiguous F32/F16 device tensors, stored-encoding weight uploads, F32/F16 Add,
+/// SwiGLU and RMS normalization, using one CUDA stream per instance.
 /// deviceIndex is a zero-based CUDA device ordinal (default 0), and must be non-negative.
 /// Native loading and device initialization happen at the first non-empty allocation; construction,
 /// empty tensors and an unused Synchronize require no CUDA installation. No CPU fallback is used.
-/// Add, SwiGLU and zero-initialization may return before completion. Transfers, tensor disposal and
+/// Add, SwiGLU, RMS normalization and zero-initialization may return before completion. Transfers, tensor disposal and
 /// Synchronize wait for preceding work. Backend disposal waits and releases all remaining tensors
 /// and weights.
 /// UploadWeights copies the whole stored payload to device memory, so the WeightMatrix's source
@@ -215,7 +215,27 @@ type CudaBackend(?deviceIndex: int) =
                 getSession().SwiGlu(gatePointer, upPointer, destinationPointer, gate.Shape.ElementCount)
 
     interface IRmsNormKernel with
-        member _.RmsNorm(_, _, _, _) = notImplemented "RMS normalization kernel"
+        member _.RmsNorm(input, weight, epsilon, destination) =
+            checkDisposed ()
+            let inputPointer = pointerOf (nameof input) input
+            let weightPointer = pointerOf (nameof weight) weight
+            let destinationPointer = pointerOf (nameof destination) destination
+
+            let shape = input.Shape
+            if shape.Rank = 0 then
+                invalidArg (nameof input) "RMS normalization requires a rank of at least 1; a scalar has no row to normalize."
+            let columns = shape.Dimensions[shape.Rank - 1]
+            if weight.Shape.Rank <> 1 || weight.Shape.Dimensions[0] <> columns then
+                invalidArg (nameof weight) $"RMS normalization of {shape} requires weight of shape [{columns}], not {weight.Shape}."
+            requireSameShape "RMS normalization" input (nameof destination) destination
+            if not (Single.IsFinite epsilon) || epsilon <= 0.0f then
+                raise (ArgumentOutOfRangeException(nameof epsilon, box epsilon, "Epsilon must be finite and positive."))
+            requireEncoding input.Encoding (nameof weight) weight
+            requireEncoding input.Encoding (nameof destination) destination
+
+            let count = shape.ElementCount
+            if count > 0 then
+                getSession().RmsNorm(inputPointer, weightPointer, epsilon, destinationPointer, count / columns, columns)
 
     interface IEmbeddingKernel with
         member _.EmbeddingLookup(_, _, _) = notImplemented "embedding lookup kernel"

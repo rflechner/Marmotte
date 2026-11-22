@@ -104,6 +104,16 @@ let private assertWithinOneHalfUlp (expected: Half) (actual: Half) =
         if halfOrdinal expected = 0 && halfOrdinal actual = 0 then
             Assert.Equal(bits expected, bits actual)
 
+/// RMS normalization of each row in double precision, independent of the kernel's reduction
+/// order, then rounded once to binary16.
+let private rmsNormHalfReference (input: Half array) (columns: int) (weight: Half array) (epsilon: single) : Half array =
+    let normalizeRow (row: Half array) =
+        let mean = row |> Array.averageBy (fun value -> float value * float value)
+        let scale = 1.0 / Math.Sqrt(mean + float epsilon)
+        Array.map2 (fun value weightValue -> Half.op_Explicit(float value * scale * float weightValue)) row weight
+
+    input |> Array.chunkBySize columns |> Array.collect normalizeRow
+
 let private checkArithmetic (backend: ITensorBackend) =
     for dimensions in [ [||]; [| 0 |]; [| 2; 10 |]; [| 255 |]; [| 256 |]; [| 257 |]; [| 65537 |] ] do
         let shape = TensorShape.Create dimensions
@@ -235,6 +245,7 @@ let ``CUDA F16 empty tensors validate without loading the runtime`` () =
     use empty = backend.Upload(TensorShape.Create [| 0 |], ReadOnlyMemory<Half>.Empty)
     backend.Add(empty, empty, empty)
     backend.SwiGlu(empty, empty, empty)
+    backend.RmsNorm(empty, empty, 1e-5f, empty)
     backend.Download(empty, Memory<Half>.Empty)
     backend.Synchronize()
     checkValidationAndLifetime backend other (TensorShape.Create [| 0 |])
@@ -328,3 +339,67 @@ let ``CUDA F16 SwiGlu stays within one unit in the last place of a double-precis
     backend.SwiGlu(ones, ones, output)
     backend.Add(output, output, output)
     assertResults (Array.create 3 0x3dd9us) (download backend output)
+
+[<CudaFact; Trait("Category", "CUDA")>]
+let ``CUDA F16 RmsNorm matches independent rounding and special value fixtures`` () =
+    use backend = new CudaBackend() :> ITensorBackend
+    // Weight [1; 1]: a zero row stays +0, ±1 rows round to exactly ±1, a huge row normalizes
+    // to 1, a NaN row is all NaN, and an infinite row scales to zero with NaN from inf × 0.
+    let inputBits =
+        [| 0x0000us; 0x0000us // 0, 0 -> +0, +0
+           0x3c00us; 0xbc00us // 1, -1 -> +1, -1
+           0x4000us; 0x4000us // 2, 2 -> 1, 1
+           0x7bffus; 0x7bffus // 65504, 65504 -> 1, 1
+           0x7e00us; 0x3c00us // NaN, 1 -> NaN, NaN
+           0xfc00us; 0x3c00us |] // -inf, 1 -> NaN, +0
+    let expectedBits =
+        [| 0x0000us; 0x0000us
+           0x3c00us; 0xbc00us
+           0x3c00us; 0x3c00us
+           0x3c00us; 0x3c00us
+           0x7e00us; 0x7e00us
+           0x7e00us; 0x0000us |]
+    let shape = TensorShape.Create [| 6; 2 |]
+    use weight = upload backend (TensorShape.Create [| 2 |]) [| half 0x3c00us; half 0x3c00us |]
+    use input = upload backend shape (Array.map half inputBits)
+    use destination = backend.Allocate(shape, TensorEncoding.F16)
+
+    backend.RmsNorm(input, weight, 1e-5f, destination)
+    assertResults expectedBits (download backend destination)
+    Assert.Equal<uint16>(inputBits, download backend input |> Array.map bits)
+
+    // Destination may be the input.
+    backend.RmsNorm(input, weight, 1e-5f, input)
+    assertResults expectedBits (download backend input)
+
+    // Weight [-1; -1]: a zero row keeps the negative sign, and ±1 rows round to exactly ∓1.
+    use minusOne = upload backend (TensorShape.Create [| 2 |]) [| half 0xbc00us; half 0xbc00us |]
+    let zeroRow = TensorShape.Create [| 1; 2 |]
+    use zeros = upload backend zeroRow [| Half.Zero; Half.Zero |]
+    backend.RmsNorm(zeros, minusOne, 1e-5f, zeros)
+    assertResults [| 0x8000us; 0x8000us |] (download backend zeros)
+    use onesRow = upload backend zeroRow [| half 0x3c00us; half 0x3c00us |]
+    backend.RmsNorm(onesRow, minusOne, 1e-5f, onesRow)
+    assertResults [| 0xbc00us; 0xbc00us |] (download backend onesRow)
+
+    // Weight [+inf; +inf]: a unit row overflows to +inf.
+    use infinity = upload backend (TensorShape.Create [| 2 |]) [| half 0x7c00us; half 0x7c00us |]
+    use unitRow = upload backend zeroRow [| half 0x3c00us; half 0x3c00us |]
+    backend.RmsNorm(unitRow, infinity, 1e-5f, unitRow)
+    assertResults [| 0x7c00us; 0x7c00us |] (download backend unitRow)
+
+[<CudaFact; Trait("Category", "CUDA")>]
+let ``CUDA F16 RmsNorm stays within one unit in the last place of a double-precision reference for every input pattern`` () =
+    use backend = new CudaBackend() :> ITensorBackend
+    // Every binary16 input pattern in 256 rows of 256 columns, with varied weights including
+    // zeros, subnormals and infinities.
+    let columns = 256
+    let shape = TensorShape.Create [| 256; columns |]
+    let inputValues = Array.init (256 * columns) (uint16 >> half)
+    let weightValues = Array.init columns (fun index -> half (uint16 ((index * 257 + 32768) % 65536)))
+    let expected = rmsNormHalfReference inputValues columns weightValues 1e-5f
+    use input = upload backend shape inputValues
+    use weight = upload backend (TensorShape.Create [| columns |]) weightValues
+
+    backend.RmsNorm(input, weight, 1e-5f, input)
+    Array.iter2 assertWithinOneHalfUlp expected (download backend input)

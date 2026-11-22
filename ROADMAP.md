@@ -399,8 +399,10 @@ without waiting; `Download` and `Synchronize` wait. GPU tests stay opt-in
 
 - [x] **R.1** SwiGLU F32: `silu(gate) × up` per element, in one `kernels/SwiGlu.cu`. An F16
   variant computes in F32 and rounds once; the CPU backend still accepts F32 only.
-- [ ] **R.2** RMS normalization F32: per-row mean of squares with a block reduction, then
-  scaling by the weight vector; document the accumulation precision.
+- [x] **R.2** RMS normalization F32: per-row mean of squares with a block reduction, then
+  scaling by the weight vector; the sum of squares and the scale accumulate in double
+  precision, documented in `kernels/RmsNorm.cu` and the kernel guide. An F16 variant
+  widens its inputs to F32 and rounds once; the CPU backend still accepts F32 only.
 - [ ] **R.3** `CopyRows`: device-to-device copy of contiguous rank-2 rows, needed by
   `LogitSelection` (H.3).
 - [ ] **R.4** Embedding lookup: decode the selected weight rows on the GPU straight into

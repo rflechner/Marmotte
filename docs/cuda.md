@@ -1,8 +1,8 @@
 # CUDA: from the first build to an Add on the GPU
 
 Marmotte's CUDA backend implements contiguous F32 and F16 tensors, zero-initialized
-allocation, uploads, downloads, stored weight uploads, and element-wise Add and
-SwiGLU in both formats. It uses
+allocation, uploads, downloads, stored weight uploads, element-wise Add, SwiGLU
+and RMS normalization in both formats. It uses
 native CUDA C++ through P/Invoke, with no additional NuGet dependency. Other
 kernels and the key-value cache still throw
 `NotImplementedException`.
@@ -238,6 +238,7 @@ system C/C++ libraries. We do not package a driver or prebuilt native binaries.
 | [`native/CudaRuntime.cu`](../src/Marmotte.Cuda/native/CudaRuntime.cu) | Device initialization, allocation, copies, synchronization and cleanup. |
 | [`native/kernels/Add.cu`](../src/Marmotte.Cuda/native/kernels/Add.cu) | F32/F16 GPU functions and the shared CPU entry point, `marmotte_cuda_add`: native validation, format dispatch and launch configuration. |
 | [`native/kernels/SwiGlu.cu`](../src/Marmotte.Cuda/native/kernels/SwiGlu.cu) | F32/F16 GPU functions and the shared CPU entry point, `marmotte_cuda_swiglu`: native validation, format dispatch and launch configuration. |
+| [`native/kernels/RmsNorm.cu`](../src/Marmotte.Cuda/native/kernels/RmsNorm.cu) | F32/F16 GPU functions (one block per row) and the shared CPU entry point, `marmotte_cuda_rmsnorm`: native validation, format dispatch and launch configuration. |
 | [`native/CMakeLists.txt`](../src/Marmotte.Cuda/native/CMakeLists.txt) | Native sources, compiler settings and output location. |
 
 ```mermaid
@@ -585,7 +586,7 @@ stored weights to Add. The lifetime state tests also run without CUDA.
 | No kernel image for this device | Rebuild with an architecture supported by both the GPU and Toolkit. |
 | `OutOfMemoryException` | Device allocation failed or the host staging array could not be allocated. Dispose unused tensors and reduce sizes. |
 | An error appears at Download or Synchronize | An asynchronous kernel may have failed earlier. Add a temporary Synchronize after the suspected launch to locate it. |
-| `NotImplementedException` from another kernel | Only Add and SwiGLU are implemented on CUDA at this stage. |
+| `NotImplementedException` from another kernel | Only Add, SwiGLU and RMS normalization (both formats) are implemented on CUDA at this stage. |
 
 CUDA runtime failures include the operation, numeric error code and native
 message in `InvalidOperationException`; `cudaErrorMemoryAllocation` (status 2)
@@ -618,6 +619,7 @@ native/
     README.md          Shared developer guide and kernel contracts
     Add.cu             addValuesF32, addValuesF16 and marmotte_cuda_add
     SwiGlu.cu          swiGluF32, swiGluF16 and marmotte_cuda_swiglu
+    RmsNorm.cu         rmsNormF32, rmsNormF16 and marmotte_cuda_rmsnorm
 ```
 
 Both Add variants are implemented and available through `ITensorBackend`, and so
@@ -631,6 +633,15 @@ zero-initialized Half storage. Uploading `ReadOnlyMemory<Half>` also creates F16
 storage, and downloading it requires `Memory<Half>`. All three tensors passed
 to Add or SwiGLU must have the same format, including empty tensors. Other allocation
 formats are rejected; there is no implicit F32/F16 conversion.
+
+RMS normalization runs in F32 and F16: one block of 256 threads per row
+accumulates the sum of squares in double precision through a shared-memory block
+reduction, computes the scale `1 / sqrt(mean + epsilon)` in double and rounds it
+once to F32, then writes `input × scale × weight`. The destination may be the
+input. The F16 variant widens its inputs to F32, applies the same formula and
+rounds once to F16, so it behaves like the F32 kernel followed by a single
+conversion; the CPU backend implements F32 only and rejects F16 with
+`NotSupportedException`.
 
 The F16 GPU function uses `__hadd` with `half*` inputs and output, rounding to
 nearest with ties to even. Storage and transfers stay at two bytes per element.

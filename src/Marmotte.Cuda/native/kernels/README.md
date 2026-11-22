@@ -12,6 +12,7 @@ native/
     README.md                  Shared development guide
     Add.cu                     F32/F16 GPU functions and host dispatch
     SwiGlu.cu                  F32/F16 GPU functions and host dispatch
+    RmsNorm.cu                 F32/F16 GPU functions and host dispatch
 ```
 
 These files appear in the F# project. CMake compiles the `.cu` sources.
@@ -129,3 +130,42 @@ checks CUDA alone: exact bits for independently computed fixtures that lie far f
 a rounding midpoint, and at most one unit in the last place from a double-precision
 reference for all 65,536 gate bit patterns, since an F32 result within the
 exponential's error of a midpoint may round to either neighbour.
+
+## RmsNorm contract and supported formats
+
+`RmsNorm.cu` implements F32 and F16, both exposed through the managed backend.
+The operation computes
+`destination[r, c] = input[r, c] / sqrt(mean(input[r, *]²) + epsilon) × weight[c]`
+per row of the last dimension. Input and destination have the same shape of rank 1
+or more, and weight is a vector of the last dimension's length; all belong to the
+same backend instance and share one encoding — mixing F32 and F16 raises
+`ArgumentException` in `CudaBackend.fs`, as for Add and SwiGlu, and any other
+format returns `cudaErrorNotSupported` natively, before any output write. `rows`
+and `columns` count elements, not bytes. The managed backend validates shapes and
+epsilon and handles empty tensors before native dispatch.
+
+One block of 256 threads handles one row. Each thread accumulates its strided
+share of the sum of squares in double precision, and a shared-memory block
+reduction adds the partials in double: rows of thousands of values keep F32
+accuracy, and squares beyond the F32 range, such as that of 1e20, do not overflow.
+The scale `1 / sqrt(mean + epsilon)` is computed in double and rounded once to F32,
+then applied as `value * scale * weight` with two F32 roundings, matching the CPU
+reference. The reduction completes before any write, so destination may be input,
+and each column is read from weight by the same thread that writes its destination.
+The mean is a reduction that implementations sum in different orders, so compare
+results with a relative tolerance. NaN or infinite inputs make their row's results
+NaN or zero, as the formula gives.
+
+The F16 kernel widens both inputs exactly to F32 with `__half2float`, runs the same
+double-precision reduction and F32 scale, and rounds the final product once with
+`__float2half_rn`, to nearest with ties to even. Half intermediates would round
+after every operation, and the largest half (65504) already loses accuracy when
+squared in F32. Overflow of the final product produces infinity; subnormal inputs
+and results are kept, not flushed to zero. The CPU backend implements RMS
+normalization in F32 only and rejects F16 with `NotSupportedException`.
+
+[CudaTests.fs](../../../../tests/Marmotte.Backends.Tests/CudaTests.fs) covers F32
+against a double-precision reference. [HalfTests.fs](../../../../tests/Marmotte.Backends.Tests/HalfTests.fs)
+checks CUDA F16: exact bits for independently computed fixtures that lie far from
+a rounding midpoint, and at most one unit in the last place from a double-precision
+reference across every binary16 input pattern.

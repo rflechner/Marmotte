@@ -752,7 +752,6 @@ let ``unfinished GPU operations explicitly fail without requiring GPU hardware``
     use cache = host.AllocateKeyValueCache(cacheLayout ())
     let operations =
         [ (fun () -> backend.AllocateKeyValueCache(cacheLayout ()) |> ignore)
-          (fun () -> backend.RmsNorm(tensor, tensor, 1e-5f, tensor))
           (fun () -> backend.EmbeddingLookup(weights, ReadOnlyMemory<int>([| 0 |]), tensor))
           (fun () -> backend.MatVec(weights, tensor, tensor))
           (fun () -> backend.MatMul(weights, tensor, tensor))
@@ -760,9 +759,11 @@ let ``unfinished GPU operations explicitly fail without requiring GPU hardware``
           (fun () -> backend.ApplyAttentionTemperature(tensor, ReadOnlyMemory<int>([| 0 |]), AttentionTemperature.Create(0.1, 16384), tensor))
           (fun () -> backend.StoreKeyValues(cache, 0, 0, tensor, tensor))
           (fun () -> backend.ReadKeyValues(cache, 0, 0, tensor, tensor)) ]
-    // SwiGLU is implemented on CUDA for F32 and F16; Metal still rejects it.
+    // SwiGLU (F32 and F16) and RMS normalization (F32) are implemented on CUDA; Metal still rejects them.
     let operations =
-        if name = "Metal" then (fun () -> backend.SwiGlu(tensor, tensor, tensor)) :: operations
+        if name = "Metal" then
+            [ (fun () -> backend.SwiGlu(tensor, tensor, tensor))
+              (fun () -> backend.RmsNorm(tensor, tensor, 1e-5f, tensor)) ] @ operations
         else operations
 
     let expectedKind = if name = "CUDA" then BackendKind.Cuda else BackendKind.Metal

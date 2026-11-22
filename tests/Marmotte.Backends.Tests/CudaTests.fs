@@ -85,6 +85,22 @@ let ``CUDA validates arguments before native loading or host writes`` () =
     for a, b, output in [ emptyHalf, empty, empty; empty, emptyHalf, empty; empty, empty, emptyHalf ] do
         Assert.Throws<ArgumentException>(fun () -> backend.SwiGlu(a, b, output)) |> ignore
 
+    // RMS normalization validates nulls, epsilon, weight shape and encoding on empty tensors
+    // without native dispatch: [0] has zero columns, so its weight is empty too.
+    for input, weight, destination in [ nullTensor, empty, empty; empty, nullTensor, empty; empty, empty, nullTensor ] do
+        Assert.Throws<ArgumentNullException>(fun () -> backend.RmsNorm(input, weight, 1e-5f, destination)) |> ignore
+    backend.RmsNorm(empty, empty, 1e-5f, empty)
+    for epsilon in [ 0.0f; -1e-5f; Single.NaN; Single.PositiveInfinity ] do
+        Assert.Throws<ArgumentOutOfRangeException>(fun () -> backend.RmsNorm(empty, empty, epsilon, empty)) |> ignore
+    use emptyMatrix = backend.Allocate(TensorShape.Create [| 1; 0 |])
+    Assert.Throws<ArgumentException>(fun () -> backend.RmsNorm(empty, emptyMatrix, 1e-5f, empty)) |> ignore
+
+    // As for Add and SwiGLU, RMS normalization requires one encoding for all three tensors,
+    // even when they are empty; F16 alone is a valid no-op.
+    backend.RmsNorm(emptyHalf, emptyHalf, 1e-5f, emptyHalf)
+    for input, weight, destination in [ emptyHalf, empty, emptyHalf; empty, emptyHalf, empty; emptyHalf, empty, empty ] do
+        Assert.Throws<ArgumentException>(fun () -> backend.RmsNorm(input, weight, 1e-5f, destination)) |> ignore
+
     let sentinel = [| 42.0f |]
     Assert.Throws<ArgumentNullException>(fun () -> backend.Download(nullTensor, sentinel.AsMemory())) |> ignore
     Assert.Throws<ArgumentException>(fun () -> backend.Download(empty, sentinel.AsMemory())) |> ignore
@@ -215,7 +231,7 @@ let private swiGluReference (gate: single) (up: single) =
 
 /// A relative tolerance plus an absolute floor for results that the F32 formula
 /// flushes to zero when e^-x overflows.
-let private assertSwiGluClose (expected: float) (actual: single) =
+let private assertClose (expected: float) (actual: single) =
     let tolerance = 1e-6 * abs expected + 1e-30
     Assert.True(abs (float actual - expected) <= tolerance, $"Expected {expected}, got {actual}.")
 
@@ -237,17 +253,17 @@ let ``CUDA SwiGlu matches a double-precision reference for block boundaries and 
         use destination = backend.Allocate(shape)
 
         backend.SwiGlu(gate, up, destination)
-        Array.iter2 assertSwiGluClose expected (download backend destination)
+        Array.iter2 assertClose expected (download backend destination)
         Assert.Equal<single>(gateValues, download backend gate)
         Assert.Equal<single>(upValues, download backend up)
 
         // Either input may be the destination; the other input keeps its original values.
         backend.SwiGlu(gate, up, up)
-        Array.iter2 assertSwiGluClose expected (download backend up)
+        Array.iter2 assertClose expected (download backend up)
 
         use upAgain = backend.Upload(shape, ReadOnlyMemory<single>(upValues))
         backend.SwiGlu(gate, upAgain, gate)
-        Array.iter2 assertSwiGluClose expected (download backend gate)
+        Array.iter2 assertClose expected (download backend gate)
 
 [<CudaFact>]
 [<Trait("Category", "CUDA")>]
@@ -268,14 +284,14 @@ let ``CUDA SwiGlu handles extreme gates and queues after Add`` () =
         | gateValue when Single.IsNaN gateValue -> Assert.True(Single.IsNaN result[index])
         | gateValue when Single.IsNegativeInfinity gateValue -> Assert.True(Single.IsNaN result[index])
         | gateValue when Single.IsPositiveInfinity gateValue -> Assert.Equal(Single.PositiveInfinity, result[index])
-        | gateValue -> assertSwiGluClose (swiGluReference gateValue 2.0f) result[index]
+        | gateValue -> assertClose (swiGluReference gateValue 2.0f) result[index]
 
     // A queued Add observes the SwiGlu result on the same stream.
     use finiteGate = backend.Upload(shape, ReadOnlyMemory<single>(Array.create 21 1.0f))
     use ones = backend.Upload(shape, ReadOnlyMemory<single>(Array.create 21 1.0f))
     backend.SwiGlu(finiteGate, ones, up)
     backend.Add(up, up, up)
-    Assert.All(download backend up, fun value -> assertSwiGluClose (2.0 * swiGluReference 1.0f 1.0f) value)
+    Assert.All(download backend up, fun value -> assertClose (2.0 * swiGluReference 1.0f 1.0f) value)
 
 [<CudaFact>]
 [<Trait("Category", "CUDA")>]
@@ -311,3 +327,101 @@ let ``CUDA SwiGlu validates shapes encodings ownership and disposal before writi
     let halfValues = Array.zeroCreate<Half> shape.ElementCount
     backend.Download(halfGate, halfValues.AsMemory())
     Assert.All(halfValues, fun value -> Assert.Equal(Half.One, value))
+
+/// RMS normalization of each row in double precision, independent of the kernel's reduction order.
+let private rmsNormReference (input: single array) (columns: int) (weight: single array) (epsilon: single) =
+    let normalizeRow (row: single array) =
+        let mean = row |> Array.averageBy (fun value -> float value * float value)
+        let scale = 1.0 / Math.Sqrt(mean + float epsilon)
+        Array.map2 (fun value weightValue -> float value * scale * float weightValue) row weight
+
+    if columns = 0 then [||] else input |> Array.chunkBySize columns |> Array.collect normalizeRow
+
+[<CudaFact>]
+[<Trait("Category", "CUDA")>]
+let ``CUDA RmsNorm matches a double-precision reference for row widths ranks and aliasing`` () =
+    use backend = new CudaBackend() :> ITensorBackend
+    let random = Random(91011)
+    let randomValues length low high = Array.init length (fun _ -> float32 (low + random.NextDouble() * (high - low)))
+    let shapes = [ [| 0 |]; [| 2; 0 |]; [| 257 |]; [| 2; 3 |]; [| 3; 255 |]; [| 4; 257 |]; [| 2; 2; 257 |]; [| 65537 |] ]
+
+    for dimensions in shapes do
+        let shape = TensorShape.Create dimensions
+        let columns = shape.Dimensions[shape.Rank - 1]
+        let inputValues = randomValues shape.ElementCount -10.0 10.0
+        let weightValues = randomValues columns 0.5 1.5
+        let expected = rmsNormReference inputValues columns weightValues 1e-5f
+        use input = backend.Upload(shape, ReadOnlyMemory<single>(inputValues))
+        use weight = backend.Upload(TensorShape.Create [| columns |], ReadOnlyMemory<single>(weightValues))
+        use destination = backend.Allocate(shape)
+
+        backend.RmsNorm(input, weight, 1e-5f, destination)
+        Array.iter2 assertClose expected (download backend destination)
+        Assert.Equal<single>(inputValues, download backend input)
+        Assert.Equal<single>(weightValues, download backend weight)
+
+        // Destination may be the input; the weight keeps its original values.
+        backend.RmsNorm(input, weight, 1e-5f, input)
+        Array.iter2 assertClose expected (download backend input)
+
+[<CudaFact>]
+[<Trait("Category", "CUDA")>]
+let ``CUDA RmsNorm keeps huge zero and NaN rows independent`` () =
+    use backend = new CudaBackend() :> ITensorBackend
+    // The squares of 1e30 exceed the F32 range, so the sum of squares must accumulate in double.
+    let huge = Array.init 9 (fun index -> if index % 2 = 0 then 1e30f else -1e30f)
+    let zeros = Array.zeroCreate<single> 9
+    let withNaN = Array.init 9 (fun index -> if index = 4 then Single.NaN else 1.0f)
+    let weightValues = Array.init 9 (fun index -> float32 (index + 1))
+    let shape = TensorShape.Create [| 3; 9 |]
+    use input = backend.Upload(shape, ReadOnlyMemory<single>(Array.concat [ huge; zeros; withNaN ]))
+    use weight = backend.Upload(TensorShape.Create [| 9 |], ReadOnlyMemory<single>(weightValues))
+
+    backend.RmsNorm(input, weight, 1e-5f, input)
+
+    let result = download backend input
+    Array.iter2 assertClose (rmsNormReference huge 9 weightValues 1e-5f) result[..8]
+    Assert.Equal<single>(zeros, result[9..17])
+    Assert.All(result[18..], fun value -> Assert.True(Single.IsNaN value))
+
+[<CudaFact>]
+[<Trait("Category", "CUDA")>]
+let ``CUDA RmsNorm validates rank weight epsilon encodings ownership and disposal before writing`` () =
+    use backend = new CudaBackend() :> ITensorBackend
+    use otherBackend = new CudaBackend() :> ITensorBackend
+    use cpu = new CpuBackend() :> ITensorBackend
+    let shape = TensorShape.Create [| 2; 3 |]
+    use input = backend.Upload(shape, ReadOnlyMemory<single>(Array.create 6 1.0f))
+    use weight = backend.Upload(TensorShape.Create [| 3 |], ReadOnlyMemory<single>(Array.create 3 1.0f))
+    use destination = backend.Upload(shape, ReadOnlyMemory<single>(Array.create 6 42.0f))
+    use scalar = backend.Allocate(TensorShape.Create [||])
+    use scalarWeight = backend.Allocate(TensorShape.Create [| 1 |])
+    use longWeight = backend.Allocate(TensorShape.Create [| 4 |])
+    use matrixWeight = backend.Allocate(TensorShape.Create [| 1; 3 |])
+    use transposed = backend.Allocate(TensorShape.Create [| 3; 2 |])
+    use foreign = otherBackend.Allocate(shape)
+    use foreignWeight = otherBackend.Allocate(TensorShape.Create [| 3 |])
+    use hostWeight = cpu.Allocate(TensorShape.Create [| 3 |])
+    use halfInput = backend.Upload(shape, ReadOnlyMemory<Half>(Array.create 6 Half.One))
+    use halfWeight = backend.Upload(TensorShape.Create [| 3 |], ReadOnlyMemory<Half>(Array.create 3 Half.One))
+    use halfDestination = backend.Upload(shape, ReadOnlyMemory<Half>(Array.create 6 Half.One))
+    use disposed = backend.Allocate(shape)
+    disposed.Dispose()
+
+    Assert.Throws<ArgumentException>(fun () -> backend.RmsNorm(scalar, scalarWeight, 1e-5f, scalar)) |> ignore
+    let weightError = Assert.Throws<ArgumentException>(fun () -> backend.RmsNorm(input, longWeight, 1e-5f, destination))
+    Assert.Contains("[3]", weightError.Message)
+    Assert.Contains("[4]", weightError.Message)
+    Assert.Throws<ArgumentException>(fun () -> backend.RmsNorm(input, matrixWeight, 1e-5f, destination)) |> ignore
+    Assert.Throws<ArgumentException>(fun () -> backend.RmsNorm(input, weight, 1e-5f, transposed)) |> ignore
+    for epsilon in [ 0.0f; -1e-5f; Single.NaN; Single.PositiveInfinity ] do
+        Assert.Throws<ArgumentOutOfRangeException>(fun () -> backend.RmsNorm(input, weight, epsilon, destination)) |> ignore
+    Assert.Throws<ArgumentException>(fun () -> backend.RmsNorm(foreign, weight, 1e-5f, destination)) |> ignore
+    for invalidWeight in [ foreignWeight; hostWeight ] do
+        Assert.Throws<ArgumentException>(fun () -> backend.RmsNorm(input, invalidWeight, 1e-5f, destination)) |> ignore
+    // Mixed F32/F16 tensors are rejected with ArgumentException, as for Add and SwiGLU.
+    Assert.Throws<ArgumentException>(fun () -> backend.RmsNorm(halfInput, weight, 1e-5f, destination)) |> ignore
+    Assert.Throws<ArgumentException>(fun () -> backend.RmsNorm(input, halfWeight, 1e-5f, destination)) |> ignore
+    Assert.Throws<ArgumentException>(fun () -> backend.RmsNorm(input, weight, 1e-5f, halfDestination)) |> ignore
+    Assert.Throws<ObjectDisposedException>(fun () -> backend.RmsNorm(disposed, weight, 1e-5f, destination)) |> ignore
+    Assert.All(download backend destination, fun value -> Assert.Equal(42.0f, value))

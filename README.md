@@ -278,12 +278,16 @@ The three backend projects share these contracts:
   key-value cache and causal grouped-query attention. Online fused attention is
   the default; `CpuAttentionMode.Reference` preserves the score-buffer algorithm.
   See [H.3 measurements](docs/kernels/attention.md#online-attention-and-h3-measurements).
-- `Marmotte.Cuda`: owned F32 or F16 device tensors, transfers, Add and SwiGLU through a
-  native CUDA library. Build it automatically with `dotnet build Marmotte.slnx -p:MarmotteBuildCuda=true`.
+- `Marmotte.Cuda`: owned F32 or F16 device tensors, transfers, Add, SwiGLU and RMS
+  normalization through a native CUDA library. Build it automatically with
+  `dotnet build Marmotte.slnx -p:MarmotteBuildCuda=true`.
   Native compilation and GPU tests are optional; see the
   [CUDA guide](docs/cuda.md) for prerequisites, builds and how the backend works.
-  Add and SwiGLU have separate [F32 and F16 implementations](docs/cuda.md#kernel-formats-and-file-layout);
-  F16 SwiGLU computes in F32 and rounds once. The CPU backend implements SwiGLU in F32 only.
+  Add, SwiGLU and RMS normalization have separate
+  [F32 and F16 implementations](docs/cuda.md#kernel-formats-and-file-layout);
+  F16 SwiGLU and F16 RMS normalization compute in F32 and round once. The CPU backend
+  implements SwiGLU and RMS normalization in F32 only. The sum of squares accumulates
+  in double precision on both backends.
   `UploadWeights` copies all fourteen runtime encodings to VRAM without decoding,
   with at most 4 MiB of host staging per upload. Weight and backend disposal wait
   for queued work and release storage. Try `dotnet fsi examples/CudaWeights.fsx`.
