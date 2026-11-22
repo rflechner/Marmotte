@@ -278,19 +278,21 @@ The three backend projects share these contracts:
   key-value cache and causal grouped-query attention. Online fused attention is
   the default; `CpuAttentionMode.Reference` preserves the score-buffer algorithm.
   See [H.3 measurements](docs/kernels/attention.md#online-attention-and-h3-measurements).
-- `Marmotte.Cuda`: owned F32 or F16 device tensors, transfers, Add, SwiGLU and RMS
-  normalization through a native CUDA library. Build it automatically with
+- `Marmotte.Cuda`: owned F32 or F16 device tensors, transfers, Add, SwiGLU, RMS
+  normalization and RoPE/YaRN through a native CUDA library. Build it automatically with
   `dotnet build Marmotte.slnx -p:MarmotteBuildCuda=true`.
   Native compilation and GPU tests are optional; see the
   [CUDA guide](docs/cuda.md) for prerequisites, builds and how the backend works.
-  Add, SwiGLU and RMS normalization have separate
+  Add, SwiGLU, RMS normalization and RoPE have separate
   [F32 and F16 implementations](docs/cuda.md#kernel-formats-and-file-layout);
-  F16 SwiGLU and F16 RMS normalization compute in F32 and round once. The CPU backend
+  F16 SwiGLU, RMS normalization and RoPE compute in F32 and round once. The CPU backend
   implements SwiGLU and RMS normalization in F32 only. The sum of squares accumulates
   in double precision on both backends.
   `UploadWeights` copies all fourteen runtime encodings to VRAM without decoding,
   with at most 4 MiB of host staging per upload. Weight and backend disposal wait
   for queued work and release storage. Try `dotnet fsi examples/CudaWeights.fsx`.
+  CUDA RoPE computes double-precision angles in .NET, stages F32 cos/sin pairs on
+  the device, then rotates F32/F16 tensors on the GPU; see [the CUDA guide](docs/cuda.md#rope-and-yarn-on-cuda).
   Caches and other kernels still raise `NotImplementedException`.
 
 `Add` writes into a preallocated destination and requires identical contiguous,
@@ -553,7 +555,7 @@ addition, SwiGLU, RMS normalization and matrix-vector products against scalar
 and double-precision references, embedding lookup against independently
 specified floating-point and quantized bytes, shape and ID validation, buffer
 ownership, transfers and disposal, plus explicit failures for unfinished GPU
-operations. CUDA Add, SwiGLU and stored weight transfers have optional GPU tests; see [how to run them](docs/cuda.md#run-the-tests).
+operations. CUDA Add, SwiGLU, RoPE/YaRN and stored weight transfers have optional GPU tests; see [how to run them](docs/cuda.md#run-the-tests).
 No model or weight download is required.
 
 ## Coding guidelines
