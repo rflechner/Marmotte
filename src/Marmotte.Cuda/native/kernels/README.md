@@ -13,6 +13,7 @@ native/
     Add.cu                     F32/F16 GPU functions and host dispatch
     SwiGlu.cu                  F32/F16 GPU functions and host dispatch
     RmsNorm.cu                 F32/F16 GPU functions and host dispatch
+    Rope.cu                    F32/F16 RoPE pair rotation and host dispatch
 ```
 
 These files appear in the F# project. CMake compiles the `.cu` sources.
