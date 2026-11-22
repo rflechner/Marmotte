@@ -599,6 +599,41 @@ maps to `OutOfMemoryException`, as specified in the
 [runtime error identifiers](https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html).
 There is no automatic CPU fallback.
 
+## RoPE and YaRN on CUDA
+
+Core prepares the frequencies, magnitude and pairing once. The CUDA backend
+computes cos/sin in double precision on the host for each requested position,
+multiplies by the magnitude, rounds once to F32, and copies the coefficients
+to the GPU. Each head of a token shares the same coefficients.
+
+For example, after building with `-p:MarmotteBuildCuda=true`:
+
+```fsharp
+use backend = new CudaBackend() :> ITensorBackend
+let shape = TensorShape.Create [| 2; 128 |]
+let values = Array.init 256 (fun i -> single (i % 17 - 8) / 8.0f)
+use tensor = backend.Upload(shape, ReadOnlyMemory<single>(values))
+let embedding = RotaryEmbedding.Standard(128, 1000000.0, RopePairing.AdjacentPairs)
+backend.Rope(tensor, ReadOnlyMemory<int>([| 0; 16384 |]), embedding, tensor)
+backend.Synchronize()
+```
+
+For YaRN, use `RotaryEmbedding.Yarn` and its validated `YarnParameters` instead.
+CUDA supports F32 and F16, adjacent and split-half pairing, rank-2 and rank-3
+head layouts, and in-place rotation. Positions must be non-negative; shape,
+encoding and device ownership are validated before any GPU work.
+
+`Rope.cu` launches one GPU thread per pair. Each thread reads both inputs
+before writing either output, and uses explicitly rounded arithmetic rather
+than fused multiply-add. F16 widens to F32 and rounds once on output.
+
+Coefficient staging uses a reusable context-owned device buffer included in
+allocation accounting and freed on backend disposal. The host-to-device copy
+synchronizes the stream before the marshalled array is released; the rotation
+kernel is then launched asynchronously. This is a correctness-first trade-off:
+pinned asynchronous staging or device-side angles are future optimizations.
+This operation does not implement attention temperature or the KV cache.
+
 ## Kernel formats and file layout
 
 Each operation has one `.cu` file containing its shared host entry point and
