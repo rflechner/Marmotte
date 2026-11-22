@@ -23,15 +23,64 @@ by the following transformer layers; it is not a definition of a word or a
 list of output probabilities. A token can represent a word fragment, punctuation
 or another tokenizer-defined piece.
 
-Consider this invented F32 table, with four vocabulary entries and three
-features per entry:
+### Where do the stored numbers come from?
 
-| Token ID | Stored row |
+The token ID is an **address in a table**. It does not contain the embedding
+values or provide a formula for calculating them. Two different objects are
+prepared before Marmotte runs:
+
+- The **tokenizer vocabulary** associates text pieces with integer IDs.
+- The **model's embedding matrix** holds a learned vector at each of those IDs.
+
+For a language model trained from scratch, the embedding values are initialized,
+often randomly. Training then repeatedly asks the model to predict the next
+token in example text. A prediction error is computed, and the training
+algorithm adjusts the embedding values along with the other trainable weights
+to reduce that error. The resulting numbers are saved as part of the model.
+The [embedding API reference](https://docs.pytorch.org/docs/2.15/generated/torch.nn.Embedding.html)
+shows this distinction between a table of learnable weights and the indexes
+used to retrieve them.
+
+Marmotte performs **inference**: it loads those saved weights and reads them.
+For the GGUF model layout used here, the embedding matrix is named
+`token_embd.weight`. Its values are in the file's tensor payload, possibly
+quantized. The tokenizer and model must agree on the vocabulary IDs.
+
+```mermaid
+flowchart LR
+    Training["Training adjusts the embedding values"] --> File["Model file: saved embedding matrix"]
+    Text["Input text"] --> Tokenizer["Tokenizer supplies an ID"]
+    Tokenizer --> Lookup["Read or decode the row at that ID"]
+    File --> Lookup
+    Lookup --> Vector["Embedding vector for the transformer"]
+```
+
+Each row's values are coordinates in a learned feature space. Its columns do
+not come with fixed human labels such as "animal", "color" or "plural". The
+following layers learn to use combinations of these coordinates. At inference,
+the initial lookup gives the same vector for the same ID; later transformer
+operations combine it with position and context.
+
+### A small table to follow the lookup
+
+**The values below are chosen by hand for this explanation.** In particular,
+`[1; 0; 2]` is neither calculated from ID `0` nor extracted from a real model.
+Simple integers make the row selection visible. Imagine that this is the
+table already saved in a tiny F32 model, with four vocabulary entries and
+three features per entry:
+
+| Token ID (row index) | Stored feature values (invented) |
 | --- | --- |
 | 0 | `[1; 0; 2]` |
 | 1 | `[-1; 3; 0]` |
 | 2 | `[2; 2; 2]` |
 | 3 | `[0; 1; -1]` |
+
+Read the first line as: **"row 0 already contains the three numbers 1, 0 and
+2; when ID 0 arrives, return those numbers."** This is ordinary table access,
+`embeddingTable[0]`. The three returned numbers are feature values, not three
+more token IDs. A real row usually contains many more floating-point values;
+the target model in R.4 has 3,072 per token.
 
 For IDs `[2; 0; 2]`, the output contains these three rows, in this order:
 

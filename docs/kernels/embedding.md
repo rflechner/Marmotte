@@ -23,6 +23,11 @@ Repeated IDs therefore produce repeated embeddings, and no summation occurs.
 The picture uses F32 weights so that every value is directly visible; quantized
 weights require decoding the selected rows to recover their F32 values.
 
+The numbers in this teaching example are invented. In a real model, the table
+contains weights learned during training and saved in the model file; the ID
+only selects a row. See [where the stored numbers come from](embedding-cuda.md#where-do-the-stored-numbers-come-from)
+for the distinction between vocabulary IDs, training and inference.
+
 `EmbeddingLookup(weights, tokenIds, destination)` selects vocabulary rows:
 `destination[i, column] = weights[tokenIds[i], column]`. It applies no scaling,
 normalization or special handling for padding tokens. IDs are zero-based signed
