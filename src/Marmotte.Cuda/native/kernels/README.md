@@ -44,6 +44,20 @@ status without waiting. Keep allocation, transfers and synchronization in the
 runtime. Unsupported formats must fail explicitly before any output write;
 never silently convert or reinterpret storage to call an implemented variant.
 
+## RoPE / YaRN rotation
+
+`Rope.cu` supports F32/F16 and adjacent or split-half pairs. `CudaBackend.fs`
+validates positions, shape, ownership and encoding before preparing shared
+cos/sin coefficients with double-precision angles from `RotaryEmbedding`.
+Each token contributes `headDimension` F32 coefficients, shared by all heads.
+The C ABI stages the table in context-owned CUDA memory, synchronizing the
+stream to release the managed array safely; the GPU rotation is asynchronous.
+Each thread reads its original pair before writing, allowing in-place use.
+F32 uses individually rounded operations rather than fused multiply-add;
+F16 widens and rounds to Half once. YaRN uses the same operation after
+Core has adjusted frequencies and magnitude.
+See [CUDA RoPE tests](../../../../tests/Marmotte.Backends.Tests/CudaRopeTests.fs).
+
 ## Add an operation
 
 1. Create `kernels/<Operation>.cu` using Add as the layout example. Choose its
