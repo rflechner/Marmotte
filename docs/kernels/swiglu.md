@@ -27,13 +27,22 @@ identical shapes, the same backend instance, exact aliasing such as
 `backend.SwiGlu(gate, up, up)`, and validation before any write.
 
 Unlike addition, the result depends on how the exponential is approximated. The
-CPU backend uses `Vector.Exp` in vector lanes and `MathF.Exp` for the remaining
-values. Measured on ARM64 for gates from -87 to 90, both stay within 2.2e-7
-relative error of a double-precision SiLU, and they differ from each other by
-at most four units in the last place. Tests therefore compare with a relative
-tolerance of 1e-6. Below about -88.7, `e^-x` overflows in F32 and the result is
-a signed zero instead of a value smaller than 1e-36. NaN gates stay NaN, and
-`silu(-∞)` is NaN, as the formula gives.
+CPU backend uses `Vector.Exp` for every value when hardware vectors are
+available, and `MathF.Exp` for every value otherwise. Measured on ARM64 for
+gates from -87 to 90, both stay within 2.2e-7 relative error of a
+double-precision SiLU, and they differ from each other by at most four units in
+the last place. Tests therefore compare with a relative tolerance of 1e-6.
+Below about -88.7, `e^-x` overflows in F32 and the result is a signed zero
+instead of a value smaller than 1e-36. NaN gates stay NaN, and `silu(-∞)` is
+NaN, as the formula gives.
+
+Mixing the two exponentials in one call would make a value's result depend on
+where it sits in the buffer. An earlier version computed the values left after
+the last full vector with `MathF.Exp`: a token's feed-forward activations then
+changed with the batch size, and `LogitSelection.LastToken` returned logits one
+unit in the last place away from `AllTokens` on 8-lane x64 machines, though not
+on 4-lane ARM64 ones. The kernel now copies those remaining values into one
+zero-padded vector, so each value uses the same exponential wherever it sits.
 
 On an Apple M4 Max, single-threaded in Release, the vectorized kernel takes about
 0.63 ns per value, against 1.43 ns for a scalar loop with the same formula. One

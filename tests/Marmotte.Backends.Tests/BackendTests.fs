@@ -306,7 +306,7 @@ let ``SwiGlu matches a double-precision reference for every vector tail length``
 [<Fact>]
 let ``SwiGlu handles extreme gates in vector lanes and the tail`` () =
     use backend = cpu ()
-    // 21 values cycle through each case in full vectors and in the scalar tail for 4, 8 or 16 lanes.
+    // 21 values cycle through each case in full vectors and in the padded remainder for 4, 8 or 16 lanes.
     let cases = [| -100.0f; 100.0f; 0.0f; Single.NaN; Single.PositiveInfinity; Single.NegativeInfinity; -0.001f |]
     let gateValues = Array.init 21 (fun index -> cases[index % cases.Length])
     let shape = TensorShape.Create [| 21 |]
@@ -323,6 +323,28 @@ let ``SwiGlu handles extreme gates in vector lanes and the tail`` () =
         | gateValue when Single.IsNegativeInfinity gateValue -> Assert.True(Single.IsNaN value)
         | gateValue when Single.IsPositiveInfinity gateValue -> Assert.Equal(Single.PositiveInfinity, value)
         | gateValue -> assertClose (swiGluReference gateValue 2.0f) value
+
+[<Fact>]
+let ``SwiGlu gives an element the same bits whatever its position in the span`` () =
+    use backend = cpu ()
+    // A token's activations must not depend on the batch around it. The same values are
+    // computed once in a 70-element span, mostly in full vectors, and again in spans of 1 to 7
+    // elements, which fit in the remainder for 8 or 16 lanes.
+    let gateValues = Array.init 70 (fun index -> single (sin (float index)) * 6.0f)
+    let upValues = Array.init 70 (fun index -> 0.5f + single (cos (float index)))
+    let run (gates: single array) (ups: single array) =
+        let shape = TensorShape.Create [| gates.Length |]
+        use gate = backend.Upload(shape, ReadOnlyMemory<single>(gates))
+        use up = backend.Upload(shape, ReadOnlyMemory<single>(ups))
+        use destination = backend.Allocate(shape)
+        backend.SwiGlu(gate, up, destination)
+        download backend destination
+
+    let whole = run gateValues upValues
+    for length in 1 .. 7 do
+        for start in 0 .. 70 - length do
+            let part = run gateValues[start .. start + length - 1] upValues[start .. start + length - 1]
+            Assert.Equal<single>(whole[start .. start + length - 1], part)
 
 [<Fact>]
 let ``SwiGlu validates shapes ownership and disposal before writing`` () =

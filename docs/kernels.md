@@ -130,7 +130,7 @@ them one row at a time.
 | `UploadWeights` | Retains the payload without copying | `NotImplementedException` | `NotImplementedException` |
 | `Synchronize` | Nothing to wait for | Waits for the instance's stream | `NotImplementedException` |
 | `IAddKernel.Add` | F32: safe `Vector<T>` loop with a scalar tail; F16: scalar Half loop | Separate F32/F16 kernels, 256 threads per block | `NotImplementedException` |
-| `ISwiGluKernel.SwiGlu` | Safe `Vector<T>` loop with `Vector.Exp`, scalar tail with `MathF.Exp` | F32/F16 kernels with the device `expf`, 256 threads per block; F16 is computed in F32 and rounded once | `NotImplementedException` |
+| `ISwiGluKernel.SwiGlu` | Safe `Vector<T>` loop with `Vector.Exp`, remainder in one zero-padded vector | F32/F16 kernels with the device `expf`, 256 threads per block; F16 is computed in F32 and rounded once | `NotImplementedException` |
 | `IRmsNormKernel.RmsNorm` | Safe `Vector<T>` loops, sum of squares in double precision | `NotImplementedException` | `NotImplementedException` |
 | `IEmbeddingKernel.EmbeddingLookup` | Decodes selected rows with `RowDecoder` directly into F32 output | `NotImplementedException` | `NotImplementedException` |
 | `IRowCopyKernel.CopyRows` | Validated contiguous row copy over safe spans | `NotImplementedException` | `NotImplementedException` |

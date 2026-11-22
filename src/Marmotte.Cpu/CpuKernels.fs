@@ -53,28 +53,44 @@ module internal CpuKernels =
         for index = 0 to destination.Length - 1 do
             destination[index] <- left[index] + right[index]
 
-    /// destination[i] = silu(gate[i]) × up[i], with silu(x) = x / (1 + e^-x). Vector lanes use
-    /// Vector.Exp and the tail uses MathF.Exp; measured on ARM64, both stay within 2.2e-7 relative
-    /// error of a double-precision SiLU above x = -87, and they differ by at most 4 units in the
-    /// last place.
+    let private swiGluVector (x: Vector<single>) (up: Vector<single>) =
+        x / (Vector<single>.One + Vector.Exp(-x)) * up
+
+    /// destination[i] = silu(gate[i]) × up[i], with silu(x) = x / (1 + e^-x). With hardware
+    /// vectors, every element uses Vector.Exp, including the tail, which goes through one
+    /// zero-padded vector; otherwise every element uses MathF.Exp. An element's result therefore
+    /// never depends on its position in the span: a token gets the same activations in a batch
+    /// of one as in a longer batch, whatever the vector width. The two exponentials differ by up
+    /// to 4 units in the last place, which a scalar tail would expose as batch-dependent results.
+    /// Measured on ARM64, both stay within 2.2e-7 relative error of a double-precision SiLU above
+    /// x = -87.
     let swiGlu (gate: ReadOnlySpan<single>, up: ReadOnlySpan<single>, destination: Span<single>) =
         requireSameLength gate up destination
 
-        let mutable firstScalar = 0
         if Vector.IsHardwareAccelerated then
             let gateVectors = MemoryMarshal.Cast<single, Vector<single>>(gate)
             let upVectors = MemoryMarshal.Cast<single, Vector<single>>(up)
             let destinationVectors = MemoryMarshal.Cast<single, Vector<single>>(destination)
             for index = 0 to destinationVectors.Length - 1 do
-                let x = gateVectors[index]
-                let silu = x / (Vector<single>.One + Vector.Exp(-x))
-                destinationVectors[index] <- silu * upVectors[index]
-            firstScalar <- destinationVectors.Length * Vector<single>.Count
+                destinationVectors[index] <- swiGluVector gateVectors[index] upVectors[index]
 
-        for index = firstScalar to destination.Length - 1 do
-            let x = gate[index]
-            let silu = x / (1.0f + MathF.Exp(-x))
-            destination[index] <- silu * up[index]
+            // Fewer than Vector<single>.Count values remain. Padding them with zeros costs one
+            // small buffer per call; silu(0) × 0 = 0 in the unused lanes raises nothing.
+            let width = Vector<single>.Count
+            let firstRemaining = destinationVectors.Length * width
+            let remaining = destination.Length - firstRemaining
+            if remaining > 0 then
+                let padded = Array.zeroCreate<single> (2 * width)
+                gate.Slice(firstRemaining).CopyTo(padded.AsSpan(0, width))
+                up.Slice(firstRemaining).CopyTo(padded.AsSpan(width, width))
+                let result = swiGluVector (Vector<single>(padded, 0)) (Vector<single>(padded, width))
+                result.CopyTo(padded)
+                padded.AsSpan(0, remaining).CopyTo(destination.Slice(firstRemaining))
+        else
+            for index = 0 to destination.Length - 1 do
+                let x = gate[index]
+                let silu = x / (1.0f + MathF.Exp(-x))
+                destination[index] <- silu * up[index]
 
     /// Sum of squares in double precision: rows of thousands of values keep F32 accuracy, and
     /// squares beyond the F32 range, such as that of 1e20, do not overflow.
