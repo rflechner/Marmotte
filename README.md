@@ -292,7 +292,8 @@ The three backend projects share these contracts:
   with at most 4 MiB of host staging per upload. Weight and backend disposal wait
   for queued work and release storage. Try `dotnet fsi examples/CudaWeights.fsx`.
   CUDA RoPE computes double-precision angles in .NET, stages F32 cos/sin pairs on
-  the device, then rotates F32/F16 tensors on the GPU; see [the CUDA guide](docs/cuda.md#rope-and-yarn-on-cuda).
+  the device, then rotates F32/F16 tensors on the GPU; see [the CUDA guide](docs/cuda.md#rope-and-yarn-on-cuda)
+  and `dotnet fsi examples/CudaRope.fsx` for a CPU-vs-CUDA comparison.
   Caches and other kernels still raise `NotImplementedException`.
 
 `Add` writes into a preallocated destination and requires identical contiguous,
