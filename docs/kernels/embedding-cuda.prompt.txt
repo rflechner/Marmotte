@@ -1,0 +1,37 @@
+R.4 CUDA embedding illustrations
+Generated with the built-in image_gen tool; no existing assets replaced.
+All labels are in English to match the repository documentation.
+
+=== embedding-cuda-flow.png ===
+Use case: infographic-diagram.
+Asset type: educational infographic for docs/kernels/embedding-cuda.md in the Marmotte repository.
+Create a precise, approachable explanation for a developer new to CUDA and embeddings. All visible text in English. Landscape 3:2, large crisp typography, generous whitespace, near-white background, navy headings, blue host inputs, purple stored weights, amber computation, teal output. Flat technical infographic, no photos or mascot.
+
+Title: "R.4 — Embedding lookup on the GPU"
+Subtitle: "Read selected weight rows and write F32 activations"
+Two clearly separated stages:
+1. A slim top panel labelled "Once at model loading". Show "Stored weights in host memory" pointing to "UploadWeights" and then to "Stored weights in GPU memory". Label the arrow "Preserve the stored encoding". A note says "Already implemented".
+2. A larger main panel labelled "For each token batch". Left: a HOST box contains exactly "tokenIds = [2, 0, 2]". An arrow labelled "Validate and copy IDs" enters a large outlined GPU box.
+Inside the GPU box, show a stored weight table with exactly four rows labelled "ID 0", "ID 1", "ID 2", "ID 3"; each row is a strip of compressed blocks labelled as "Encoded row" rather than invented numeric values. Highlight ID 0 and ID 2; ID 1 and ID 3 remain subdued. A processing box says "Decode selected rows". Arrows lead to exactly three output rows in this order: "token 0: decode row 2", "token 1: decode row 0", "token 2: decode row 2". Label output "F32 activations [3; C]" and define "C = features per token". An output arrow stays within GPU and points to "Next GPU operation".
+Keep ID order unambiguous and show that repeated ID 2 produces two output rows. Use clear connectors with no crossings through text.
+Bottom callouts: "Token ID chooses the weight row" and "Token position chooses the output row".
+Footer: "R.4 lookup kernel: planned • Full stored weight table stays encoded"
+Constraints: The stored table is uploaded once, not once per token. GPU decoding expands only selected rows. The output is not a matrix product, sum, probability or text. Do not imply that the entire model fits just because only a few rows are read. The next operation is only a conceptual consumer, not a claim that all CUDA inference kernels exist. No code beyond the labels specified.
+
+=== embedding-cuda-block.png ===
+Use case: infographic-diagram.
+Asset type: second educational infographic for Marmotte's R.4 CUDA embedding guide.
+Audience: developers who know arrays but are new to quantization.
+All visible text in English, landscape 3:2, near-white background, navy headings, purple stored data, amber arithmetic, teal decoded values, large readable sans-serif text. Match a clean technical documentation series. No photography, mascot or decorative code.
+
+Title: "From a compressed block to F32 values"
+Subtitle: "Q8_0 example — decoding reconstructs stored approximations"
+Three numbered panels:
+1. "Read one Q8_0 block". Draw a two-part storage strip labelled "F16 scale: 2 bytes" and "32 signed codes: 32 bytes". Below it: "34 stored bytes represent 32 values". Highlight the first four signed codes and display exactly "scale = 0.25" and "codes = [-8, 0, 4, 7, ...]". Add "Only the first four codes are shown".
+2. "Apply the scale". Show the clear formula "value = scale × signed code" and exactly four independent equations: "0.25 × (-8) = -2", "0.25 × 0 = 0", "0.25 × 4 = 1", "0.25 × 7 = 1.75". Arrow from the stored block to this panel.
+3. "Write F32 output". Show exactly four highlighted output cells "-2", "0", "1", "1.75", then an ellipsis. Labels: "32 F32 values = 128 bytes" and "Write into the selected token row". Make clear that 128 bytes refers to the full 32-value output, not just the four displayed values.
+A lower full-width comparison strip labelled "The target Q6_K embedding uses larger blocks" with three simple boxes linked left to right:
+"1 block: 256 values / 210 bytes" -> "1 row: 12 blocks = 3,072 values" -> "2,520 stored bytes → 12,288 F32 bytes".
+Add a small exact note under this strip: "Q6_K needs its own bit unpacking and group scales; it does not use the Q8_0 formula."
+Footer: "Decode selected rows only • Output precision does not restore information lost during quantization"
+Constraints: Keep Q8_0 and Q6_K examples visually separate. A quantization block is a storage format, not a CUDA thread block. Do not depict the F16 scale as an integer. Do not add fabricated binary layouts or claim a CUDA implementation already exists. No full-model speed or memory guarantees.

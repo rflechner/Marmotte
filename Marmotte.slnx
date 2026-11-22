@@ -35,6 +35,10 @@
     <File Path="docs/kernels/attention.md" />
     <File Path="docs/kernels/attention.svg" />
     <File Path="docs/kernels/copy-rows.md" />
+    <File Path="docs/kernels/embedding-cuda-block.png" />
+    <File Path="docs/kernels/embedding-cuda-flow.png" />
+    <File Path="docs/kernels/embedding-cuda.md" />
+    <File Path="docs/kernels/embedding-cuda.prompt.txt" />
     <File Path="docs/kernels/embedding.md" />
     <File Path="docs/kernels/embedding.png" />
     <File Path="docs/kernels/key-value-cache.md" />

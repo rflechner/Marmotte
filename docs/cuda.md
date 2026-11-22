@@ -409,6 +409,10 @@ readback and byte accounting let the tests verify device contents and releases
 without adding a public pointer or weight-download API. Matrix products and
 embedding lookup remain separate roadmap items.
 
+The next step for token embeddings is to decode requested rows on the GPU.
+The [R.4 beginner guide](kernels/embedding-cuda.md) illustrates this planned
+lookup, its F32 output and the existing stored-weight upload it builds on.
+
 ## Compare VRAM and mapped host weights (Q.3)
 
 Q.3 is an optional storage alternative, evaluated separately from inference.

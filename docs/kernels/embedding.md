@@ -7,6 +7,10 @@ arrays, zero-based indexes and [tensor shapes](../kernels.md#reading-the-formula
 Run `dotnet fsi examples/Embedding.fsx` from the repository root with .NET 10;
 its invented vocabulary uses IDs `[1; 0; 1]`, with no model download.
 
+For the planned CUDA implementation, follow the
+[R.4 beginner guide](embedding-cuda.md): host/device data flow, compressed
+blocks, F32 output and the target Q6_K matrix. CUDA lookup remains unimplemented.
+
 ![Embedding lookup: IDs [2, 0, 2] select vocabulary rows 2, 0 and 2 in order, producing three rows of F32 activations](embedding.png)
 
 [Open the embedding illustration](embedding.png).

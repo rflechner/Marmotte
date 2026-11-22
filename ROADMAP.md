@@ -410,8 +410,9 @@ without waiting; `Download` and `Synchronize` wait. GPU tests stay opt-in
   encodings. The CPU backend still accepts F32 only.
 - [ ] **R.4** Embedding lookup: decode the selected weight rows on the GPU straight into
   the F32 destination. Start with F32/F16/Q4_0/Q8_0, then port the remaining `RowDecoder`
-  encodings (Q4_1, Q5_0, Q5_1, IQ4_NL, Q2_K–Q6_K); the target model's embedding matrix is
+  encodings (BF16, Q4_1, Q5_0, Q5_1, IQ4_NL, Q2_K–Q6_K); the target model's embedding matrix is
   Q6_K, 131,072 × 3,072.
+  See the [beginner walkthrough with GPU data flow and block decoding](docs/kernels/embedding-cuda.md).
 
 ### S. CUDA matrix products
 

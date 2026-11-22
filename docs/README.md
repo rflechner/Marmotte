@@ -22,6 +22,7 @@ work. Illustrations are conceptual aids, not executable format specifications.
 | [SwiGLU](kernels/swiglu.md) | Illustrated element-wise gating algorithm, worked example, CPU numerical notes and F16 rounding on CUDA | F32 on CPU; F32 and F16 on CUDA; Metal remains a placeholder |
 | [RMSNorm](kernels/rmsnorm.md) | Row magnitude, normalization and learned scales, with an illustration and runnable F# example | F32 on CPU; F32 and F16 on CUDA; Metal remains a placeholder |
 | [Embedding lookup](kernels/embedding.md) | Illustrated token-ID lookup and stored row decoding | CPU lookup supports all fourteen runtime encodings |
+| [CUDA embedding lookup (R.4)](kernels/embedding-cuda.md) | Beginner walkthrough of host/device data flow, quantized blocks and the Q6_K target, with two infographics | Planned CUDA lookup; CPU examples and stored CUDA weight uploads already work |
 | [CopyRows](kernels/copy-rows.md) | Consecutive activation rows and a runnable CPU example | F32 on CPU; F32 and F16 on CUDA |
 | [MatVec](kernels/matvec.md) | Illustrated dot products for one token | CPU products with stored weights |
 | [MatMul](kernels/matmul.md) | Illustrated weight-row reuse across a token batch | CPU batched products with stored weights |
