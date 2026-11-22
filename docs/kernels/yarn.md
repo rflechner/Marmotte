@@ -14,7 +14,8 @@ to inspect the frequencies and rotations without a model file.
 
 `RotaryEmbedding.Yarn` prepares frequencies and a magnitude in Core for the
 same `IRopeKernel.Rope` operation. The CPU kernel consumes these prepared
-parameters; CUDA and Metal remain placeholders. Preparation depends only on
+parameters; CUDA implements F32/F16 rotation using host-prepared cos/sin tables,
+while Metal remains a placeholder. Preparation depends only on
 the configuration and can be shared across heads, layers and backends.
 
 Let `L` be the original context length and `s` the extension factor. The picture
