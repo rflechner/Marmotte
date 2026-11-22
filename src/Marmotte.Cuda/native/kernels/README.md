@@ -15,6 +15,7 @@ native/
     RmsNorm.cu                 F32/F16 GPU functions and host dispatch
     CopyRows.cu                F32/F16 device-to-device copy, no GPU function
     Rope.cu                    F32/F16 RoPE pair rotation and host dispatch
+    Embedding.cu               F32/F16/Q4_0/Q8_0 row decoding into F32 and host dispatch
 ```
 
 These files appear in the F# project. CMake compiles the `.cu` sources.
@@ -58,6 +59,31 @@ F32 uses individually rounded operations rather than fused multiply-add;
 F16 widens and rounds to Half once. YaRN uses the same operation after
 Core has adjusted frequencies and magnitude.
 See [CUDA RoPE tests](../../../../tests/Marmotte.Backends.Tests/CudaRopeTests.fs).
+
+## Embedding lookup contract and supported encodings
+
+`Embedding.cu` implements the Core `IEmbeddingKernel` contract for stored weights in
+F32, F16, Q4_0 and Q8_0: `destination[t, c] = decode(weights[tokenIds[t], c])`, with the
+destination a rank-2 F32 execution tensor of shape `[tokenIds.Length; weights.Columns]`.
+Every other stored encoding returns `cudaErrorNotSupported` before any launch, and the
+managed backend raises `NotSupportedException` before submission. `tokens`, `rows`,
+`columns` and `rowBytes` count elements and bytes, not blocks; the entry point revalidates
+that the stored allocation is exactly `rows × rowBytes` bytes and that `rowBytes` matches
+the encoding's block layout, so foreign pointers and inconsistent counts are rejected
+before any write.
+
+One thread block decodes one requested row; each thread handles columns
+`threadIdx.x, threadIdx.x + blockDim.x, ...`, so duplicate IDs decode independently and
+every output value has one writer. Stored rows may start at any byte offset, so all reads
+assemble little-endian bytes instead of using typed loads; Q4_0 and Q8_0 products are
+rounded with `__fmul_rn` to match the CPU decoder's F32 operation order without a fused
+multiply-add. Host token IDs are copied into context-owned reusable staging and the
+transfer is waited for before the entry point returns, so the caller may reuse its array
+immediately; the lookup kernel itself is queued asynchronously on the context's stream.
+
+[CudaEmbeddingTests.fs](../../../../tests/Marmotte.Backends.Tests/CudaEmbeddingTests.fs)
+compares all four encodings with the CPU backend bit for bit, checks a hand-specified Q8_0
+block, ID-buffer reuse, stream ordering, validation before writes and native rejections.
 
 ## Add an operation
 

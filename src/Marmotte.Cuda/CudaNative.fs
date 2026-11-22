@@ -71,6 +71,9 @@ module private CudaApi =
     extern int marmotte_cuda_rope(SafeHandle context, nativeint input, nativeint destination, [<In>] single[] coefficients, int tokens, int heads, int headDimension, int pairing)
 
     [<DllImport(library, CallingConvention = CallingConvention.Cdecl)>]
+    extern int marmotte_cuda_embedding(SafeHandle context, nativeint weights, [<In>] int[] tokenIds, nativeint destination, int tokens, int rows, int columns, int rowBytes)
+
+    [<DllImport(library, CallingConvention = CallingConvention.Cdecl)>]
     extern int marmotte_cuda_synchronize(SafeHandle context)
 
     let check operation status =
@@ -207,6 +210,12 @@ type internal CudaSession(deviceIndex: int) =
     member _.Rope(input, destination, coefficients: single array, tokens, heads, headDimension, pairing) =
         CudaApi.marmotte_cuda_rope(context, input, destination, coefficients, tokens, heads, headDimension, pairing)
         |> CudaApi.check "RoPE launch"
+
+    /// The native call stages the ID array to device memory before returning; the lookup
+    /// itself may still be running on the stream.
+    member _.EmbeddingLookup(weights, tokenIds: int array, destination, tokens, rows, columns, rowBytes) =
+        CudaApi.marmotte_cuda_embedding(context, weights, tokenIds, destination, tokens, rows, columns, rowBytes)
+        |> CudaApi.check "embedding lookup launch"
 
     member _.Synchronize() = CudaApi.marmotte_cuda_synchronize(context) |> CudaApi.check "synchronization"
 

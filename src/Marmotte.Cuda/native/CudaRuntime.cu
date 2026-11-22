@@ -40,6 +40,10 @@ MARMOTTE_EXPORT int marmotte_cuda_destroy(CudaContext* context) {
             const auto released = cudaFree(context->ropeCoefficients);
             if (status == cudaSuccess) status = released;
         }
+        if (context->tokenIds) {
+            const auto released = cudaFree(context->tokenIds);
+            if (status == cudaSuccess) status = released;
+        }
         const auto destroyed = cudaStreamDestroy(context->stream);
         if (status == cudaSuccess) status = destroyed;
     }
@@ -158,44 +162,63 @@ MARMOTTE_EXPORT int marmotte_cuda_allocated_bytes(CudaContext* context, long lon
             return cudaErrorInvalidValue;
         total += entry.second.bytes;
     }
-    if (context->ropeCoefficientCapacity >
-        (static_cast<unsigned long long>(std::numeric_limits<long long>::max()) - total) / sizeof(float))
-        return cudaErrorInvalidValue;
-    total += context->ropeCoefficientCapacity * sizeof(float);
+    const auto addStaging = [&total](std::size_t elements, std::size_t elementSize) {
+        if (elements > (static_cast<unsigned long long>(std::numeric_limits<long long>::max()) - total) / elementSize)
+            return false;
+        total += elements * elementSize;
+        return true;
+    };
+    if (!addStaging(context->ropeCoefficientCapacity, sizeof(float)) ||
+        !addStaging(context->tokenIdCapacity, sizeof(int))) return cudaErrorInvalidValue;
     *bytes = static_cast<long long>(total);
     return cudaSuccess;
 }
 
-// Host arrays from .NET are only valid for this P/Invoke call. Wait for the H2D copy
-// before returning; the following RoPE kernel is submitted asynchronously on the stream.
-// The reusable staging belongs to the context and is released on context destruction.
-int stageRopeCoefficients(CudaContext* context, const float* coefficients, std::size_t count) {
-    if (!context || !coefficients || count == 0 ||
-        count > std::numeric_limits<std::size_t>::max() / sizeof(float)) return cudaErrorInvalidValue;
+namespace {
+
+// Host arrays from .NET are only valid for this P/Invoke call. Copy into reusable
+// context-owned staging and wait for the H2D transfer before returning, so the caller may
+// reuse its array immediately; the kernel that reads the staging is submitted asynchronously.
+// Old launches may still read the previous buffer, so growing the staging synchronizes the
+// stream before replacing it. The staging is released on context destruction.
+template <typename T>
+int stageHostBuffer(CudaContext* context, T*& staging, std::size_t& capacity,
+                    const T* source, std::size_t count) {
+    if (!context || !source || count == 0 ||
+        count > std::numeric_limits<std::size_t>::max() / sizeof(T)) return cudaErrorInvalidValue;
     auto status = cudaSetDevice(context->device);
     if (status != cudaSuccess) return status;
 
-    if (count > context->ropeCoefficientCapacity) {
-        // Old launches may still read the previous table, so synchronize before replacing it.
+    if (count > capacity) {
         status = cudaStreamSynchronize(context->stream);
         if (status != cudaSuccess) return status;
-        float* replacement = nullptr;
-        status = cudaMalloc(&replacement, count * sizeof(float));
+        T* replacement = nullptr;
+        status = cudaMalloc(&replacement, count * sizeof(T));
         if (status != cudaSuccess) return status;
-        if (context->ropeCoefficients) {
-            const auto released = cudaFree(context->ropeCoefficients);
+        if (staging) {
+            const auto released = cudaFree(staging);
             if (released != cudaSuccess) {
                 cudaFree(replacement);
                 return released;
             }
         }
-        context->ropeCoefficients = replacement;
-        context->ropeCoefficientCapacity = count;
+        staging = replacement;
+        capacity = count;
     }
-    status = cudaMemcpyAsync(context->ropeCoefficients, coefficients, count * sizeof(float),
-                             cudaMemcpyHostToDevice, context->stream);
+    status = cudaMemcpyAsync(staging, source, count * sizeof(T), cudaMemcpyHostToDevice, context->stream);
     const auto completed = cudaStreamSynchronize(context->stream);
     return status == cudaSuccess ? completed : status;
+}
+
+}
+
+int stageRopeCoefficients(CudaContext* context, const float* coefficients, std::size_t count) {
+    return stageHostBuffer(context, context->ropeCoefficients, context->ropeCoefficientCapacity,
+                           coefficients, count);
+}
+
+int stageTokenIds(CudaContext* context, const int* ids, std::size_t count) {
+    return stageHostBuffer(context, context->tokenIds, context->tokenIdCapacity, ids, count);
 }
 
 MARMOTTE_EXPORT int marmotte_cuda_free(CudaContext* context, void* buffer) {

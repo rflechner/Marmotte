@@ -9,11 +9,12 @@ weights means, and understand the work planned in R.4. You need arrays and
 basic multiplication. The runnable examples use .NET 10 and require neither
 a model download nor a GPU.
 
-**Status: R.4 is planned.** The CPU already implements embedding lookup and
-CUDA already uploads weights in their stored encoding. CUDA
-`EmbeddingLookup` still raises `NotImplementedException`. This guide explains
-the intended operation and a possible implementation path, not an available
-GPU feature or a measured speedup.
+**Status: F32, F16, Q4_0 and Q8_0 are implemented on the GPU** in
+`kernels/Embedding.cu`; every other stored encoding raises
+`NotSupportedException` before submission. The CPU implements embedding
+lookup for every encoding, and CUDA already uploads weights in their stored
+encoding. This guide explains the operation and its implementation, not a
+measured speedup.
 
 ## 1. An embedding is a row selected by a token ID
 
@@ -122,11 +123,11 @@ There are two different moments:
    with its original encoding. This already exists. Quantized weights stay
    quantized; uploading is not decoding. The current upload reuses at most
    4 MiB of managed staging space, while the whole stored payload occupies VRAM.
-2. **For a token batch**, the planned lookup validates the IDs, makes them
-   available to the GPU, reads the selected stored rows and writes their F32
-   values straight into the destination. The destination can feed subsequent
-   GPU operations without a download. Those later kernels have their own
-   roadmap work.
+2. **For a token batch**, the lookup validates the IDs, copies them into
+   context-owned device memory before returning, reads the selected stored
+   rows and writes their F32 values straight into the destination. The
+   destination can feed subsequent GPU operations without a download. Those
+   later kernels have their own roadmap work.
 
 F32 storage already contains F32 values; F16 and BF16 need conversion to F32.
 Quantized encodings require decoding. The resulting activation tensor is F32
@@ -194,7 +195,7 @@ target model: its embedding specifically needs Q6_K decoding.
 
 CUDA launches many **threads**, grouped into **thread blocks** and a **grid**.
 Threads can use their indexes to choose the output values they own. The
-following is a teaching design for R.4, not a committed launch configuration:
+implemented lookup uses this design:
 
 ```text
 for each token position t, in parallel:
@@ -204,12 +205,12 @@ for each token position t, in parallel:
         write destination[t, c]
 ```
 
-For example, one thread block could handle one requested row, with 256 threads
-working across its columns. For 3,072 columns, thread `k` would handle columns
-`k`, `k + 256`, ... up to `k + 11 × 256`. Each output value has one writer.
-Adjacent threads can write adjacent F32 columns. A block-oriented decoder may
-instead assign work by quantization block to reuse scale information; the
-choice needs measurements, especially for a one-token batch.
+One thread block handles one requested row, with 256 threads working across
+its columns. For 3,072 columns, thread `k` handles columns `k`, `k + 256`,
+... up to `k + 11 × 256`. Each output value has one writer, and adjacent
+threads write adjacent F32 columns. A block-oriented decoder could instead
+assign work by quantization block to reuse scale information; that choice
+still needs measurements, especially for a one-token batch.
 
 The encoding determines how to locate a value. For a validated row width `C`:
 
@@ -249,30 +250,32 @@ R.4 implements the existing
 | Completion | Preserve stream submission order; `Download` and `Synchronize` wait for completed work |
 
 The host-lifetime rule is easy to miss. An asynchronous device copy must not
-continue reading an array after the caller is allowed to change it. A planned
-implementation needs owned staging or a completed transfer, and must retain
-its device ID storage until the lookup finishes. The destination and weights
-also remain alive for their submitted work.
+continue reading an array after the caller is allowed to change it. The
+implementation copies the IDs into context-owned device staging and waits for
+that transfer before returning, so the caller may reuse its array immediately;
+the staged IDs stay alive until the lookup finishes. The destination and
+weights also remain alive for their submitted work.
 
 The existing exception categories still apply: invalid IDs use
 `ArgumentOutOfRangeException`, incompatible tensors use `ArgumentException`,
 null tensors use `ArgumentNullException`, and disposal uses
-`ObjectDisposedException`. An encoding not yet supported by the implemented
-CUDA lookup must be rejected with `NotSupportedException` before submission;
-silently choosing another decoding rule would corrupt the embeddings.
+`ObjectDisposedException`. An encoding not supported by the implemented CUDA
+lookup is rejected with `NotSupportedException` before submission; silently
+choosing another decoding rule would corrupt the embeddings.
 
 ## 7. Build R.4 in small, checkable steps
 
-The table below is a proposed progression. All CUDA lookup steps are still
-planned; stored CUDA uploads already support all fourteen encodings.
+The table below is the progression. Steps 1 and 2 are implemented in
+`kernels/Embedding.cu` and covered by opt-in CUDA tests; steps 3–5 remain
+planned. Stored CUDA uploads already support all fourteen encodings.
 
-| Step | Encodings or concern | What it establishes |
+| Step | Encodings or concern | Status |
 | --- | --- | --- |
-| 1 | F32 and F16 | Row addressing, ID order and F32 output; F16 is converted, not copied as F32 bits |
-| 2 | Q4_0 and Q8_0 | Scale reading, signed/packed codes and complete 32-value blocks |
-| 3 | BF16, Q4_1, Q5_0, Q5_1, IQ4_NL | Remaining scalar formats, minimums, extra bits and nonlinear level lookup |
-| 4 | Q2_K through Q6_K | 256-value blocks and their distinct scale/bit layouts; Q6_K covers the target embedding |
-| 5 | Integration and measurements | Stream ordering, buffer lifetimes, validation, prefill and decode workloads |
+| 1 | F32 and F16: row addressing, ID order and F32 output; F16 is converted, not copied as F32 bits | Implemented |
+| 2 | Q4_0 and Q8_0: scale reading, signed/packed codes and complete 32-value blocks | Implemented |
+| 3 | BF16, Q4_1, Q5_0, Q5_1, IQ4_NL: remaining scalar formats, minimums, extra bits and nonlinear level lookup | Planned; raises `NotSupportedException` |
+| 4 | Q2_K through Q6_K: 256-value blocks and their distinct scale/bit layouts; Q6_K covers the target embedding | Planned; raises `NotSupportedException` |
+| 5 | Integration and measurements: stream ordering, buffer lifetimes, validation, prefill and decode workloads | Partly covered by tests; measurements pending |
 
 BF16 is part of Core's fourteen runtime encodings and must be included in the
 eventual coverage. Implement each device decoder from its format rules, using
@@ -343,17 +346,18 @@ Remaining values are zero: true
 ```
 
 These examples demonstrate row selection and decoding separately. R.4 brings
-them together on the GPU under the same format-neutral contract.
+them together on the GPU under the same format-neutral contract, currently
+for F32, F16, Q4_0 and Q8_0 weights (see `examples/CudaEmbedding.fsx`).
 
 ## References and illustration notes
 
 - [NVIDIA CUDA programming model](https://docs.nvidia.com/cuda/cuda-programming-guide/01-introduction/programming-model.html): host/device terminology and thread, block and grid concepts.
 - [GGML block definitions](https://github.com/ggml-org/ggml/blob/master/src/ggml-common.h): Q8_0 and Q6_K layouts, cross-checked against Core's `TensorEncoding` and `RowDecoder` on 2026-11-22. The offsets and memory examples above are derived from those layouts.
 - [Core tensor encodings](../../src/Marmotte.Core/Tensors.fs), [row decoding](../../src/Marmotte.Core/RowDecoder.fs) and [weight matrix validation](../../src/Marmotte.Core/WeightMatrix.fs): current format-neutral behavior.
-- [CUDA backend](../../src/Marmotte.Cuda/CudaBackend.fs): current upload support and the unimplemented embedding lookup entry point.
+- [CUDA backend](../../src/Marmotte.Cuda/CudaBackend.fs): stored uploads and the embedding lookup entry point; [Embedding.cu](../../src/Marmotte.Cuda/native/kernels/Embedding.cu) holds the device decoder.
 
 The two new infographics were generated with the built-in `image_gen` tool
 and visually reviewed; the examples and memory arithmetic were checked separately.
 Their [prompts](embedding-cuda.prompt.txt) are saved alongside them. The diagrams
-illustrate the proposed R.4 flow; the contract and explicit status above take
+illustrate the R.4 flow; the contract and explicit status above take
 precedence over a simplified drawing.

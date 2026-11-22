@@ -417,10 +417,14 @@ without waiting; `Download` and `Synchronize` wait. GPU tests stay opt-in
   issues a single `cudaMemcpyAsync` on the stream instead of a kernel, for F32 and F16
   (bit-exact); the identity copy is a no-op and the native side revalidates counts and
   encodings. The CPU backend still accepts F32 only.
-- [ ] **R.4** Embedding lookup: decode the selected weight rows on the GPU straight into
-  the F32 destination. Start with F32/F16/Q4_0/Q8_0, then port the remaining `RowDecoder`
-  encodings (BF16, Q4_1, Q5_0, Q5_1, IQ4_NL, Q2_K–Q6_K); the target model's embedding matrix is
-  Q6_K, 131,072 × 3,072.
+- [x] **R.4** Embedding lookup: decode the selected weight rows on the GPU straight into
+  the F32 destination. F32, F16, Q4_0 and Q8_0 are implemented in one `kernels/Embedding.cu`:
+  one thread block per requested row, 256 threads striding over its columns, little-endian
+  byte reads, and explicitly rounded products matching the CPU decoder. Host token IDs are
+  staged into context-owned device memory before the call returns, and the lookup runs
+  asynchronously on the stream. The remaining `RowDecoder` encodings (BF16, Q4_1, Q5_0, Q5_1,
+  IQ4_NL, Q2_K–Q6_K) raise `NotSupportedException` before submission; the target model's
+  embedding matrix is Q6_K, 131,072 × 3,072.
   See the [beginner walkthrough with GPU data flow and block decoding](docs/kernels/embedding-cuda.md).
 
 ### S. CUDA matrix products

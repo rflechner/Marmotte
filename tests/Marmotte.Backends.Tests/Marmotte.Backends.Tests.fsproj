@@ -9,6 +9,7 @@
     <Compile Include="CudaTests.fs" />
     <Compile Include="CudaRopeTests.fs" />
     <Compile Include="CudaWeightTests.fs" />
+    <Compile Include="CudaEmbeddingTests.fs" />
     <Compile Include="HalfTests.fs" />
     <Compile Include="EmbeddingTests.fs" />
     <Compile Include="RopeTests.fs" />

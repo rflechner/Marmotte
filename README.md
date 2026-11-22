@@ -295,6 +295,9 @@ The three backend projects share these contracts:
   CUDA RoPE computes double-precision angles in .NET, stages F32 cos/sin pairs on
   the device, then rotates F32/F16 tensors on the GPU; see [the CUDA guide](docs/cuda.md#rope-and-yarn-on-cuda)
   and `dotnet fsi examples/CudaRope.fsx` for a CPU-vs-CUDA comparison.
+  CUDA embedding lookup decodes F32/F16/Q4_0/Q8_0 weight rows on the GPU into an
+  F32 destination; see [the CUDA guide](docs/cuda.md#embedding-lookup-on-cuda)
+  and `dotnet fsi examples/CudaEmbedding.fsx` for a CPU-vs-CUDA comparison.
   Caches and other kernels still raise `NotImplementedException`.
 
 `Add` writes into a preallocated destination and requires identical contiguous,

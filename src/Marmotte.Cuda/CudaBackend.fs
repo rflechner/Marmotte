@@ -5,7 +5,8 @@ open System.Collections.Generic
 open Marmotte.Core
 
 /// Owned contiguous F32/F16 device tensors, stored-encoding weight uploads, F32/F16 Add,
-/// SwiGLU, RMS normalization, row copies and RoPE/YaRN, using one CUDA stream per instance.
+/// SwiGLU, RMS normalization, row copies, RoPE/YaRN and embedding lookup of F32/F16/Q4_0/Q8_0
+/// weight rows, using one CUDA stream per instance.
 /// deviceIndex is a zero-based CUDA device ordinal (default 0), and must be non-negative.
 /// Native loading and device initialization happen at the first non-empty allocation; construction,
 /// empty tensors and an unused Synchronize require no CUDA installation. No CPU fallback is used.
@@ -51,6 +52,12 @@ type CudaBackend(?deviceIndex: int) =
         | :? CudaTensor as tensor when Object.ReferenceEquals(tensor.Owner, owner) -> tensor.Pointer
         | _ -> invalidArg argumentName "The tensor must belong to this CUDA backend instance."
 
+    let weightPointerOf argumentName (weights: IWeightTensor) =
+        ArgumentNullException.ThrowIfNull(weights, argumentName)
+        match weights with
+        | :? CudaWeightTensor as tensor when Object.ReferenceEquals(tensor.Owner, owner) -> tensor.Pointer
+        | _ -> invalidArg argumentName "The weights must belong to this CUDA backend instance."
+
     let release (storage: ICudaStorage) =
         try
             if storage.Pointer <> 0n then
@@ -84,13 +91,9 @@ type CudaBackend(?deviceIndex: int) =
     // kernels exist. They never expose a device pointer through the public backend contract.
     member internal _.DownloadWeights(weights: IWeightTensor) =
         checkDisposed ()
-        ArgumentNullException.ThrowIfNull(weights)
-        match weights with
-        | :? CudaWeightTensor as tensor when Object.ReferenceEquals(tensor.Owner, owner) ->
-            let pointer = tensor.Pointer
-            let bytes = weights.Rows * (weights.Columns / weights.Encoding.BlockElements) * weights.Encoding.BlockBytes
-            getSession().DownloadStored(pointer, bytes)
-        | _ -> invalidArg (nameof weights) "The weights must belong to this CUDA backend instance."
+        let pointer = weightPointerOf (nameof weights) weights
+        let bytes = weights.Rows * (weights.Columns / weights.Encoding.BlockElements) * weights.Encoding.BlockBytes
+        getSession().DownloadStored(pointer, bytes)
 
     member internal _.AllocatedBytes =
         checkDisposed ()
@@ -238,7 +241,34 @@ type CudaBackend(?deviceIndex: int) =
                 getSession().RmsNorm(inputPointer, weightPointer, epsilon, destinationPointer, count / columns, columns)
 
     interface IEmbeddingKernel with
-        member _.EmbeddingLookup(_, _, _) = notImplemented "embedding lookup kernel"
+        member _.EmbeddingLookup(weights, tokenIds, destination) =
+            checkDisposed ()
+            let weightsPointer = weightPointerOf (nameof weights) weights
+            let destinationPointer = pointerOf (nameof destination) destination
+
+            let columns = weights.Columns
+            let dimensions = destination.Shape.Dimensions
+            if dimensions.Count <> 2 || dimensions[0] <> tokenIds.Length || dimensions[1] <> columns then
+                invalidArg (nameof destination) $"Embedding lookup requires shape [{tokenIds.Length}; {columns}], not {destination.Shape}."
+            requireEncoding TensorEncoding.F32 (nameof destination) destination
+
+            // Reject unsupported stored encodings before submission, never decode another rule.
+            match weights.Encoding with
+            | TensorEncoding.F32 | TensorEncoding.F16 | TensorEncoding.Q4_0 | TensorEncoding.Q8_0 -> ()
+            | encoding -> raise (NotSupportedException($"CUDA embedding lookup does not support {encoding} weights."))
+
+            // Validate the entire batch first: a bad final token must not leave earlier rows written.
+            let ids = tokenIds.Span
+            for index = 0 to ids.Length - 1 do
+                if ids[index] < 0 || ids[index] >= weights.Rows then
+                    raise (ArgumentOutOfRangeException(nameof tokenIds, $"Token ID {ids[index]} at index {index} must be in [0, {weights.Rows})."))
+
+            if destination.Shape.ElementCount > 0 then
+                // The native call stages the IDs before returning, so the caller may reuse its
+                // buffer immediately. Only the selected rows are decoded, on the GPU stream.
+                let rowBytes = columns / weights.Encoding.BlockElements * weights.Encoding.BlockBytes
+                getSession().EmbeddingLookup(weightsPointer, ids.ToArray(), destinationPointer,
+                                              tokenIds.Length, weights.Rows, columns, rowBytes)
 
     interface IRowCopyKernel with
         member _.CopyRows(source, firstRow, destination) =

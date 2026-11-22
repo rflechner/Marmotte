@@ -188,8 +188,10 @@ illustration, a runnable F# example, the tensor contract and CPU numerical notes
 ## Embedding Lookup
 
 See the [Embedding Lookup guide](kernels/embedding.md#embedding-lookup).
-The [R.4 beginner guide](kernels/embedding-cuda.md) explains the planned CUDA
-path with two infographics and runnable CPU examples.
+The [R.4 beginner guide](kernels/embedding-cuda.md) explains the CUDA path
+with two infographics and runnable CPU examples. CUDA decodes F32, F16, Q4_0
+and Q8_0 weight rows on the GPU in `kernels/Embedding.cu`; other stored
+encodings raise `NotSupportedException`.
 
 ## Matrix-Vector Product
 

@@ -2,7 +2,8 @@
 
 Marmotte's CUDA backend implements contiguous F32 and F16 tensors, zero-initialized
 allocation, uploads, downloads, stored weight uploads, element-wise Add, SwiGLU,
-RMS normalization, row copies and RoPE/YaRN in both formats. It uses
+RMS normalization, row copies, RoPE/YaRN in both formats, and embedding lookup
+decoding F32/F16/Q4_0/Q8_0 weight rows on the GPU. It uses
 native CUDA C++ through P/Invoke, with no additional NuGet dependency. Other
 kernels and the key-value cache still throw
 `NotImplementedException`.
@@ -406,12 +407,14 @@ attempt when the backend closes. Other backend instances remain usable.
 Storage types live in `CudaStorage.fs`, `CudaTensor.fs` and `CudaWeightTensor.fs`;
 the backend owns their lifetimes and the session owns native interop. Internal raw
 readback and byte accounting let the tests verify device contents and releases
-without adding a public pointer or weight-download API. Matrix products and
-embedding lookup remain separate roadmap items.
+without adding a public pointer or weight-download API. Matrix products remain
+a separate roadmap item.
 
-The next step for token embeddings is to decode requested rows on the GPU.
-The [R.4 beginner guide](kernels/embedding-cuda.md) illustrates this planned
-lookup, its F32 output and the existing stored-weight upload it builds on.
+Embedding lookup (R.4) decodes the requested F32/F16/Q4_0/Q8_0 rows on the GPU
+straight into the F32 destination; other stored encodings raise
+`NotSupportedException` before submission.
+The [R.4 beginner guide](kernels/embedding-cuda.md) illustrates this lookup,
+its F32 output and the stored-weight upload it builds on.
 
 ## Compare VRAM and mapped host weights (Q.3)
 
@@ -565,6 +568,15 @@ and YaRN to the CPU reference for long positions, both pair layouts, Q/K head
 counts, F32/F16, in-place rotation, stream ordering and invalid calls. The empty
 and validation tests do not load CUDA; device tests require explicit opt-in.
 
+[`CudaEmbeddingTests.fs`](../tests/Marmotte.Backends.Tests/CudaEmbeddingTests.fs) compares
+embedding lookup with the CPU bit for bit for F32, F16, Q4_0 and Q8_0 rows with
+repeated and reordered IDs, checks a hand-specified Q8_0 block exactly, host ID
+buffer reuse after return, stream ordering, and validation (shapes, IDs,
+encodings, ownership, disposal) before any write. Direct C ABI checks reject
+inconsistent counts, wrong row sizes, non-F32 destinations, stored weights as
+destination and foreign contexts. Unsupported stored encodings raise
+`NotSupportedException`; the empty and null/disposal tests need no driver.
+
 [`HalfTests.fs`](../tests/Marmotte.Backends.Tests/HalfTests.fs) adds the same
 independent binary16 fixtures on CPU and CUDA: halfway rounding, overflow,
 normal/subnormal transitions, signed zero, infinities and NaNs. It checks all
@@ -596,7 +608,7 @@ stored weights to Add, and row copies with inconsistent counts, encodings or con
 | No kernel image for this device | Rebuild with an architecture supported by both the GPU and Toolkit. |
 | `OutOfMemoryException` | Device allocation failed or the host staging array could not be allocated. Dispose unused tensors and reduce sizes. |
 | An error appears at Download or Synchronize | An asynchronous kernel may have failed earlier. Add a temporary Synchronize after the suspected launch to locate it. |
-| `NotImplementedException` from another kernel | Only Add, SwiGLU, RMS normalization, row copies and RoPE/YaRN (both formats) are implemented on CUDA at this stage. |
+| `NotImplementedException` from another kernel | Only Add, SwiGLU, RMS normalization, row copies, RoPE/YaRN (both formats) and embedding lookup (F32/F16/Q4_0/Q8_0 weights) are implemented on CUDA at this stage. |
 
 CUDA runtime failures include the operation, numeric error code and native
 message in `InvalidOperationException`; `cudaErrorMemoryAllocation` (status 2)
@@ -646,6 +658,35 @@ kernel is then launched asynchronously. This is a correctness-first trade-off:
 pinned asynchronous staging or device-side angles are future optimizations.
 This operation does not implement attention temperature or the KV cache.
 
+## Embedding lookup on CUDA
+
+`EmbeddingLookup` writes `destination[t, c] = decode(weights[tokenIds[t], c])`
+for F32, F16, Q4_0 and Q8_0 stored weights; the destination is a rank-2 F32
+execution tensor of shape `[tokenIds.Length; weights.Columns]`, and every other
+stored encoding raises `NotSupportedException` before submission.
+
+`Embedding.cu` launches one thread block per requested row; each of its 256
+threads decodes columns `threadIdx.x, threadIdx.x + 256, ...` with
+little-endian byte reads (stored rows may start at any byte offset), so
+duplicate IDs decode independently and every output value has one writer.
+Q4_0 and Q8_0 products use `__fmul_rn`, matching the CPU decoder's F32 operation
+order without a fused multiply-add, so results are bit-identical to the CPU.
+
+Host token IDs are copied into a reusable context-owned device staging buffer
+(included in allocation accounting, freed on disposal) and the transfer is
+waited for before the call returns, so the caller may reuse its ID array
+immediately; the lookup kernel itself runs asynchronously on the stream.
+
+For a runnable comparison against the CPU reference:
+
+```powershell
+dotnet build Marmotte.slnx -p:MarmotteBuildCuda=true
+dotnet fsi examples/CudaEmbedding.fsx
+```
+
+See the [R.4 beginner guide](kernels/embedding-cuda.md) for the data flow,
+block decoding and the remaining encodings.
+
 ## Kernel formats and file layout
 
 Each operation has one `.cu` file containing its shared host entry point and
@@ -674,7 +715,13 @@ native/
     RmsNorm.cu         rmsNormF32, rmsNormF16 and marmotte_cuda_rmsnorm
     CopyRows.cu        marmotte_cuda_copy_rows, a device-to-device copy
     Rope.cu            ropeF32, ropeF16 and marmotte_cuda_rope
+    Embedding.cu       embeddingLookup and marmotte_cuda_embedding
 ```
+
+`Embedding.cu` decodes selected rows of a stored weight payload into F32
+destinations: one `embeddingLookup` kernel shared by the supported encodings,
+with per-encoding device decoding of F32, F16, Q4_0 and Q8_0 values. See the
+[Embedding contract](../src/Marmotte.Cuda/native/kernels/README.md#embedding-lookup-contract-and-supported-encodings).
 
 Both Add variants are implemented and available through `ITensorBackend`, and so
 are both SwiGLU variants. SwiGLU computes
