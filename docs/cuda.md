@@ -1,8 +1,8 @@
-# CUDA: from the first build to an Add on the GPU
+# CUDA: from the first build to RoPE on the GPU
 
 Marmotte's CUDA backend implements contiguous F32 and F16 tensors, zero-initialized
 allocation, uploads, downloads, stored weight uploads, element-wise Add, SwiGLU,
-RMS normalization and row copies in both formats. It uses
+RMS normalization, row copies and RoPE/YaRN in both formats. It uses
 native CUDA C++ through P/Invoke, with no additional NuGet dependency. Other
 kernels and the key-value cache still throw
 `NotImplementedException`.
@@ -560,6 +560,11 @@ while work is pending. The example and GPU tests were exercised on the Windows
 setup above. No model files are required. These are correctness checks, not
 performance measurements; no speedup is claimed.
 
+[`CudaRopeTests.fs`](../tests/Marmotte.Backends.Tests/CudaRopeTests.fs) compares plain RoPE
+and YaRN to the CPU reference for long positions, both pair layouts, Q/K head
+counts, F32/F16, in-place rotation, stream ordering and invalid calls. The empty
+and validation tests do not load CUDA; device tests require explicit opt-in.
+
 [`HalfTests.fs`](../tests/Marmotte.Backends.Tests/HalfTests.fs) adds the same
 independent binary16 fixtures on CPU and CUDA: halfway rounding, overflow,
 normal/subnormal transitions, signed zero, infinities and NaNs. It checks all
@@ -591,13 +596,55 @@ stored weights to Add, and row copies with inconsistent counts, encodings or con
 | No kernel image for this device | Rebuild with an architecture supported by both the GPU and Toolkit. |
 | `OutOfMemoryException` | Device allocation failed or the host staging array could not be allocated. Dispose unused tensors and reduce sizes. |
 | An error appears at Download or Synchronize | An asynchronous kernel may have failed earlier. Add a temporary Synchronize after the suspected launch to locate it. |
-| `NotImplementedException` from another kernel | Only Add, SwiGLU, RMS normalization and row copies (both formats) are implemented on CUDA at this stage. |
+| `NotImplementedException` from another kernel | Only Add, SwiGLU, RMS normalization, row copies and RoPE/YaRN (both formats) are implemented on CUDA at this stage. |
 
 CUDA runtime failures include the operation, numeric error code and native
 message in `InvalidOperationException`; `cudaErrorMemoryAllocation` (status 2)
 maps to `OutOfMemoryException`, as specified in the
 [runtime error identifiers](https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html).
 There is no automatic CPU fallback.
+
+## RoPE and YaRN on CUDA
+
+Core prepares the frequencies, magnitude and pairing once. The CUDA backend
+computes cos/sin in double precision on the host for each requested position,
+multiplies by the magnitude, rounds once to F32, and copies the coefficients
+to the GPU. Each head of a token shares the same coefficients.
+
+For a runnable comparison against the CPU reference, use:
+
+```powershell
+dotnet build Marmotte.slnx -p:MarmotteBuildCuda=true
+dotnet fsi examples/CudaRope.fsx
+```
+
+For example, after building with `-p:MarmotteBuildCuda=true`:
+
+```fsharp
+use backend = new CudaBackend() :> ITensorBackend
+let shape = TensorShape.Create [| 2; 128 |]
+let values = Array.init 256 (fun i -> single (i % 17 - 8) / 8.0f)
+use tensor = backend.Upload(shape, ReadOnlyMemory<single>(values))
+let embedding = RotaryEmbedding.Standard(128, 1000000.0, RopePairing.AdjacentPairs)
+backend.Rope(tensor, ReadOnlyMemory<int>([| 0; 16384 |]), embedding, tensor)
+backend.Synchronize()
+```
+
+For YaRN, use `RotaryEmbedding.Yarn` and its validated `YarnParameters` instead.
+CUDA supports F32 and F16, adjacent and split-half pairing, rank-2 and rank-3
+head layouts, and in-place rotation. Positions must be non-negative; shape,
+encoding and device ownership are validated before any GPU work.
+
+`Rope.cu` launches one GPU thread per pair. Each thread reads both inputs
+before writing either output, and uses explicitly rounded arithmetic rather
+than fused multiply-add. F16 widens to F32 and rounds once on output.
+
+Coefficient staging uses a reusable context-owned device buffer included in
+allocation accounting and freed on backend disposal. The host-to-device copy
+synchronizes the stream before the marshalled array is released; the rotation
+kernel is then launched asynchronously. This is a correctness-first trade-off:
+pinned asynchronous staging or device-side angles are future optimizations.
+This operation does not implement attention temperature or the KV cache.
 
 ## Kernel formats and file layout
 
@@ -626,6 +673,7 @@ native/
     SwiGlu.cu          swiGluF32, swiGluF16 and marmotte_cuda_swiglu
     RmsNorm.cu         rmsNormF32, rmsNormF16 and marmotte_cuda_rmsnorm
     CopyRows.cu        marmotte_cuda_copy_rows, a device-to-device copy
+    Rope.cu            ropeF32, ropeF16 and marmotte_cuda_rope
 ```
 
 Both Add variants are implemented and available through `ITensorBackend`, and so

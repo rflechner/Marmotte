@@ -5,11 +5,11 @@ open System.Collections.Generic
 open Marmotte.Core
 
 /// Owned contiguous F32/F16 device tensors, stored-encoding weight uploads, F32/F16 Add,
-/// SwiGLU, RMS normalization and row copies, using one CUDA stream per instance.
+/// SwiGLU, RMS normalization, row copies and RoPE/YaRN, using one CUDA stream per instance.
 /// deviceIndex is a zero-based CUDA device ordinal (default 0), and must be non-negative.
 /// Native loading and device initialization happen at the first non-empty allocation; construction,
 /// empty tensors and an unused Synchronize require no CUDA installation. No CPU fallback is used.
-/// Add, SwiGLU, RMS normalization, row copies and zero-initialization may return before completion. Transfers, tensor disposal and
+/// Add, SwiGLU, RMS normalization, row copies, RoPE and zero-initialization may return before completion. Transfers, tensor disposal and
 /// Synchronize wait for preceding work. Backend disposal waits and releases all remaining tensors
 /// and weights.
 /// UploadWeights copies the whole stored payload to device memory, so the WeightMatrix's source
@@ -267,7 +267,52 @@ type CudaBackend(?deviceIndex: int) =
         member _.MatMul(_, _, _) = notImplemented "matrix-matrix product"
 
     interface IRopeKernel with
-        member _.Rope(_, _, _, _) = notImplemented "RoPE kernel"
+        member _.Rope(input, positions, embedding, destination) =
+            checkDisposed ()
+            ArgumentNullException.ThrowIfNull(embedding)
+            let inputPointer = pointerOf (nameof input) input
+            let destinationPointer = pointerOf (nameof destination) destination
+
+            let shape = input.Shape
+            if shape.Rank < 2 then
+                invalidArg (nameof input) "RoPE requires a rank of at least 2 with tokens in the first dimension."
+            let tokens = shape.Dimensions[0]
+            if positions.Length <> tokens then
+                invalidArg (nameof positions) $"RoPE requires {tokens} token positions, not {positions.Length}."
+            let valuesPerToken =
+                shape.Dimensions |> Seq.skip 1 |> Seq.fold (fun product dimension -> product * int64 dimension) 1L
+            if valuesPerToken % int64 embedding.HeadDimension <> 0L then
+                invalidArg (nameof input) $"RoPE requires whole heads of {embedding.HeadDimension} values per token, not {shape}."
+            requireSameShape "RoPE" input (nameof destination) destination
+            requireEncoding input.Encoding (nameof destination) destination
+
+            let ids = positions.Span
+            for index = 0 to ids.Length - 1 do
+                if ids[index] < 0 then
+                    raise (ArgumentOutOfRangeException(nameof positions, $"RoPE position at index {index} must be non-negative."))
+
+            if shape.ElementCount > 0 then
+                // Match the CPU reference: prepare double-precision angles once per token and
+                // round cosine * magnitude and sine * magnitude to F32 before rotating heads.
+                // The native call stages these coefficients before returning, so the caller may
+                // reuse the positions buffer immediately. The GPU rotates values on its stream.
+                let pairs = embedding.HeadDimension / 2
+                let coefficients = Array.zeroCreate<single> (tokens * embedding.HeadDimension)
+                let magnitude = float embedding.Magnitude
+                for token = 0 to tokens - 1 do
+                    for pair = 0 to pairs - 1 do
+                        let angle = float ids[token] * embedding.Frequencies[pair]
+                        let offset = token * embedding.HeadDimension + 2 * pair
+                        coefficients[offset] <- single (Math.Cos(angle) * magnitude)
+                        coefficients[offset + 1] <- single (Math.Sin(angle) * magnitude)
+
+                let pairing =
+                    match embedding.Pairing with
+                    | RopePairing.AdjacentPairs -> 0
+                    | RopePairing.SplitHalves -> 1
+                let heads = int (valuesPerToken / int64 embedding.HeadDimension)
+                getSession().Rope(inputPointer, destinationPointer, coefficients, tokens, heads,
+                                  embedding.HeadDimension, pairing)
 
     interface IAttentionTemperatureKernel with
         member _.ApplyAttentionTemperature(_, _, _, _) = notImplemented "attention temperature kernel"

@@ -36,6 +36,10 @@ MARMOTTE_EXPORT int marmotte_cuda_destroy(CudaContext* context) {
             const auto released = cudaFree(entry.first);
             if (status == cudaSuccess) status = released;
         }
+        if (context->ropeCoefficients) {
+            const auto released = cudaFree(context->ropeCoefficients);
+            if (status == cudaSuccess) status = released;
+        }
         const auto destroyed = cudaStreamDestroy(context->stream);
         if (status == cudaSuccess) status = destroyed;
     }
@@ -154,8 +158,44 @@ MARMOTTE_EXPORT int marmotte_cuda_allocated_bytes(CudaContext* context, long lon
             return cudaErrorInvalidValue;
         total += entry.second.bytes;
     }
+    if (context->ropeCoefficientCapacity >
+        (static_cast<unsigned long long>(std::numeric_limits<long long>::max()) - total) / sizeof(float))
+        return cudaErrorInvalidValue;
+    total += context->ropeCoefficientCapacity * sizeof(float);
     *bytes = static_cast<long long>(total);
     return cudaSuccess;
+}
+
+// Host arrays from .NET are only valid for this P/Invoke call. Wait for the H2D copy
+// before returning; the following RoPE kernel is submitted asynchronously on the stream.
+// The reusable staging belongs to the context and is released on context destruction.
+int stageRopeCoefficients(CudaContext* context, const float* coefficients, std::size_t count) {
+    if (!context || !coefficients || count == 0 ||
+        count > std::numeric_limits<std::size_t>::max() / sizeof(float)) return cudaErrorInvalidValue;
+    auto status = cudaSetDevice(context->device);
+    if (status != cudaSuccess) return status;
+
+    if (count > context->ropeCoefficientCapacity) {
+        // Old launches may still read the previous table, so synchronize before replacing it.
+        status = cudaStreamSynchronize(context->stream);
+        if (status != cudaSuccess) return status;
+        float* replacement = nullptr;
+        status = cudaMalloc(&replacement, count * sizeof(float));
+        if (status != cudaSuccess) return status;
+        if (context->ropeCoefficients) {
+            const auto released = cudaFree(context->ropeCoefficients);
+            if (released != cudaSuccess) {
+                cudaFree(replacement);
+                return released;
+            }
+        }
+        context->ropeCoefficients = replacement;
+        context->ropeCoefficientCapacity = count;
+    }
+    status = cudaMemcpyAsync(context->ropeCoefficients, coefficients, count * sizeof(float),
+                             cudaMemcpyHostToDevice, context->stream);
+    const auto completed = cudaStreamSynchronize(context->stream);
+    return status == cudaSuccess ? completed : status;
 }
 
 MARMOTTE_EXPORT int marmotte_cuda_free(CudaContext* context, void* buffer) {
