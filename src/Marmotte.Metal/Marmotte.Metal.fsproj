@@ -2,6 +2,8 @@
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <!-- Opting into GPU tests also deploys their native dependency for ordinary CLI/IDE builds. -->
+    <MarmotteBuildMetal Condition="'$(MarmotteBuildMetal)' == '' and '$(MARMOTTE_TEST_METAL)' == '1' and '$(MarmotteMetalNativePath)' == '' and $([MSBuild]::IsOSPlatform('OSX'))">true</MarmotteBuildMetal>
     <MarmotteBuildMetal Condition="'$(MarmotteBuildMetal)' == ''">false</MarmotteBuildMetal>
     <!-- Normalize into a private property: command-line global properties cannot be reassigned. -->
     <_MarmotteMetalBuildRequested>false</_MarmotteMetalBuildRequested>

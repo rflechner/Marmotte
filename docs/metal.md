@@ -6,15 +6,16 @@ compute function.
 
 The Metal backend implements contiguous F32 and F16 tensors, zero-initialized
 allocation, uploads, downloads, synchronization, element-wise Add, the mixed
-`AddF32F16` and SwiGLU in F32 and F16. It uses native
+`AddF32F16`, SwiGLU and RMS normalization in F32 and F16, and the mixed
+`RmsNormF32ToF16`. It uses native
 Objective-C++ and Metal Shading Language (MSL) through P/Invoke, with no
 additional NuGet dependency. Other kernels, weight upload and the key-value cache
 still throw `NotImplementedException`.
 
 This guide assumes familiarity with building the .NET solution, but no Metal
 experience. Commands run from the repository root. The native build is optional:
-`dotnet build Marmotte.slnx` and the default tests work without it, on any
-operating system.
+with GPU tests disabled, `dotnet build Marmotte.slnx` and the default tests work
+without it, on any operating system.
 
 ## What the different tools do
 
@@ -65,7 +66,7 @@ file to deploy, and no path to find at run time.
 
 | MSBuild property | Default and purpose |
 | --- | --- |
-| `MarmotteBuildMetal` | `false`; set to `true` or `1` to build the native library before the managed project. Both environment variables and `-p:` properties accept these values. |
+| `MarmotteBuildMetal` | Defaults to `true` on macOS when `MARMOTTE_TEST_METAL=1` and no prebuilt library is configured; otherwise `false`. Set explicitly to `true` or `1` to build the native library, or `false` to disable that build. Both environment variables and `-p:` properties accept these values. |
 | `MarmotteMetalBuildDirectory` | `artifacts/metal/msbuild/<Configuration>` under the repository. |
 | `MarmotteMetalNativePath` | Empty. Set it to deploy a prebuilt `libmarmotte_metal.dylib` instead of building one. |
 
@@ -89,12 +90,26 @@ the F16 result into the F32 result: 12 + 12 = 24.
 
 ## Run the tests
 
-Two settings control different stages:
+Two settings control the build and the test process:
 
 | Setting | Read by | Purpose |
 | --- | --- | --- |
 | `MarmotteBuildMetal=true` or `1` | MSBuild, during the build | Compiles the native library and copies it beside the test assemblies. |
-| `MARMOTTE_TEST_METAL=1` | The test process | Enables the optional GPU tests. Once enabled, a missing library or device fails them. |
+| `MARMOTTE_TEST_METAL=1` | MSBuild and the test process | Enables the optional GPU tests and, on macOS, defaults `MarmotteBuildMetal` to `true` unless a prebuilt library is configured. Once enabled, a missing library or device fails the tests. |
+
+Build and run the backend tests in one command:
+
+```bash
+MARMOTTE_TEST_METAL=1 dotnet test tests/Marmotte.Backends.Tests/Marmotte.Backends.Tests.fsproj
+```
+
+With `MARMOTTE_TEST_METAL=1` exported in your shell or inherited by your IDE,
+ordinary build and test commands also compile and copy the native library. An
+explicit `MarmotteBuildMetal=false` still disables compilation, and
+`MarmotteMetalNativePath` deploys a prebuilt library without invoking native tools.
+
+To build separately and then run without rebuilding, use the same configuration
+for both commands:
 
 ```bash
 dotnet build tests/Marmotte.Backends.Tests/Marmotte.Backends.Tests.fsproj -p:MarmotteBuildMetal=true
@@ -106,6 +121,19 @@ MARMOTTE_TEST_METAL=1 dotnet test tests/Marmotte.Backends.Tests/Marmotte.Backend
 
 Without `MARMOTTE_TEST_METAL=1`, tests that need a GPU are skipped. Tests of empty
 tensors and argument validation always run, because those paths load no native code.
+
+If a GPU test raises `DllNotFoundException`, check that `libmarmotte_metal.dylib`
+is beside `Marmotte.Backends.Tests.dll` in the selected configuration's output
+directory. `dotnet test --no-build` cannot compile or copy a missing library;
+run the build above first. Enabling the variable only inside an IDE's test runner
+does not pass it to MSBuild: enable it for the IDE's build process as well, or set
+`MarmotteBuildMetal=true` for that build.
+
+In Rider, an explicit build setting can be added under **Settings > Build,
+Execution, Deployment > Toolset and Build > MSBuild global properties**:
+`MarmotteBuildMetal=true`. Keep `MARMOTTE_TEST_METAL=1` enabled for the test
+process, then rebuild the solution before rerunning the tests. See Rider's
+[Toolset and Build reference](https://www.jetbrains.com/help/rider/Settings_Toolset_and_Build.html).
 
 ## Follow one call through the code
 
@@ -119,6 +147,8 @@ tensors and argument validation always run, because those paths load no native c
 | [`native/kernels/Add.mm`](../src/Marmotte.Metal/native/kernels/Add.mm) | `marmotte_metal_add` and `marmotte_metal_add_f32_f16`: native validation, format dispatch, encoding and submission. |
 | [`native/kernels/SwiGlu.metal`](../src/Marmotte.Metal/native/kernels/SwiGlu.metal) | The F32 and F16 SwiGLU compute functions: `silu(gate[i]) * up[i]`. |
 | [`native/kernels/SwiGlu.mm`](../src/Marmotte.Metal/native/kernels/SwiGlu.mm) | `marmotte_metal_swi_glu`: native validation, encoding and submission. |
+| [`native/kernels/RmsNorm.metal`](../src/Marmotte.Metal/native/kernels/RmsNorm.metal) | The F32, F16 and F32-to-F16 RMS normalization compute functions, sharing one row function, one thread per row. |
+| [`native/kernels/RmsNorm.mm`](../src/Marmotte.Metal/native/kernels/RmsNorm.mm) | `marmotte_metal_rms_norm` and `marmotte_metal_rms_norm_f32_to_f16`: native validation, row and column arguments, encoding and submission. |
 | [`native/CMakeLists.txt`](../src/Marmotte.Metal/native/CMakeLists.txt) | Native sources, compiler settings and output location. |
 
 ```mermaid
@@ -268,9 +298,81 @@ is a signed zero. The F32 subnormal
 flush described above also applies to F32 SwiGLU results, so the tests add an
 absolute floor of `1e-30`; F16 subnormals are kept exactly.
 
+## RMS normalization
+
+`RmsNorm(input, weight, epsilon, destination)` computes, for each row `r` of the
+last dimension,
+`destination[r, c] = input[r, c] / sqrt(mean(input[r, *]²) + epsilon) × weight[c]`.
+Metal accepts F32 or F16, with `input`, `weight` and `destination` in the same
+encoding; mixed encodings raise `ArgumentException`. The one mixed combination,
+F32 `input` and `weight` with an F16 `destination`, is requested by name with
+`RmsNormF32ToF16`. Shapes, ownership and `epsilon` are validated as on the CPU (see
+[kernels.md](kernels.md#rms-normalization)), before any submission.
+
+| Call | Input and weight | Destination | Compute function |
+| --- | --- | --- | --- |
+| `RmsNorm` | F32 | F32 | `rmsNormF32` |
+| `RmsNorm` | F16 | F16 | `rmsNormF16` |
+| `RmsNormF32ToF16` | F32 | F16 | `rmsNormF32ToF16` |
+
+The three compute functions call one templated row function and differ only by
+their storage types. It is deliberately the simplest kernel: each GPU thread
+normalizes one whole row, reading it once to sum the squares and once to write
+the results, with an extra reduction for tiny `epsilon` as described below. The
+column count and `epsilon` reach the GPU through `setBytes`, while the row count
+sets the dispatch size. Parallelism comes only from rows, so a prompt of
+many tokens keeps the GPU busy, whereas the single row of a decoding step runs on
+one thread. Splitting each row across a SIMD group is the obvious next step once
+it is measured.
+
+The squares, their sum and the scale are always F32, then each result is
+converted once to the destination type. For F16 storage this matters: the square
+of an F16 value above 256 overflows binary16, and 65504 normalizes to exactly 1
+only because the sum is wider. For F32 storage it is a limitation: the CPU sums in
+double precision, but Metal has no double type, so a row whose sum of squares
+exceeds the F32 range (values of about 1e19 or more) behaves like a row holding an
+infinity, and its finite values become signed zeros. Real activations stay far
+below that range.
+
+Positive subnormal `epsilon` values remain valid. For example, normalizing
+`[0; -0]` with unit weights and `epsilon = 1e-38f` must return `[0; -0]`, and
+normalizing `[1e-20f; -1e-20f]` must give approximately `[0.0995037; -0.0995037]`.
+A direct F32 calculation can lose both `epsilon` and the squared inputs to the
+[subnormal flush](#floating-point-behavior). When `epsilon < 2^-64` and the first
+sum of squares is below 1, the kernel recomputes the sum with inputs multiplied
+by `2^32`, scales epsilon by `2^64`, and computes
+`scale = 2^32 / sqrt(mean(scaledInput²) + scaledEpsilon)`.
+For a subnormal epsilon, it reconstructs `scaledEpsilon` from the stored fraction
+bits times `2^-85`, so even the smallest positive F32 epsilon becomes normal.
+The row bound keeps the scaled sum below overflow; above it, such a tiny epsilon
+cannot affect the F32 mean, even at the largest supported column count. NaN and
+infinite sums retain their ordinary behavior. Subnormal F32 tensor inputs and
+results still have the general flush limitation described above.
+
+The [Metal Shading Language specification](https://developer.apple.com/metal/Metal-Shading-Language-Specification.pdf),
+sections "Type Conversions and Reinterpreting Data" and "INF, NaN, and Denormalized
+Numbers", specifies bit-preserving `as_type` and permits flushing subnormals in
+arithmetic. The regression test covers the smallest and largest subnormal
+epsilon, the normal boundary, signed zeros, and small nonzero rows in all three
+storage combinations.
+
+`MetalTests.fs` compares every variant with a double-precision reference. In F32,
+the summation order makes the largest relative error 1.4e-6 over 1,000 random rows
+of 3,072 values (the CPU reaches 1.6e-7), so the tests use a relative tolerance of
+`1e-5`, plus an absolute floor of `1e-30` for flushed subnormals. With an F16
+destination, one F16 rounding (at most `2^-11`) dominates: the tolerance is `1e-3`
+relative, with an absolute floor of `6e-8` for subnormal results. `RmsNormF32ToF16`
+results beyond the F16 range become infinities.
+
+Because a row is read in full before it is written, `RmsNorm`'s `destination` may
+be `input`, or `weight` for a single row; `RmsNormF32ToF16` cannot alias, since its
+storage types differ. An all-zero row stays zero with its signs, a row whose sum is
+infinite gives NaN for infinite values and signed zeros elsewhere, and a NaN makes
+its whole row NaN; other rows are unaffected.
+
 ## Known limitations
 
-- Only Add, `AddF32F16` and SwiGLU (F32 and F16) run on Metal; every other kernel is a placeholder.
+- Only Add, `AddF32F16`, SwiGLU and RMS normalization (F32 and F16) and `RmsNormF32ToF16` run on Metal; every other kernel is a placeholder.
 - The default device only: there is no device selection for Macs with several GPUs.
 - Tested on Apple silicon only (M4 Max, macOS 27).
 - The [kernel development guide](../src/Marmotte.Metal/native/kernels/README.md)

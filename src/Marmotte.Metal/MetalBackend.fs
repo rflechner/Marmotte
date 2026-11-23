@@ -27,7 +27,7 @@ type private MetalTensor(owner: obj, shape: TensorShape, encoding: TensorEncodin
                 try release this
                 finally disposed <- true
 
-/// Owned contiguous F32/F16 tensors, Add, AddF32F16 and SwiGLU (F32 and F16), using one Metal command queue per instance on the
+/// Owned contiguous F32/F16 tensors, Add, AddF32F16, SwiGLU and RMS normalization (F32 and F16) and RmsNormF32ToF16, using one Metal command queue per instance on the
 /// system's default device. Native loading and device initialization happen at the first
 /// non-empty allocation; construction, empty tensors and an unused Synchronize require no Metal
 /// installation. No CPU fallback is used.
@@ -82,13 +82,30 @@ type MetalBackend() =
         liveTensors.Add(tensor) |> ignore
         tensor :> ITensor
 
-    let requireSameShape (reference: ITensor) argumentName (tensor: ITensor) =
+    let requireSameShape (operation: string) (reference: ITensor) argumentName (tensor: ITensor) =
         if reference.Shape <> tensor.Shape then
-            invalidArg argumentName $"Add requires identical shapes, not {reference.Shape} and {tensor.Shape}; broadcasting is not supported."
+            invalidArg argumentName $"{operation} requires identical shapes, not {reference.Shape} and {tensor.Shape}; broadcasting is not supported."
 
     let requireEncoding encoding argumentName (tensor: ITensor) =
         if tensor.Encoding <> encoding then
             invalidArg argumentName $"Expected an {encoding} tensor, not {tensor.Encoding}; implicit conversion is not supported."
+
+    /// RMS normalization checks shared by every encoding; returns the row and column counts.
+    let requireRmsNormArguments (operation: string) (input: ITensor) (weight: ITensor) (epsilon: single) (destination: ITensor) =
+        let shape = input.Shape
+        if shape.Rank = 0 then
+            invalidArg (nameof input) "RMS normalization requires a rank of at least 1; a scalar has no row to normalize."
+
+        let columns = shape.Dimensions[shape.Rank - 1]
+        if weight.Shape.Rank <> 1 || weight.Shape.Dimensions[0] <> columns then
+            invalidArg (nameof weight) $"{operation} of {shape} requires weight of shape [{columns}], not {weight.Shape}."
+
+        requireSameShape operation input (nameof destination) destination
+        if not (Single.IsFinite epsilon) || epsilon <= 0.0f then
+            raise (ArgumentOutOfRangeException(nameof epsilon, box epsilon, "Epsilon must be finite and positive."))
+
+        let rows = if columns = 0 then 0 else shape.ElementCount / columns
+        rows, columns
 
     let notImplemented operation =
         checkDisposed ()
@@ -167,8 +184,8 @@ type MetalBackend() =
             let leftPointer = pointerOf (nameof left) left
             let rightPointer = pointerOf (nameof right) right
             let destinationPointer = pointerOf (nameof destination) destination
-            requireSameShape left (nameof right) right
-            requireSameShape left (nameof destination) destination
+            requireSameShape "Add" left (nameof right) right
+            requireSameShape "Add" left (nameof destination) destination
             requireEncoding left.Encoding (nameof right) right
             requireEncoding left.Encoding (nameof destination) destination
 
@@ -180,8 +197,8 @@ type MetalBackend() =
             let leftPointer = pointerOf (nameof left) left
             let rightPointer = pointerOf (nameof right) right
             let destinationPointer = pointerOf (nameof destination) destination
-            requireSameShape left (nameof right) right
-            requireSameShape left (nameof destination) destination
+            requireSameShape "Add" left (nameof right) right
+            requireSameShape "Add" left (nameof destination) destination
             requireEncoding TensorEncoding.F32 (nameof left) left
             requireEncoding TensorEncoding.F16 (nameof right) right
             requireEncoding TensorEncoding.F32 (nameof destination) destination
@@ -195,8 +212,8 @@ type MetalBackend() =
             let gatePointer = pointerOf (nameof gate) gate
             let upPointer = pointerOf (nameof up) up
             let destinationPointer = pointerOf (nameof destination) destination
-            requireSameShape gate (nameof up) up
-            requireSameShape gate (nameof destination) destination
+            requireSameShape "SwiGLU" gate (nameof up) up
+            requireSameShape "SwiGLU" gate (nameof destination) destination
             requireEncoding gate.Encoding (nameof up) up
             requireEncoding gate.Encoding (nameof destination) destination
 
@@ -204,7 +221,31 @@ type MetalBackend() =
                 getSession().SwiGlu(gatePointer, upPointer, destinationPointer, gate.Shape.ElementCount)
 
     interface IRmsNormKernel with
-        member _.RmsNorm(_, _, _, _) = notImplemented "RMS normalization kernel"
+        member _.RmsNorm(input, weight, epsilon, destination) =
+            checkDisposed ()
+            let inputPointer = pointerOf (nameof input) input
+            let weightPointer = pointerOf (nameof weight) weight
+            let destinationPointer = pointerOf (nameof destination) destination
+
+            let rows, columns = requireRmsNormArguments "RMS normalization" input weight epsilon destination
+            requireEncoding input.Encoding (nameof weight) weight
+            requireEncoding input.Encoding (nameof destination) destination
+
+            if rows > 0 && columns > 0 then
+                getSession().RmsNorm(inputPointer, weightPointer, destinationPointer, rows, columns, epsilon)
+
+        member _.RmsNormF32ToF16(input, weight, epsilon, destination) =
+            checkDisposed ()
+            let inputPointer = pointerOf (nameof input) input
+            let weightPointer = pointerOf (nameof weight) weight
+            let destinationPointer = pointerOf (nameof destination) destination
+            let rows, columns = requireRmsNormArguments "RmsNormF32ToF16" input weight epsilon destination
+            requireEncoding TensorEncoding.F32 (nameof input) input
+            requireEncoding TensorEncoding.F32 (nameof weight) weight
+            requireEncoding TensorEncoding.F16 (nameof destination) destination
+
+            if rows > 0 && columns > 0 then
+                getSession().RmsNormF32ToF16(inputPointer, weightPointer, destinationPointer, rows, columns, epsilon)
 
     interface IEmbeddingKernel with
         member _.EmbeddingLookup(_, _, _) = notImplemented "embedding lookup kernel"

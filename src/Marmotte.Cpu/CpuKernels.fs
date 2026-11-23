@@ -137,6 +137,23 @@ module internal CpuKernels =
                 let scale = float32 (1.0 / Math.Sqrt(mean + float epsilon))
                 scaleRow inputRow scale weight (destination.Slice(row * columns, columns))
 
+    /// Normalizes F32 rows exactly as rmsNorm does, then rounds each F32 result to the nearest F16.
+    /// One row of F32 scratch keeps the extra memory proportional to the weight, not to the input.
+    let rmsNormToHalf (input: ReadOnlySpan<single>, weight: ReadOnlySpan<single>, epsilon: single, destination: Span<Half>) =
+        let columns = weight.Length
+        let holdsWholeRows = if columns = 0 then input.Length = 0 else input.Length % columns = 0
+        if input.Length <> destination.Length || not holdsWholeRows then
+            invalidArg (nameof destination) "RMS normalization spans must hold whole rows of the weight's length."
+
+        if columns > 0 then
+            let normalizedRow = Array.zeroCreate<single> columns
+            for row = 0 to input.Length / columns - 1 do
+                rmsNorm (input.Slice(row * columns, columns), weight, epsilon, Span<single>(normalizedRow))
+
+                let destinationRow = destination.Slice(row * columns, columns)
+                for column = 0 to columns - 1 do
+                    destinationRow[column] <- Half.op_Explicit normalizedRow[column]
+
     /// Rotates every head of consecutive token rows: pair j of the token at positions[t] turns by
     /// positions[t] × frequency j. The cosine and sine of each angle are computed once per token in
     /// double precision, multiplied by the magnitude, rounded once to F32 and shared by every head.

@@ -293,6 +293,57 @@ let ``CPU AddF32F16 validates encodings shapes ownership and disposal before wri
     checkMixedValidation backend other (TensorShape.Create [| 3 |])
 
 [<Fact>]
+let ``CPU RmsNormF32ToF16 rounds the F32 RmsNorm result to the nearest F16`` () =
+    use backend = new CpuBackend() :> ITensorBackend
+    let random = Random(1617)
+    let shape = TensorShape.Create [| 3; 37 |]
+    let inputValues = Array.init 111 (fun _ -> float32 (random.NextDouble() * 20.0 - 10.0))
+    let weightValues = Array.init 37 (fun _ -> float32 (random.NextDouble() * 4.0 - 2.0))
+    use input = uploadSingle backend shape inputValues
+    use weight = uploadSingle backend (TensorShape.Create [| 37 |]) weightValues
+    use singleDestination = backend.Allocate(shape)
+    use halfDestination = backend.Allocate(shape, TensorEncoding.F16)
+
+    backend.RmsNorm(input, weight, 1e-5f, singleDestination)
+    backend.RmsNormF32ToF16(input, weight, 1e-5f, halfDestination)
+
+    let expected = downloadSingle backend singleDestination |> Array.map (fun value -> bits (Half.op_Explicit value))
+    assertResults expected (download backend halfDestination)
+    Assert.Equal<single>(inputValues, downloadSingle backend input)
+
+    // A row of ones has scale 1 / sqrt(1 + 1e-5) ≈ 0.999995: weights of ±1e5 overflow to
+    // infinities, 65504 rounds back to the largest finite F16, and 1 rounds to exactly 1.
+    use ones = uploadSingle backend (TensorShape.Create [| 1; 4 |]) (Array.create 4 1.0f)
+    use largeWeight = uploadSingle backend (TensorShape.Create [| 4 |]) [| 1e5f; -1e5f; 65504.0f; 1.0f |]
+    use overflowed = backend.Allocate(TensorShape.Create [| 1; 4 |], TensorEncoding.F16)
+    backend.RmsNormF32ToF16(ones, largeWeight, 1e-5f, overflowed)
+    assertResults [| 0b0_11111_0000000000us; 0b1_11111_0000000000us; 0b0_11110_1111111111us; 0b0_01111_0000000000us |] (download backend overflowed)
+
+[<Fact>]
+let ``CPU RmsNormF32ToF16 validates encodings shapes ownership and epsilon before writing`` () =
+    use backend = new CpuBackend() :> ITensorBackend
+    use other = new CpuBackend() :> ITensorBackend
+    let shape = TensorShape.Create [| 1; 2 |]
+    let fortyTwo = 0b0_10100_0101000000us
+    use input = uploadSingle backend shape [| 1.0f; 2.0f |]
+    use weight = uploadSingle backend (TensorShape.Create [| 2 |]) [| 1.0f; 1.0f |]
+    use halfInput = upload backend shape [| half 0b0_01111_0000000000us; half 0b0_10000_0000000000us |]
+    use halfWeight = upload backend (TensorShape.Create [| 2 |]) [| half 0b0_01111_0000000000us; half 0b0_01111_0000000000us |]
+    use singleDestination = backend.Allocate(shape)
+    use destination = upload backend shape [| half fortyTwo; half fortyTwo |]
+    use transposed = backend.Allocate(TensorShape.Create [| 2; 1 |], TensorEncoding.F16)
+    use foreign = other.Allocate(shape, TensorEncoding.F16)
+
+    for i, w, d in [ halfInput, weight, destination; input, halfWeight, destination; input, weight, singleDestination ] do
+        Assert.Throws<ArgumentException>(fun () -> backend.RmsNormF32ToF16(i, w, 1e-5f, d)) |> ignore
+    let shapeError = Assert.Throws<ArgumentException>(fun () -> backend.RmsNormF32ToF16(input, weight, 1e-5f, transposed))
+    Assert.Contains("RmsNormF32ToF16", shapeError.Message)
+    Assert.Throws<ArgumentException>(fun () -> backend.RmsNormF32ToF16(input, weight, 1e-5f, foreign)) |> ignore
+    for epsilon in [ 0.0f; -1e-5f; Single.NaN; Single.PositiveInfinity ] do
+        Assert.Throws<ArgumentOutOfRangeException>(fun () -> backend.RmsNormF32ToF16(input, weight, epsilon, destination)) |> ignore
+    assertResults [| fortyTwo; fortyTwo |] (download backend destination)
+
+[<Fact>]
 let ``CUDA Half operations remain explicit placeholders`` () =
     use backend = new CudaBackend() :> ITensorBackend
     let shape = TensorShape.Create [| 0 |]

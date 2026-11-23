@@ -53,6 +53,12 @@ module private MetalApi =
     extern int marmotte_metal_swi_glu(SafeHandle context, nativeint gate, nativeint up, nativeint destination, int count)
 
     [<DllImport(library, CallingConvention = CallingConvention.Cdecl)>]
+    extern int marmotte_metal_rms_norm(SafeHandle context, nativeint input, nativeint weight, nativeint destination, int rows, int columns, single epsilon)
+
+    [<DllImport(library, CallingConvention = CallingConvention.Cdecl)>]
+    extern int marmotte_metal_rms_norm_f32_to_f16(SafeHandle context, nativeint input, nativeint weight, nativeint destination, int rows, int columns, single epsilon)
+
+    [<DllImport(library, CallingConvention = CallingConvention.Cdecl)>]
     extern int marmotte_metal_synchronize(SafeHandle context)
 
     let check operation status =
@@ -127,6 +133,14 @@ type internal MetalSession() =
 
     member _.SwiGlu(gate, up, destination, count) =
         MetalApi.marmotte_metal_swi_glu(context, gate, up, destination, count) |> MetalApi.check "SwiGLU submission"
+
+    member _.RmsNorm(input, weight, destination, rows, columns, epsilon) =
+        MetalApi.marmotte_metal_rms_norm(context, input, weight, destination, rows, columns, epsilon)
+        |> MetalApi.check "RMS normalization submission"
+
+    member _.RmsNormF32ToF16(input, weight, destination, rows, columns, epsilon) =
+        MetalApi.marmotte_metal_rms_norm_f32_to_f16(context, input, weight, destination, rows, columns, epsilon)
+        |> MetalApi.check "RmsNormF32ToF16 submission"
 
     member _.Synchronize() = MetalApi.marmotte_metal_synchronize(context) |> MetalApi.check "synchronization"
 

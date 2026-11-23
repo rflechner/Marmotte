@@ -49,8 +49,9 @@ use unrounded intermediates.
 | StoreKeyValues / ReadKeyValues | One cached key or value of a past position, encoded and decoded back to F32 | [Key-value cache](#key-value-cache) |
 
 All eight kernels and the key-value cache have CPU implementations. Metal
-implements Add and SwiGLU (F32 and F16), and the [Metal guide](metal.md) explains
-how; its other kernels and all of CUDA remain placeholders.
+implements Add, SwiGLU and RMSNorm (F32 and F16) and `RmsNormF32ToF16`, and the
+[Metal guide](metal.md) explains how; its other kernels and all of CUDA remain
+placeholders.
 Core implements YaRN parameter preparation. Attention temperature has a worked
 example in text. The eight walkthrough images were
 generated with the built-in `image_gen` tool, visually reviewed, and their
@@ -129,7 +130,8 @@ them one row at a time.
 | `IAddKernel.Add` | F32: safe `Vector<T>` loop with a scalar tail; F16: scalar Half loop | `NotImplementedException` | Separate F32 and F16 MSL compute functions, one command buffer per call |
 | `IAddKernel.AddF32F16` | Scalar loop widening each F16 operand | `NotImplementedException` | MSL compute function, one command buffer per call |
 | `ISwiGluKernel.SwiGlu` | Safe `Vector<T>` loop with `Vector.Exp`, scalar tail with `MathF.Exp`; F32 only, F16 raises `NotSupportedException` | `NotImplementedException` | MSL compute functions `swiGluF32` and `swiGluF16`, one command buffer per call |
-| `IRmsNormKernel.RmsNorm` | Safe `Vector<T>` loops, sum of squares in double precision | `NotImplementedException` | `NotImplementedException` |
+| `IRmsNormKernel.RmsNorm` | Safe `Vector<T>` loops, sum of squares in double precision; F32 only, F16 raises `NotSupportedException` | `NotImplementedException` | MSL compute functions `rmsNormF32` and `rmsNormF16`, one thread per row, F32 sum |
+| `IRmsNormKernel.RmsNormF32ToF16` | `RmsNorm` one row at a time, then each F32 result rounded to F16 | `NotImplementedException` | MSL compute function `rmsNormF32ToF16`, one thread per row, F32 sum |
 | `IEmbeddingKernel.EmbeddingLookup` | Decodes selected rows with `RowDecoder` directly into F32 output | `NotImplementedException` | `NotImplementedException` |
 | `IRowCopyKernel.CopyRows` | Validated contiguous row copy over safe spans | `NotImplementedException` | `NotImplementedException` |
 | `IMatVecKernel.MatVec` | Parallel rows, safe intrinsics and double-precision dot products | `NotImplementedException` | `NotImplementedException` |
@@ -249,9 +251,10 @@ is that of the F32 sum.
 `HalfTests.fs` checks hand-specified results at rounding boundaries, overflow,
 normal/subnormal transitions, signed zero, infinities and NaNs, as well as transfer
 of all 65,536 bit patterns. It exercises the same cases on CPU and, when explicitly
-enabled, Metal. On CPU every kernel except Add and `AddF32F16` requires F32 and
-rejects F16 with `NotSupportedException` before writing; on Metal, RMSNorm and
-the remaining kernels do, while SwiGLU also accepts F16. Mixed-format Add and
+enabled, Metal. On CPU every kernel except Add, `AddF32F16` and
+`RmsNormF32ToF16` requires F32 and rejects F16 with `NotSupportedException`
+before writing. On Metal, SwiGLU and RMSNorm accept both encodings, and the
+remaining kernels are placeholders. Mixed-format Add and
 incorrect Download overloads raise `ArgumentException`, including for empties.
 
 ## SwiGLU
@@ -343,6 +346,18 @@ On an Apple M4 Max, single-threaded in Release, one row of 3,072 values takes
 about 0.73 µs, against 3.3 µs for the same algorithm without vectors, which is
 limited by its single chain of additions. The 53 normalizations of one token
 take about 39 µs.
+
+`RmsNormF32ToF16(input, weight, epsilon, destination)` takes F32 `input` and
+`weight` and writes an F16 `destination` of the same shape, for example to store
+an activation in two bytes per value. `RmsNorm` stays strict about encodings, so
+this narrowing is requested by name, like `AddF32F16`. Each result is computed and
+rounded in F32 exactly as by `RmsNorm`, then rounded to the nearest F16, ties to
+even; results beyond the F16 range become infinities. The CPU normalizes one row
+into an F32 scratch row of `columns` values, then converts it.
+
+Metal normalizes F32 and F16 rows with one GPU thread per row, summing the squares
+in F32 rather than double precision; see the
+[Metal guide](metal.md#rms-normalization) for its tolerances and its F32 range.
 
 ## Embedding Lookup
 

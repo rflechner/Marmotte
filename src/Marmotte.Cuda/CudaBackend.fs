@@ -37,6 +37,7 @@ type CudaBackend() =
 
     interface IRmsNormKernel with
         member _.RmsNorm(_, _, _, _) = notImplemented "RMS normalization kernel"
+        member _.RmsNormF32ToF16(_, _, _, _) = notImplemented "F32-to-F16 RMS normalization kernel"
 
     interface IEmbeddingKernel with
         member _.EmbeddingLookup(_, _, _) = notImplemented "embedding lookup kernel"

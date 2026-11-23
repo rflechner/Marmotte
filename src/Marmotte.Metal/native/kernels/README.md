@@ -3,8 +3,9 @@
 Metal separates GPU code from host code, so each operation has two files with
 the same name: `<Operation>.metal` for the compute function, and
 `<Operation>.mm` for its exported host entry point.
-[Add.metal](Add.metal)/[Add.mm](Add.mm) and
-[SwiGlu.metal](SwiGlu.metal)/[SwiGlu.mm](SwiGlu.mm) are the working examples.
+[Add.metal](Add.metal)/[Add.mm](Add.mm),
+[SwiGlu.metal](SwiGlu.metal)/[SwiGlu.mm](SwiGlu.mm) and
+[RmsNorm.metal](RmsNorm.metal)/[RmsNorm.mm](RmsNorm.mm) are the working examples.
 
 ```text
 native/
@@ -17,6 +18,8 @@ native/
     Add.mm                      Host entry point: validation, encoding and submission
     SwiGlu.metal                F32 and F16 SwiGLU GPU functions
     SwiGlu.mm                   Host entry point: validation, encoding dispatch and submission
+    RmsNorm.metal               F32, F16 and F32-to-F16 RMS normalization GPU functions
+    RmsNorm.mm                  Host entry point: validation, row arguments and submission
 ```
 
 These files appear in the F# project. CMake compiles the `.metal` sources into
@@ -43,7 +46,8 @@ and their recorded encodings, selects the compute function from them, gets the
 pipeline with `findPipeline`, encodes one dispatch and calls
 `commitCommandBuffer`. Element-wise operations with two inputs and one output,
 such as Add and SwiGLU, call `submitElementWise` from the runtime for these last
-three steps. Public shape and ownership checks remain in
+three steps. Row-wise operations such as RMSNorm encode their own dispatch, one
+thread per row, and pass scalar arguments with `setBytes`. Public shape and ownership checks remain in
 `MetalBackend.fs`. Keep allocation, transfers and synchronization in the runtime.
 
 Document element counts, dimensions, aliasing and queue semantics beside the
@@ -120,3 +124,19 @@ the F32 subnormals the GPU may flush to zero and for F16 subnormal results. The
 F16 function computes in F32 and rounds once, because `e^-x` overflows binary16
 below -11.1. `silu(-∞)` is NaN, `silu(+∞)` is `+∞`, and where `e^-x` overflows
 F32 (gate below about -88.7) the result is a signed zero, as the formula gives.
+
+## RMS normalization contract
+
+`marmotte_metal_rms_norm` normalizes `rows × columns` values with one weight per
+column, `epsilon` passed as an F32 scalar, all in the input's encoding (F32 or
+F16). `marmotte_metal_rms_norm_f32_to_f16` takes F32 input and weight and writes
+F16. The managed backend validates shapes, ownership and `epsilon`; both entry
+points reject non-positive counts, a product beyond `INT_MAX`, and allocations whose
+length or encoding does not match. The three compute functions share one templated
+row function: one thread handles one row, summing the squares in F32, then
+converting each result once to the destination type, so `RmsNorm`'s `destination`
+may be `input`. See
+[RMS normalization](../../../../docs/metal.md#rms-normalization) for tolerances
+and special values. Positive subnormal epsilon values are preserved: for tiny
+epsilon and small rows, a second reduction scales inputs by `2^32` and epsilon
+by `2^64`, reconstructing subnormal epsilon from its bits before arithmetic.

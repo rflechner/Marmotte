@@ -339,6 +339,7 @@ type private TrackingBackend() =
         member _.SwiGlu(a, b, output) = inner.SwiGlu(a, b, output)
     interface IRmsNormKernel with
         member _.RmsNorm(input, weight, epsilon, output) = inner.RmsNorm(input, weight, epsilon, output)
+        member _.RmsNormF32ToF16(input, weight, epsilon, output) = inner.RmsNormF32ToF16(input, weight, epsilon, output)
     interface IEmbeddingKernel with
         member _.EmbeddingLookup(weight, ids, output) =
             batches.Add ids.Length

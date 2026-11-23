@@ -223,6 +223,7 @@ let ``null shapes and tensors are rejected`` () =
         Assert.Throws<ArgumentNullException>(fun () -> backend.Add(left, right, destination)) |> ignore
         Assert.Throws<ArgumentNullException>(fun () -> backend.SwiGlu(left, right, destination)) |> ignore
         Assert.Throws<ArgumentNullException>(fun () -> backend.RmsNorm(left, right, 1e-5f, destination)) |> ignore
+        Assert.Throws<ArgumentNullException>(fun () -> backend.RmsNormF32ToF16(left, right, 1e-5f, destination)) |> ignore
 
 [<Fact>]
 let ``Add matches a scalar reference for every vector tail length`` () =
@@ -731,7 +732,6 @@ let ``unfinished GPU operations explicitly fail without requiring GPU hardware``
     let operations =
         [ (fun () -> backend.UploadWeights(weightMatrix ()) |> ignore)
           (fun () -> backend.AllocateKeyValueCache(cacheLayout ()) |> ignore)
-          (fun () -> backend.RmsNorm(tensor, tensor, 1e-5f, tensor))
           (fun () -> backend.EmbeddingLookup(weights, ReadOnlyMemory<int>([| 0 |]), tensor))
           (fun () -> backend.MatVec(weights, tensor, tensor))
           (fun () -> backend.MatMul(weights, tensor, tensor))
@@ -754,10 +754,16 @@ let ``unfinished GPU operations explicitly fail without requiring GPU hardware``
         Assert.Throws<NotImplementedException>(fun () -> backend.Add(tensor, tensor, tensor)) |> ignore
         Assert.Throws<NotImplementedException>(fun () -> backend.AddF32F16(tensor, tensor, tensor)) |> ignore
         Assert.Throws<NotImplementedException>(fun () -> backend.SwiGlu(tensor, tensor, tensor)) |> ignore
+        Assert.Throws<NotImplementedException>(fun () -> backend.RmsNorm(tensor, tensor, 1e-5f, tensor)) |> ignore
+        Assert.Throws<NotImplementedException>(fun () -> backend.RmsNormF32ToF16(tensor, tensor, 1e-5f, tensor)) |> ignore
     else
-        // Metal implements SwiGLU: empty tensors make it a no-op that needs no GPU.
+        // Metal implements SwiGLU and RMS normalization: empty tensors make them no-ops that need no GPU.
         use empty = backend.Allocate(TensorShape.Create [| 0 |])
+        use emptyHalf = backend.Allocate(TensorShape.Create [| 0 |], TensorEncoding.F16)
         backend.SwiGlu(empty, empty, empty)
+        backend.RmsNorm(empty, empty, 1e-5f, empty)
+        backend.RmsNorm(emptyHalf, emptyHalf, 1e-5f, emptyHalf)
+        backend.RmsNormF32ToF16(empty, empty, 1e-5f, emptyHalf)
 
 [<Theory>]
 [<InlineData("CPU")>]
@@ -782,6 +788,7 @@ let ``disposed backends reject all operations and allow repeated disposal`` name
     Assert.Throws<ObjectDisposedException>(fun () -> backend.AddF32F16(tensor, tensor, tensor)) |> ignore
     Assert.Throws<ObjectDisposedException>(fun () -> backend.SwiGlu(tensor, tensor, tensor)) |> ignore
     Assert.Throws<ObjectDisposedException>(fun () -> backend.RmsNorm(tensor, tensor, 1e-5f, tensor)) |> ignore
+    Assert.Throws<ObjectDisposedException>(fun () -> backend.RmsNormF32ToF16(tensor, tensor, 1e-5f, tensor)) |> ignore
     Assert.Throws<ObjectDisposedException>(fun () -> backend.EmbeddingLookup(weights, ReadOnlyMemory<int>([| 0 |]), tensor)) |> ignore
     Assert.Throws<ObjectDisposedException>(fun () -> backend.MatVec(weights, tensor, tensor)) |> ignore
     Assert.Throws<ObjectDisposedException>(fun () -> backend.MatMul(weights, tensor, tensor)) |> ignore

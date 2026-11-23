@@ -145,17 +145,29 @@ type ISwiGluKernel =
 /// destination[r, c] = input[r, c] / sqrt(mean(input[r, *]²) + epsilon) × weight[c].
 /// See "Root Mean Square Layer Normalization", https://arxiv.org/abs/1910.07467.
 type IRmsNormKernel =
-    /// Currently requires F32 tensors; F16 raises NotSupportedException on CPU.
+    /// CPU requires F32 tensors and raises NotSupportedException for F16. Metal accepts F32 or F16,
+    /// with all three tensors in the same encoding, like Add.
     /// Input and destination have the same shape, of rank 1 or more. Weight is a vector whose
     /// length is the last dimension of input, shared by every row. Epsilon must be finite and
-    /// positive, so that an all-zero row stays finite; models store it as
+    /// positive (including subnormals), so that an all-zero row stays finite; models store it as
     /// attention.layer_norm_rms_epsilon. Destination may be any input; otherwise inputs are
     /// unchanged. Empty tensors are valid no-ops. Ownership, validation and ordering follow
     /// IAddKernel.Add, and an invalid epsilon raises ArgumentOutOfRangeException.
     /// The mean is a reduction that implementations sum in different orders, so compare results
     /// with a relative tolerance. NaN or infinite values make their row's results NaN or zero,
-    /// as the formula gives.
+    /// as the formula gives. The CPU sums squares in double precision; Metal sums them in F32, so
+    /// a row whose sum of squares exceeds the F32 range (values of about 1e19 or more) behaves
+    /// there like a row holding an infinity.
     abstract RmsNorm: input: ITensor * weight: ITensor * epsilon: single * destination: ITensor -> unit
+
+    /// Normalizes an F32 input with an F32 weight into an F16 destination, such as an activation
+    /// prepared for F16 storage. RmsNorm stays strict about encodings, so this narrowing is always
+    /// requested by name. Each result is computed and rounded in F32 as by RmsNorm, then rounded to
+    /// the nearest F16, ties to even; results beyond the F16 range become infinities. Destination
+    /// cannot alias an input, because their encodings differ. Shapes, epsilon, ownership,
+    /// validation and ordering follow RmsNorm; any other combination of encodings raises
+    /// ArgumentException before submission.
+    abstract RmsNormF32ToF16: input: ITensor * weight: ITensor * epsilon: single * destination: ITensor -> unit
 
 /// Selects vocabulary rows from stored weights and decodes them into F32 activations.
 type IEmbeddingKernel =

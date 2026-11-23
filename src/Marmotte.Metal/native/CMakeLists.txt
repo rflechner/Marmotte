@@ -17,6 +17,7 @@ endif()
 set(METAL_KERNEL_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/kernels/Add.metal"
     "${CMAKE_CURRENT_SOURCE_DIR}/kernels/SwiGlu.metal"
+    "${CMAKE_CURRENT_SOURCE_DIR}/kernels/RmsNorm.metal"
 )
 set(METAL_KERNEL_LIBRARY "${CMAKE_BINARY_DIR}/marmotte_kernels.metallib")
 
@@ -39,6 +40,7 @@ add_library(marmotte_metal SHARED
     MetalRuntime.mm
     kernels/Add.mm
     kernels/SwiGlu.mm
+    kernels/RmsNorm.mm
 )
 add_dependencies(marmotte_metal marmotte_metal_kernels)
 

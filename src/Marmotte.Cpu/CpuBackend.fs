@@ -72,6 +72,18 @@ type CpuBackend(matrixProductMode: CpuMatrixProductMode, attentionMode: CpuAtten
         if tensor.Shape.Rank <> 1 || tensor.Shape.Dimensions[0] <> length then
             invalidArg argumentName $"{operation} requires {argumentName} of shape [{length}], not {tensor.Shape}."
 
+    /// RMS normalization checks shared by every encoding: rank, weight length, destination shape
+    /// and epsilon.
+    let requireRmsNormArguments (operation: string) (input: ITensor) (weight: ITensor) (epsilon: single) (destination: ITensor) =
+        let shape = input.Shape
+        if shape.Rank = 0 then
+            invalidArg (nameof input) "RMS normalization requires a rank of at least 1; a scalar has no row to normalize."
+
+        requireVector $"{operation} of {shape}" (nameof weight) weight shape.Dimensions[shape.Rank - 1]
+        requireSameShape operation input (nameof destination) destination
+        if not (Single.IsFinite epsilon) || epsilon <= 0.0f then
+            raise (ArgumentOutOfRangeException(nameof epsilon, box epsilon, "Epsilon must be finite and positive."))
+
     /// Position-based kernels take one token per first-dimension row.
     let requireTokenRows (operation: string) argumentName (tensor: ITensor) (tokens: int) =
         let shape = tensor.Shape
@@ -216,16 +228,20 @@ type CpuBackend(matrixProductMode: CpuMatrixProductMode, attentionMode: CpuAtten
             let weightValues = valuesOf (nameof weight) weight
             let destinationValues = valuesOf (nameof destination) destination
 
-            let shape = input.Shape
-            if shape.Rank = 0 then
-                invalidArg (nameof input) "RMS normalization requires a rank of at least 1; a scalar has no row to normalize."
-
-            requireVector $"RMS normalization of {shape}" (nameof weight) weight shape.Dimensions[shape.Rank - 1]
-            requireSameShape "RMS normalization" input (nameof destination) destination
-            if not (Single.IsFinite epsilon) || epsilon <= 0.0f then
-                raise (ArgumentOutOfRangeException(nameof epsilon, box epsilon, "Epsilon must be finite and positive."))
-
+            requireRmsNormArguments "RMS normalization" input weight epsilon destination
             CpuKernels.rmsNorm (ReadOnlySpan<single>(inputValues), ReadOnlySpan<single>(weightValues), epsilon, Span<single>(destinationValues))
+
+        member this.RmsNormF32ToF16(input, weight, epsilon, destination) =
+            ObjectDisposedException.ThrowIf(disposed, this)
+            let inputValues = storageOf (nameof input) input
+            let weightValues = storageOf (nameof weight) weight
+            let destinationValues = storageOf (nameof destination) destination
+
+            requireRmsNormArguments "RmsNormF32ToF16" input weight epsilon destination
+            match inputValues, weightValues, destinationValues with
+            | CpuValues.F32 input, CpuValues.F32 weight, CpuValues.F16 destination ->
+                CpuKernels.rmsNormToHalf (ReadOnlySpan<single>(input), ReadOnlySpan<single>(weight), epsilon, Span<Half>(destination))
+            | _ -> invalidArg (nameof destination) "RmsNormF32ToF16 requires F32 input, F32 weight and F16 destination tensors."
 
     interface IEmbeddingKernel with
         member this.EmbeddingLookup(weights, tokenIds, destination) =
