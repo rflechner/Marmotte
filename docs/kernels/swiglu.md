@@ -6,7 +6,7 @@
 
 [Open the SwiGLU illustration](swiglu.png).
 The illustration's backend footer predates
-CUDA SwiGLU support; see [On CUDA](#on-cuda) below.
+CUDA and Metal SwiGLU support; see the backend sections below.
 
 For each position, first compute `sigmoid(g) = 1 / (1 + exp(-g))`. Multiply
 that by `g` to get `silu(g)`, then multiply by the corresponding `up` value.
@@ -73,3 +73,11 @@ that error of a midpoint between two F16 values may round to either one: tests
 accept one unit in the last place against a double-precision reference, and
 check exact bits only for fixtures far from a midpoint. The kernel files and
 their contract are described in the [CUDA guide](../cuda.md#kernel-formats-and-file-layout).
+
+## On Metal
+
+Metal accepts F32 or F16 tensors, with all three tensors in the same encoding.
+Its `exp` is another approximation, so comparisons use a relative tolerance of
+1e-6 in F32 and 1e-2 in F16, plus absolute floors for flushed F32 subnormals and
+F16 subnormal results. The F16 kernel widens to F32 and rounds once on output.
+See the [Metal guide](../metal.md#swiglu) for its tests and measured behavior.

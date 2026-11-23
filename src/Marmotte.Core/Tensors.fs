@@ -7,8 +7,8 @@ open System.Collections.Generic
 /// Safetensors' dtypes. Deliberately narrower than both formats: the encodings of the first
 /// target models, the K-quants of the Q2_K to Q6_K file profiles, and Q4_1, Q5_0, Q5_1 and IQ4_NL,
 /// which offer key-value cache sizes between Q4_0 and Q8_0. RowDecoder decodes rows of every
-/// encoding into F32 for embedding lookup and matrix products; Add, SwiGLU and RMS normalization
-/// operate on F32 execution tensors.
+/// encoding into F32 for embedding lookup and matrix products. Add operates on F32 or F16
+/// execution tensors; other kernels currently require F32.
 /// Block layouts follow the reference block definitions cited in docs/gguf.md and match the
 /// GGUF reader's payload size table.
 [<RequireQualifiedAccess>]

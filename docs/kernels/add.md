@@ -10,7 +10,7 @@ F32 and F16 addition without a model file.
 ![Add: at each of three positions, add the two input values; [1, -2, 3] plus [4, 5, -1] gives [5, 3, 2]](add.png)
 
 [Open the Add illustration](add.png). Its backend footer is historical:
-CUDA now implements Add for F32 and F16, as described below.
+CUDA and Metal now implement Add for F32 and F16, as described below.
 
 Read `i` as the position being processed. At position `1`, read `-2` from
 `left` and `5` from `right`, then write `3` to the destination. Every position
@@ -64,9 +64,9 @@ upload is currently the only way to move values between instances.
 ## Half Add and memory use
 
 F16 is IEEE binary16, represented by .NET's
-[`System.Half`](https://learn.microsoft.com/dotnet/api/system.half) and CUDA's
-`half`. CPU and CUDA implement Add for this format, including in-place Add.
-The same code works with either backend:
+[`System.Half`](https://learn.microsoft.com/dotnet/api/system.half) and CUDA/MSL
+`half`. CPU, CUDA and Metal implement Add for this format, including in-place Add.
+The same code works with each backend:
 
 ```fsharp
 let addHalf (backend: ITensorBackend) =
@@ -86,24 +86,32 @@ The conversion of literals above is explicit application code. Internally, an
 F16 tensor has **2 × element count bytes of payload**, compared with 4 × count
 for F32; allocator and object overhead are additional. The CPU owns `Half[]`.
 CUDA allocates `count * sizeof(half)` bytes and copies the raw bits through a
-temporary `uint16[]` staging array, also two bytes per element. Neither backend
-creates an F32 shadow tensor or F32 transfer buffer. Upload and Download preserve
+temporary `uint16[]` staging array, also two bytes per element. Metal owns a shared
+`MTLBuffer` with two bytes per element. None creates an F32 shadow tensor or F32 transfer buffer. Upload and Download preserve
 all bits, including signed zero and NaN payloads.
 
 Storage precision and arithmetic implementation are distinct. The safe CPU
 loop uses `Half` addition; the runtime can promote individual operands to scalar
 F32 and round back to Half. This does not expand the tensor into an F32 array.
 CUDA uses [`__hadd`](https://docs.nvidia.com/cuda/archive/13.0.0/cuda-math-api/cuda_math_api/group__CUDA__MATH____HALF__ARITHMETIC.html)
-in a kernel with `half*` inputs and output. Both paths round to nearest F16,
+in a kernel with `half*` inputs and output. Metal adds MSL `half` values directly.
+These paths round to nearest F16,
 ties to even, retain subnormal results, and produce infinity on overflow.
 Arithmetic NaN payloads are unspecified. This smaller format has less range
 and precision; it is not an automatic performance improvement, and no speedup
 is claimed for the scalar CPU implementation.
 
+`AddF32F16(left, right, destination)` adds an F16 tensor into an F32 one, such as
+F16 projection output into an F32 residual stream, on CPU and Metal. Left and
+destination are F32 and right is F16; destination may be left. `Add` rejects mixed
+encodings, so this widening is always requested by name. Every F16 value converts
+exactly to F32, so the only rounding is that of the F32 sum. CUDA leaves this
+mixed operation unimplemented.
+
 `HalfTests.fs` checks hand-specified binary16 results at rounding boundaries,
 overflow, normal/subnormal transitions, signed zero, infinities and NaNs, as
 well as transfer of all 65,536 bit patterns. It exercises the same cases on CPU
-and, when explicitly enabled, CUDA. Other CPU kernels still require F32 and
-reject F16 with `NotSupportedException` before writing; mixed-format Add and
-incorrect Download overloads raise `ArgumentException`, including for empties.
-The Metal backend remains a placeholder for both formats.
+and, when explicitly enabled, CUDA and Metal. On CPU, kernels other than Add,
+`AddF32F16` and `RmsNormF32ToF16` require F32 and reject F16 with
+`NotSupportedException` before writing; mixed-format Add and incorrect Download
+overloads raise `ArgumentException`, including for empties.

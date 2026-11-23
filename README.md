@@ -267,7 +267,7 @@ yet.
 K-quants, the inverse of `RowDecoder`.
 The three backend projects share these contracts:
 
-- `Marmotte.Cpu`: owned F32 arrays, explicit upload/download, weight tensors that
+- `Marmotte.Cpu`: owned F32 or F16 arrays, explicit upload/download, weight tensors that
   retain the stored payload, `Add`, SwiGLU and RMS normalization kernels
   vectorized with `Vector<T>`, embedding lookup, and matrix-vector and
   matrix-matrix products with safe intrinsics and parallel weight rows (see
@@ -302,13 +302,22 @@ The three backend projects share these contracts:
   sharing each decoded row across the token batch of a `MatMul`; see [the CUDA guide](docs/cuda.md#matrix-products-on-cuda)
   and `dotnet fsi examples/CudaMatMul.fsx` for a CPU-vs-CUDA comparison.
   Caches and other kernels still raise `NotImplementedException`.
+- `Marmotte.Metal`: owned F32 or F16 tensors, transfers, Add, `AddF32F16`, SwiGLU and RMS normalization (F32 and F16) and `RmsNormF32ToF16` through a native library.
+  Build it with `dotnet build Marmotte.slnx -p:MarmotteBuildMetal=true`. Native
+  compilation and GPU tests are optional. On macOS, `MARMOTTE_TEST_METAL=1` also
+  enables native compilation by default; see the [Metal guide](docs/metal.md).
+  Weight upload, caches and other kernels still raise `NotImplementedException`.
 
 `Add` writes into a preallocated destination and requires identical contiguous,
-row-major shapes and encodings (all F32 or all F16). `Allocate(shape)` remains F32;
-use `Allocate(shape, TensorEncoding.F16)` and the `Half` overloads of `Upload` and
-`Download` for two-byte F16 storage on CPU or CUDA. Transfers preserve the stored
-bits; no implicit conversion is performed. Other CPU kernels still require F32.
-See [Half Add and memory use](docs/kernels/add.md#half-add-and-memory-use).
+row-major shapes and encodings (all F32 or all F16). `AddF32F16` adds an F16 tensor
+into an F32 one, the only mixed combination, requested by name, on CPU and Metal. `SwiGlu` computes
+`silu(gate) * up` element-wise, F32-only on CPU and F32 or F16 on CUDA and Metal, as is
+`RmsNorm`. `RmsNormF32ToF16` normalizes F32 input with an F32 weight into an F16
+destination, the mixed RMSNorm requested by name, on CPU and Metal. `Allocate(shape)`
+remains F32; use `Allocate(shape, TensorEncoding.F16)` and the `Half` overloads of
+`Upload` and `Download` for two-byte F16 storage on CPU, CUDA or Metal. Transfers preserve
+the stored bits; no implicit conversion is performed. Other CPU kernels still
+require F32. See [Half Add and memory use](docs/kernels/add.md#half-add-and-memory-use).
 In-place addition is supported. Operations on one backend take
 effect in submission order and may return before they complete; `Download` and
 `Synchronize` wait for them. Tensors belong to the backend instance that created
@@ -320,8 +329,10 @@ for a `[tokens; columns]` batch, decoding each weight row once for all tokens.
 `SwiGlu(gate, up, destination)` computes `silu(gate) × up` under the same tensor
 rules; its exponential makes results differ from other implementations by a few
 units in the last place. `RmsNorm(input, weight, epsilon, destination)`
-normalizes each row along the last dimension and multiplies it by an F32 weight
-vector; its CPU implementation sums the squares in double precision.
+normalizes each row along the last dimension and multiplies it by a weight
+vector in the same encoding; CPU and CUDA sum the squares in double
+precision, and Metal in F32. All three support every finite positive epsilon,
+including subnormal values.
 `Rope(input, positions, embedding, destination)` rotates pairs of values in every
 head by angles proportional to each token's position, with the frequencies and
 pairing of a `RotaryEmbedding`. `RotaryEmbedding.Yarn` prepares the corrected
@@ -535,6 +546,7 @@ block layouts, numerical limits and tensor selection policy.
 - [Safetensors format and current implementation](docs/safetensors.md)
 - [Execution tensors and kernels on CPU, CUDA and Metal](docs/kernels.md)
 - [Build and understand the CUDA backend](docs/cuda.md)
+- [Build and understand the Metal backend](docs/metal.md)
 - [Roadmap](ROADMAP.md): CPU inference first, then CUDA and Metal backends
 
 ## Build and tests
@@ -563,7 +575,9 @@ addition, SwiGLU, RMS normalization and matrix-vector products against scalar
 and double-precision references, embedding lookup against independently
 specified floating-point and quantized bytes, shape and ID validation, buffer
 ownership, transfers and disposal, plus explicit failures for unfinished GPU
-operations. CUDA Add, SwiGLU, RoPE/YaRN and stored weight transfers have optional GPU tests; see [how to run them](docs/cuda.md#run-the-tests).
+operations. CUDA and Metal have optional GPU tests for their implemented kernels;
+see the [CUDA test guide](docs/cuda.md#run-the-tests) and
+[Metal test guide](docs/metal.md#run-the-tests).
 No model or weight download is required.
 
 ## Coding guidelines

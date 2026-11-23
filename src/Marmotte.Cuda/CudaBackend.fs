@@ -210,6 +210,8 @@ type CudaBackend(?deviceIndex: int) =
             if left.Shape.ElementCount > 0 then
                 getSession().Add(leftPointer, rightPointer, destinationPointer, left.Shape.ElementCount)
 
+        member _.AddF32F16(_, _, _) = notImplemented "mixed F32/F16 Add kernel"
+
     interface ISwiGluKernel with
         member _.SwiGlu(gate, up, destination) =
             checkDisposed ()
@@ -246,6 +248,8 @@ type CudaBackend(?deviceIndex: int) =
             let count = shape.ElementCount
             if count > 0 then
                 getSession().RmsNorm(inputPointer, weightPointer, epsilon, destinationPointer, count / columns, columns)
+
+        member _.RmsNormF32ToF16(_, _, _, _) = notImplemented "F32-to-F16 RMS normalization kernel"
 
     interface IEmbeddingKernel with
         member _.EmbeddingLookup(weights, tokenIds, destination) =

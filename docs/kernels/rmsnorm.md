@@ -181,8 +181,9 @@ Arguments are checked before any writes. Null tensors raise
 `ArgumentException`; disposed tensors or backend raise
 `ObjectDisposedException`; invalid epsilon raises `ArgumentOutOfRangeException`.
 The CPU implementation requires F32 and rejects F16 with `NotSupportedException`.
-CPU work completes before the call returns. CUDA and Metal RMSNorm currently
-raise `NotImplementedException`.
+CPU work completes before the call returns. CUDA and Metal accept F32 or F16,
+with all three tensors in the same encoding, and may complete asynchronously.
+Their F16 paths widen values to F32 and round each output once to F16.
 
 ## CPU numerical and performance notes
 
@@ -213,6 +214,24 @@ The existing single-threaded Release measurement on an Apple M4 Max is about
 without vectors. For the measured model, 53 normalizations per token take
 about `39 µs`. These are recorded measurements, not a new benchmark or a
 guarantee for other machines.
+
+## GPU and mixed-precision normalization
+
+CUDA reduces each row in double precision, with one block per row. F16
+inputs widen to F32 before the reduction and each result rounds once to F16;
+see the [CUDA guide](../cuda.md#kernel-formats-and-file-layout).
+
+`RmsNormF32ToF16(input, weight, epsilon, destination)` is implemented on CPU and Metal. It takes F32 `input` and
+`weight` and writes an F16 `destination` of the same shape, for example to store
+an activation in two bytes per value. `RmsNorm` stays strict about encodings, so
+this narrowing is requested by name, like `AddF32F16`. Each result is computed and
+rounded in F32 exactly as by `RmsNorm`, then rounded to the nearest F16, ties to
+even; results beyond the F16 range become infinities. The CPU normalizes one row
+into an F32 scratch row of `columns` values, then converts it.
+
+Metal normalizes F32 and F16 rows with one GPU thread per row, summing the squares
+in F32 rather than double precision; see the
+[Metal guide](../metal.md#rms-normalization) for its tolerances and its F32 range.
 
 ## References
 

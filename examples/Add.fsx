@@ -6,6 +6,7 @@
 #load "../src/Marmotte.Core/AttentionTemperature.fs"
 #load "../src/Marmotte.Core/KeyValueCache.fs"
 #load "../src/Marmotte.Core/Compute.fs"
+#load "../src/Marmotte.Core/TensorBackend.fs"
 #load "../src/Marmotte.Cpu/CpuKernels.fs"
 #load "../src/Marmotte.Cpu/CpuStorage.fs"
 #load "../src/Marmotte.Cpu/CpuTensor.fs"
@@ -15,12 +16,10 @@
 #load "../src/Marmotte.Cpu/CpuKQuantBlocks.fs"
 #load "../src/Marmotte.Cpu/CpuMatrixKernels.fs"
 #load "../src/Marmotte.Cpu/CpuBackend.fs"
-#load "../src/Marmotte.Metal/MetalBackend.fs"
 
 open System
 open Marmotte.Core
 open Marmotte.Cpu
-open Marmotte.Metal
 
 // The same orchestration uses opaque tensors on every backend. Only the factory changes.
 let runAdd (backend: ITensorBackend) =
@@ -50,16 +49,11 @@ let runHalfAdd (backend: ITensorBackend) =
     backend.Download(destination, result.AsMemory())
     result
 
-// For CUDA, examples/CudaAdd.fsx loads the compiled assembly and its native library.
-let backends =
-    [ "CPU", (fun () -> new CpuBackend() :> ITensorBackend)
-      "Metal", (fun () -> new MetalBackend() :> ITensorBackend) ]
+// GPU examples load their compiled assemblies and native libraries:
+// examples/CudaAdd.fsx and examples/MetalAdd.fsx.
+let backends = [ ("CPU", (fun () -> new CpuBackend() :> ITensorBackend)) ]
 
 for name, createBackend in backends do
     use backend = createBackend ()
-    try
-        printfn "%s Add: %A" name (runAdd backend)
-        printfn "%s Half Add: %A" name (runHalfAdd backend)
-    with :? NotImplementedException as error ->
-        // The Metal placeholder fails before a tensor or kernel is created.
-        printfn "%s: %s" name error.Message
+    printfn "%s Add: %A" name (runAdd backend)
+    printfn "%s Half Add: %A" name (runHalfAdd backend)

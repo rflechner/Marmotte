@@ -17,21 +17,22 @@ work. Illustrations are conceptual aids, not executable format specifications.
 | [Transformer layer tensors](transformer-layer-tensors.md) | Illustrated guide to the nine per-layer weight descriptors and their shapes | Dense mistral3 mapping, validation and forward pass implemented |
 | [Prompt processing and decoding](generation-session.md) | Batched prefill, incremental tokens, session cache and failure handling | GenerationSession, seeded sampling and TokenGenerator stopping implemented |
 | [Dense forward pass](forward-pass.md) | Runnable synthetic model, loading, logits and cache ownership | Dense mistral3 implemented through backend contracts |
-| [Execution tensors and kernels](kernels.md) | Index of the kernel guides, formula notation, GGUF-to-kernel diagram and shared contracts | CPU kernels and cache implemented; CUDA Add, SwiGLU, RMS normalization and CopyRows; other CUDA kernels and Metal are placeholders |
-| [Add](kernels/add.md) | Illustrated addition, buffer reuse, F16 arithmetic and memory use | F32 and F16 on CPU and CUDA |
-| [SwiGLU](kernels/swiglu.md) | Illustrated element-wise gating algorithm, worked example, CPU numerical notes and F16 rounding on CUDA | F32 on CPU; F32 and F16 on CUDA; Metal remains a placeholder |
-| [RMSNorm](kernels/rmsnorm.md) | Row magnitude, normalization and learned scales, with an illustration and runnable F# example | F32 on CPU; F32 and F16 on CUDA; Metal remains a placeholder |
+| [Execution tensors and kernels](kernels.md) | Index of the kernel guides, formula notation, GGUF-to-kernel diagram and shared contracts | CPU kernels and cache implemented; GPU support is listed in the shared contract table |
+| [Add](kernels/add.md) | Illustrated addition, buffer reuse, F16 arithmetic and memory use | F32 and F16 on CPU, CUDA and Metal; mixed Add on CPU and Metal |
+| [SwiGLU](kernels/swiglu.md) | Illustrated element-wise gating algorithm, worked example, CPU numerical notes and F16 rounding on CUDA | F32 on CPU; F32 and F16 on CUDA and Metal |
+| [RMSNorm](kernels/rmsnorm.md) | Row magnitude, normalization and learned scales, with an illustration and runnable F# example | F32 on CPU; F32 and F16 on CUDA and Metal |
 | [Embedding lookup](kernels/embedding.md) | Illustrated token-ID lookup and stored row decoding | CPU lookup supports all fourteen runtime encodings |
-| [CUDA embedding lookup (R.4)](kernels/embedding-cuda.md) | Beginner walkthrough of host/device data flow, quantized blocks and the Q6_K target, with two infographics | Planned CUDA lookup; CPU examples and stored CUDA weight uploads already work |
+| [CUDA embedding lookup (R.4)](kernels/embedding-cuda.md) | Beginner walkthrough of host/device data flow, quantized blocks and the Q6_K target, with two infographics | CUDA lookup supports F32/F16/Q4_0/Q8_0; remaining encodings are planned |
 | [CopyRows](kernels/copy-rows.md) | Consecutive activation rows and a runnable CPU example | F32 on CPU; F32 and F16 on CUDA |
-| [MatVec](kernels/matvec.md) | Illustrated dot products for one token | CPU products with stored weights |
-| [MatMul](kernels/matmul.md) | Illustrated weight-row reuse across a token batch | CPU batched products with stored weights |
+| [MatVec](kernels/matvec.md) | Illustrated dot products for one token | CPU products with stored weights; CUDA F32/F16 weights |
+| [MatMul](kernels/matmul.md) | Illustrated weight-row reuse across a token batch | CPU batched products with stored weights; CUDA F32/F16 weights |
 | [CPU matrix products](kernels/matrix-products.md) | Shared scheduling, quantized activations, error bounds and measurements | DecodedFloat and QuantizedK arithmetic policies |
-| [RoPE](kernels/rope.md) | Illustrated rotations of query and key pairs | CPU rotation with explicit pairing and frequencies |
+| [RoPE](kernels/rope.md) | Illustrated rotations of query and key pairs | CPU and CUDA rotation with explicit pairing and frequencies |
 | [YaRN](kernels/yarn.md) | Illustrated context extension and magnitude preparation | Core prepares parameters consumed by RoPE |
 | [Attention temperature](kernels/attention-temperature.md) | Position-dependent query scaling | F32 on CPU |
 | [Key-value cache](kernels/key-value-cache.md) | Storage layouts, sizes, encodings and append/replace behavior | CPU cache with separate key and value encodings |
 | [Attention](kernels/attention.md) | Grouped query heads, causal masking, softmax and online accumulation | CPU online and reference modes |
+| [Getting started with Metal](metal.md) | Installation, native builds, F# interop, GPU execution, memory and testing | Metal F32/F16 tensors, transfers, Add, AddF32F16, SwiGLU, RMSNorm and RmsNormF32ToF16 implemented |
 | [Q2_K, Q3_K and BitNet b1.58](quantization.md) | Three illustrations of code levels, `twoBitQuant` packing, storage cost and ternary training | Q2_K/Q3_K decoding implemented; BitNet execution not implemented |
 | Storage and strides below | Concepts for tensor access and execution | Copying tensor source and weight matrix rows implemented; no mapped storage or strided views |
 
@@ -43,12 +44,16 @@ inspecting a local GGUF file and [`quantize`](../README.md#quantize-a-gguf-file)
 for native conversion into a new file. The readers return an index; the tensor
 sources copy validated payloads on request, and the separate quantizer streams
 weight blocks. Mapped sources and the dense `mistral3` forward pass are implemented; generation
-and sampling remain planned. Separately, execution tensors now support contiguous F32 `Add`,
+and sampling remain planned. Separately, execution tensors now support contiguous F32/F16 `Add`,
 SwiGLU, RMS normalization, rotary position embedding and attention temperature
 on CPU, plus embedding lookup and matrix-vector and matrix-matrix products over
 stored weights, and a key-value cache with configurable key and value
-encodings, through shared contracts. CUDA implements F32 device tensors,
-transfers and Add; its remaining operations and Metal expose explicit placeholders.
+encodings, through shared contracts. CUDA and Metal implement F32/F16 tensors,
+transfers, Add, SwiGLU and RMS normalization. CUDA also supports stored weight
+uploads, row copies, RoPE/YaRN, selected embedding formats and F32/F16 matrix
+products. Metal also supports `AddF32F16` and `RmsNormF32ToF16`. See the
+[kernel contract table](kernels.md#one-contract-three-implementations) for the
+remaining operations.
 
 ## From Model Files to Text
 

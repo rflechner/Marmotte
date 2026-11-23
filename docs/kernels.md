@@ -59,11 +59,12 @@ use unrounded intermediates.
 For scheduling, arithmetic policies and measurements shared by MatVec and
 MatMul, continue with [CPU matrix products](kernels/matrix-products.md).
 
-All listed kernels and the key-value cache have CPU implementations. CUDA also
-implements Add, SwiGLU, RMS normalization and row copies, all in F32 and F16, F32/F16
-device storage/transfers and stored weight uploads in all fourteen runtime
-encodings; its remaining kernels and Metal
-remain placeholders. See the [CUDA build and implementation guide](cuda.md).
+All listed kernels and the key-value cache have CPU implementations. CUDA implements
+Add, SwiGLU, RMS normalization, CopyRows, RoPE/YaRN, stored weight uploads,
+embedding lookup for F32/F16/Q4_0/Q8_0 and matrix products for F32/F16 weights.
+Metal implements F32/F16 tensors and transfers, Add, `AddF32F16`, SwiGLU,
+RMS normalization and `RmsNormF32ToF16`. Remaining GPU operations fail explicitly.
+See the [CUDA guide](cuda.md) and [Metal guide](metal.md) for native builds and tests.
 Core implements YaRN parameter preparation. Attention temperature has a worked
 example in text. The eight walkthrough images in the dedicated
 [kernel guides](#reading-the-formulas) were
@@ -81,7 +82,7 @@ The older overview below has its own status note.
 The diagram predates embedding lookup and `MatVec`, so it still shows both as
 planned. Solid teal paths are
 implemented, dashed amber paths are planned, and gray panels identify GPU
-placeholders at the time the diagram was drawn; CUDA Add is now implemented.
+placeholders at the time the diagram was drawn; CUDA and Metal Add are now implemented.
 Opening a source reads the index; `WeightMatrix.Read` requests a
 payload through that source. CPU `UploadWeights` then retains the encoded
 matrix without another payload copy.
@@ -132,27 +133,29 @@ them one row at a time.
 
 ## One Contract, Three Implementations
 
-| Concern | CPU today | CUDA today | Metal placeholder |
+| Concern | CPU today | CUDA today | Metal today |
 | --- | --- | --- | --- |
 | Factory | `CpuBackend()` | `CudaBackend(deviceIndex = 0)` | `MetalBackend()` |
-| Owned tensor storage | Private `single array` or `Half array` | Private F32 or F16 device allocation | Future Metal buffer |
-| `Allocate` | Zero-filled array | Device allocation, zeroed on the stream | `NotImplementedException` |
-| `Upload` / `Download` | Explicit host copies | Explicit copies through managed staging arrays, complete on return | `NotImplementedException` |
+| Owned tensor storage | Private `single array` or `Half array` | Private F32 or F16 device allocation | `MTLBuffer` in shared storage, F32 or F16 |
+| `Allocate` | Zero-filled array | Device allocation, zeroed on the stream | Zero-filled buffer |
+| `Upload` / `Download` | Explicit host copies | Explicit copies through managed staging arrays, complete on return | Explicit host copies; `Download` waits for submitted work |
 | `UploadWeights` | Retains the payload without copying | Stored-encoding device upload with bounded staging | `NotImplementedException` |
-| `Synchronize` | Nothing to wait for | Waits for the instance's stream | `NotImplementedException` |
-| `IAddKernel.Add` | F32: safe `Vector<T>` loop with a scalar tail; F16: scalar Half loop | Separate F32/F16 kernels, 256 threads per block | `NotImplementedException` |
-| `ISwiGluKernel.SwiGlu` | Safe `Vector<T>` loop with `Vector.Exp`, remainder in one zero-padded vector | F32/F16 kernels with the device `expf`, 256 threads per block; F16 is computed in F32 and rounded once | `NotImplementedException` |
-| `IRmsNormKernel.RmsNorm` | Safe `Vector<T>` loops, sum of squares in double precision | F32/F16 kernels, one block per row, double-precision reduction; F16 widens to F32 and rounds once | `NotImplementedException` |
-| `IEmbeddingKernel.EmbeddingLookup` | Decodes selected rows with `RowDecoder` directly into F32 output | `NotImplementedException` | `NotImplementedException` |
+| `Synchronize` | Nothing to wait for | Waits for the instance's stream | Waits for submitted work and reports its failures |
+| `IAddKernel.Add` | F32: safe `Vector<T>` loop with a scalar tail; F16: scalar Half loop | Separate F32/F16 kernels, 256 threads per block | Separate F32 and F16 MSL compute functions, one command buffer per call |
+| `IAddKernel.AddF32F16` | Scalar loop widening each F16 operand | `NotImplementedException` | MSL compute function, one command buffer per call |
+| `ISwiGluKernel.SwiGlu` | Safe `Vector<T>` loop with `Vector.Exp`, remainder in one zero-padded vector | F32/F16 kernels with the device `expf`, 256 threads per block; F16 is computed in F32 and rounded once | MSL compute functions `swiGluF32` and `swiGluF16`, one command buffer per call |
+| `IRmsNormKernel.RmsNorm` | Safe `Vector<T>` loops, sum of squares in double precision | F32/F16 kernels, one block per row, double-precision reduction; F16 widens to F32 and rounds once | MSL compute functions `rmsNormF32` and `rmsNormF16`, one thread per row, F32 sum |
+| `IRmsNormKernel.RmsNormF32ToF16` | `RmsNorm` one row at a time, then each F32 result rounded to F16 | `NotImplementedException` | MSL compute function `rmsNormF32ToF16`, one thread per row, F32 sum |
+| `IEmbeddingKernel.EmbeddingLookup` | Decodes selected rows with `RowDecoder` directly into F32 output | F32 output from F32/F16/Q4_0/Q8_0 stored rows | `NotImplementedException` |
 | `IRowCopyKernel.CopyRows` | Validated contiguous row copy over safe spans | F32/F16: one asynchronous device-to-device copy on the stream, no kernel | `NotImplementedException` |
-| `IMatVecKernel.MatVec` | Parallel rows, safe intrinsics and double-precision dot products | `NotImplementedException` | `NotImplementedException` |
-| `IMatMulKernel.MatMul` | Each integer or decoded row shared by every token of the batch | `NotImplementedException` | `NotImplementedException` |
-| `IRopeKernel.Rope` | Angles in double precision once per token, shared by every head | `NotImplementedException` | `NotImplementedException` |
+| `IMatVecKernel.MatVec` | Parallel rows, safe intrinsics and double-precision dot products | F32/F16 stored rows, double-precision products and reduction | `NotImplementedException` |
+| `IMatMulKernel.MatMul` | Each integer or decoded row shared by every token of the batch | F32/F16 rows decoded into shared memory and reused across tokens | `NotImplementedException` |
+| `IRopeKernel.Rope` | Angles in double precision once per token, shared by every head | F32/F16 rotation with host-prepared coefficients from double-precision angles | `NotImplementedException` |
 | `IAttentionTemperatureKernel.ApplyAttentionTemperature` | One F32 factor per token, `Vector<T>` multiplication | `NotImplementedException` | `NotImplementedException` |
 | `AllocateKeyValueCache` | Whole capacity up front: one byte array per layer for keys, one for values | `NotImplementedException` | `NotImplementedException` |
 | `IKeyValueCacheKernel` | Encodes whole batches with `RowEncoder`, reads them back with `RowDecoder` | `NotImplementedException` | `NotImplementedException` |
 | `IAttentionKernel.Attention` | Causal grouped-query attention over cached heads; online and reference modes | `NotImplementedException` | `NotImplementedException` |
-| SDK/driver required today | None | Toolkit for native builds, driver/GPU for non-empty tensors | None |
+| SDK/driver required today | None | Toolkit for native builds, driver/GPU for non-empty tensors | None for a managed build; Xcode and the Metal Toolchain for the native library |
 
 `ITensorBackend` inherits `IAddKernel`, `ISwiGluKernel`, `IRmsNormKernel`,
 `IEmbeddingKernel`, `IRowCopyKernel`, `IMatVecKernel`, `IMatMulKernel`, `IRopeKernel`,
@@ -161,8 +164,9 @@ call each kernel directly on the backend.
 A consumer needing a single operation can accept its kernel interface directly.
 CUDA uses a small native library through P/Invoke. Construction and empty tensors
 need no CUDA installation; the first non-empty allocation initializes the device.
-GPU tensors expose only Core's interfaces, not native pointers. Metal operations
-and unfinished CUDA operations fail explicitly, without a CPU fallback.
+GPU tensors expose only Core's interfaces, not native pointers. Metal uses its own
+native library and lazily creates a command queue. Metal
+and CUDA operations that remain unfinished fail explicitly, without a CPU fallback.
 
 ## Add and Buffer Reuse
 
@@ -290,10 +294,10 @@ dotnet fsi examples/Embedding.fsx
 dotnet fsi examples/KeyValueCache.fsx
 ```
 
-The Add script loads the library sources, prints the CPU result, and reports the
-Metal placeholder's exception at the first upload. `examples/CudaAdd.fsx` uses
-compiled assemblies and a native library to run Add on CUDA; follow the
-[CUDA build instructions](cuda.md) first. The embedding script uses a tiny in-memory F32 vocabulary and prints
+The Add script loads the library sources and prints the CPU F32 and F16 results.
+`examples/CudaAdd.fsx` and `examples/MetalAdd.fsx` use compiled assemblies and
+native libraries to run Add on their GPU; follow the [CUDA](cuda.md) or
+[Metal](metal.md) build instructions first. The embedding script uses a tiny in-memory F32 vocabulary and prints
 the rows for IDs `[1; 0; 1]`. The key-value cache script prints the target
 model's cache size for each encoding, then stores random keys in a small CPU
 cache and prints the root mean square and largest errors after reading them

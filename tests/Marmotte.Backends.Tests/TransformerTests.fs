@@ -311,10 +311,10 @@ type private TrackingBackend() =
     member _.OnSynchronize with set action = onSynchronize <- action
     interface ITensorBackend with
         member _.Backend = inner.Backend
-        member _.Allocate shape = inner.Allocate shape |> track
-        member _.Allocate(shape, encoding) = inner.Allocate(shape, encoding) |> track
-        member _.Upload(shape, data: ReadOnlyMemory<single>) = inner.Upload(shape, data) |> track
-        member _.Upload(shape, data: ReadOnlyMemory<Half>) = inner.Upload(shape, data) |> track
+        member _.Allocate(shape: TensorShape) = inner.Allocate shape |> track
+        member _.Allocate(shape: TensorShape, encoding: TensorEncoding) = inner.Allocate(shape, encoding) |> track
+        member _.Upload(shape: TensorShape, data: ReadOnlyMemory<single>) = inner.Upload(shape, data) |> track
+        member _.Upload(shape: TensorShape, data: ReadOnlyMemory<Half>) = inner.Upload(shape, data) |> track
         member _.UploadWeights matrix =
             let weight = inner.UploadWeights matrix
             weights.Add weight
@@ -334,10 +334,12 @@ type private TrackingBackend() =
             onSynchronize ()
     interface IAddKernel with
         member _.Add(a, b, output) = inner.Add(a, b, output)
+        member _.AddF32F16(a, b, output) = inner.AddF32F16(a, b, output)
     interface ISwiGluKernel with
         member _.SwiGlu(a, b, output) = inner.SwiGlu(a, b, output)
     interface IRmsNormKernel with
         member _.RmsNorm(input, weight, epsilon, output) = inner.RmsNorm(input, weight, epsilon, output)
+        member _.RmsNormF32ToF16(input, weight, epsilon, output) = inner.RmsNormF32ToF16(input, weight, epsilon, output)
     interface IEmbeddingKernel with
         member _.EmbeddingLookup(weight, ids, output) =
             batches.Add ids.Length

@@ -223,6 +223,7 @@ let ``null shapes and tensors are rejected`` () =
         Assert.Throws<ArgumentNullException>(fun () -> backend.Add(left, right, destination)) |> ignore
         Assert.Throws<ArgumentNullException>(fun () -> backend.SwiGlu(left, right, destination)) |> ignore
         Assert.Throws<ArgumentNullException>(fun () -> backend.RmsNorm(left, right, 1e-5f, destination)) |> ignore
+        Assert.Throws<ArgumentNullException>(fun () -> backend.RmsNormF32ToF16(left, right, 1e-5f, destination)) |> ignore
 
 [<Fact>]
 let ``Add matches a scalar reference for every vector tail length`` () =
@@ -750,36 +751,42 @@ let ``unfinished GPU operations explicitly fail without requiring GPU hardware``
     use tensor = host.Allocate(shape)
     use weights = host.UploadWeights(weightMatrix ())
     use cache = host.AllocateKeyValueCache(cacheLayout ())
-    let operations =
+    let commonOperations =
         [ (fun () -> backend.AllocateKeyValueCache(cacheLayout ()) |> ignore)
           (fun () -> backend.ApplyAttentionTemperature(tensor, ReadOnlyMemory<int>([| 0 |]), AttentionTemperature.Create(0.1, 16384), tensor))
           (fun () -> backend.StoreKeyValues(cache, 0, 0, tensor, tensor))
-          (fun () -> backend.ReadKeyValues(cache, 0, 0, tensor, tensor)) ]
-    // SwiGLU, RMS normalization, row copies, RoPE, embedding lookup and the matrix products are
-    // implemented on CUDA; Metal still rejects them.
-    let operations =
+          (fun () -> backend.ReadKeyValues(cache, 0, 0, tensor, tensor))
+          (fun () -> backend.Attention(cache, 0, 0, tensor, tensor)) ]
+    let backendOperations =
         if name = "Metal" then
-            [ (fun () -> backend.MatVec(weights, tensor, tensor))
+            [ (fun () -> backend.UploadWeights(weightMatrix ()) |> ignore)
+              (fun () -> backend.MatVec(weights, tensor, tensor))
               (fun () -> backend.MatMul(weights, tensor, tensor))
-              (fun () -> backend.SwiGlu(tensor, tensor, tensor))
-              (fun () -> backend.RmsNorm(tensor, tensor, 1e-5f, tensor))
+              (fun () -> backend.CopyRows(tensor, 0, tensor))
               (fun () -> backend.Rope(tensor, ReadOnlyMemory<int>([| 0 |]), RotaryEmbedding.Standard(2, 10000.0, RopePairing.AdjacentPairs), tensor))
-              (fun () -> backend.EmbeddingLookup(weights, ReadOnlyMemory<int>([| 0 |]), tensor)) ] @ operations
-        else operations
+              (fun () -> backend.EmbeddingLookup(weights, ReadOnlyMemory<int>([| 0 |]), tensor)) ]
+        else
+            [ (fun () -> backend.AddF32F16(tensor, tensor, tensor))
+              (fun () -> backend.RmsNormF32ToF16(tensor, tensor, 1e-5f, tensor)) ]
 
     let expectedKind = if name = "CUDA" then BackendKind.Cuda else BackendKind.Metal
     Assert.Equal(expectedKind, backend.Backend)
-    for operation in operations do
+    for operation in commonOperations @ backendOperations do
         let error = Assert.Throws<NotImplementedException>(fun () -> operation ())
         Assert.Contains(name, error.Message)
 
+    // Both GPU backends implement these kernels; empty tensors require no native runtime.
+    use empty = backend.Allocate(TensorShape.Create [| 0 |])
+    use emptyHalf = backend.Allocate(TensorShape.Create [| 0 |], TensorEncoding.F16)
+    backend.Add(empty, empty, empty)
+    backend.Add(emptyHalf, emptyHalf, emptyHalf)
+    backend.SwiGlu(empty, empty, empty)
+    backend.SwiGlu(emptyHalf, emptyHalf, emptyHalf)
+    backend.RmsNorm(empty, empty, 1e-5f, empty)
+    backend.RmsNorm(emptyHalf, emptyHalf, 1e-5f, emptyHalf)
     if name = "Metal" then
-        Assert.Throws<NotImplementedException>(fun () -> backend.UploadWeights(weightMatrix ()) |> ignore) |> ignore
-        Assert.Throws<NotImplementedException>(fun () -> backend.Allocate(shape) |> ignore) |> ignore
-        Assert.Throws<NotImplementedException>(fun () -> backend.Upload(shape, ReadOnlyMemory<single>([| 1.0f |])) |> ignore) |> ignore
-        Assert.Throws<NotImplementedException>(fun () -> backend.Download(tensor, Memory<single>([| 0.0f |]))) |> ignore
-        Assert.Throws<NotImplementedException>(fun () -> backend.Synchronize()) |> ignore
-        Assert.Throws<NotImplementedException>(fun () -> backend.Add(tensor, tensor, tensor)) |> ignore
+        backend.AddF32F16(empty, emptyHalf, empty)
+        backend.RmsNormF32ToF16(empty, empty, 1e-5f, emptyHalf)
 
 [<Theory>]
 [<InlineData("CPU")>]
@@ -801,8 +808,10 @@ let ``disposed backends reject all operations and allow repeated disposal`` name
     Assert.Throws<ObjectDisposedException>(fun () -> backend.Download(tensor, Memory<single>.Empty)) |> ignore
     Assert.Throws<ObjectDisposedException>(fun () -> backend.Synchronize()) |> ignore
     Assert.Throws<ObjectDisposedException>(fun () -> backend.Add(tensor, tensor, tensor)) |> ignore
+    Assert.Throws<ObjectDisposedException>(fun () -> backend.AddF32F16(tensor, tensor, tensor)) |> ignore
     Assert.Throws<ObjectDisposedException>(fun () -> backend.SwiGlu(tensor, tensor, tensor)) |> ignore
     Assert.Throws<ObjectDisposedException>(fun () -> backend.RmsNorm(tensor, tensor, 1e-5f, tensor)) |> ignore
+    Assert.Throws<ObjectDisposedException>(fun () -> backend.RmsNormF32ToF16(tensor, tensor, 1e-5f, tensor)) |> ignore
     Assert.Throws<ObjectDisposedException>(fun () -> backend.EmbeddingLookup(weights, ReadOnlyMemory<int>([| 0 |]), tensor)) |> ignore
     Assert.Throws<ObjectDisposedException>(fun () -> backend.MatVec(weights, tensor, tensor)) |> ignore
     Assert.Throws<ObjectDisposedException>(fun () -> backend.MatMul(weights, tensor, tensor)) |> ignore

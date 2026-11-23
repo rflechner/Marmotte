@@ -6,6 +6,7 @@ open Marmotte.Cpu
 open Marmotte.Cuda
 open Marmotte.Metal
 open Marmotte.Backends.CudaTests
+open Marmotte.Backends.MetalTests
 open Xunit
 
 let private half bits = BitConverter.UInt16BitsToHalf(bits)
@@ -115,7 +116,7 @@ let private rmsNormHalfReference (input: Half array) (columns: int) (weight: Hal
     input |> Array.chunkBySize columns |> Array.collect normalizeRow
 
 let private checkArithmetic (backend: ITensorBackend) =
-    for dimensions in [ [||]; [| 0 |]; [| 2; 10 |]; [| 255 |]; [| 256 |]; [| 257 |]; [| 65537 |] ] do
+    for dimensions in [ [||]; [| 0 |]; [| 2; 10 |]; [| 31 |]; [| 32 |]; [| 33 |]; [| 255 |]; [| 256 |]; [| 257 |]; [| 65537 |] ] do
         let shape = TensorShape.Create dimensions
         let cases = Array.init shape.ElementCount (fun i -> additionCases[i % additionCases.Length])
         let leftValues = cases |> Array.map (fun (left, _, _) -> half left)
@@ -265,14 +266,6 @@ let ``CPU F32-only kernels reject F16 before writing`` () =
     Assert.Equal<single>([| 42.0f; 42.0f |], unchanged)
     assertResults [| 0x3c00us; 0x4000us |] (download backend halfTensor)
 
-[<Fact>]
-let ``Metal Half operations remain explicit placeholders`` () =
-    use backend = new MetalBackend() :> ITensorBackend
-    let shape = TensorShape.Create [| 0 |]
-    Assert.Throws<NotImplementedException>(fun () -> backend.Allocate(shape, TensorEncoding.F16) |> ignore) |> ignore
-    Assert.Throws<NotImplementedException>(fun () -> backend.Upload(shape, ReadOnlyMemory<Half>.Empty) |> ignore) |> ignore
-    Assert.Throws<NotImplementedException>(fun () -> backend.Download(Unchecked.defaultof<ITensor>, Memory<Half>.Empty)) |> ignore
-
 [<CudaFact; Trait("Category", "CUDA")>]
 let ``CUDA F16 Add matches independent rounding and special value fixtures`` () =
     use backend = new CudaBackend() :> ITensorBackend
@@ -403,3 +396,198 @@ let ``CUDA F16 RmsNorm stays within one unit in the last place of a double-preci
 
     backend.RmsNorm(input, weight, 1e-5f, input)
     Array.iter2 assertWithinOneHalfUlp expected (download backend input)
+
+// Independent binary32 + binary16 operands and binary32 results: F32 rounding that F16 arithmetic
+// could not produce, F16 subnormals that widen to normal F32, sums beyond the F16 range,
+// signed zero, infinities and NaNs.
+let private mixedAdditionCases =
+    [| 0x3FC00000u, 0b0_01111_0000000000us, 0x40200000u // 1.5 + 1 = 2.5
+       0xBFC00000u, 0b1_01111_0000000000us, 0xC0200000u
+       0x3F800001u, 0b0_00100_0000000000us, 0x3F801001u // (1 + 2^-23) + 2^-11 is exact in F32
+       0x3F800003u, 0b0_01111_0000000000us, 0x40000002u // Tie in F32 rounds up to even; an F16 sum would give 2
+       0x00000000u, 0b0_00000_0000000001us, 0x33800000u // Smallest F16 subnormal is a normal F32
+       0x00000000u, 0b0_00000_1111111111us, 0x387FC000u // Largest F16 subnormal
+       0x477FE000u, 0b0_11110_1111111111us, 0x47FFE000u // 65504 + 65504 stays finite in F32
+       0xBF800000u, 0b0_01111_0000000000us, 0x00000000u // Exact cancellation
+       0x80000000u, 0b1_00000_0000000000us, 0x80000000u
+       0x80000000u, 0b0_00000_0000000000us, 0x00000000u
+       0x3F800000u, 0b0_11111_0000000000us, 0x7F800000u
+       0x3F800000u, 0b1_11111_0000000000us, 0xFF800000u
+       0x7F800000u, 0b1_11111_0000000000us, 0x7FC00000u
+       0x3F800000u, 0b0_11111_1000000000us, 0x7FC00000u
+       0x7FC00000u, 0b0_01111_0000000000us, 0x7FC00000u |]
+
+let private single' (bits: uint32) = BitConverter.UInt32BitsToSingle(bits)
+let private singleBits (value: single) = BitConverter.SingleToUInt32Bits(value)
+
+let private downloadSingle (backend: ITensorBackend) (tensor: ITensor) =
+    let values = Array.zeroCreate<single> tensor.Shape.ElementCount
+    backend.Download(tensor, values.AsMemory())
+    values
+
+let private uploadSingle (backend: ITensorBackend) shape (values: single array) =
+    backend.Upload(shape, ReadOnlyMemory<single>(values))
+
+let private assertSingleResults (expected: uint32 array) (actual: single array) =
+    Assert.Equal(expected.Length, actual.Length)
+    for index = 0 to expected.Length - 1 do
+        if Single.IsNaN(single' expected[index]) then
+            Assert.True(Single.IsNaN actual[index], $"Expected NaN at {index}.")
+        else
+            Assert.Equal(expected[index], singleBits actual[index])
+
+let private checkMixedArithmetic (backend: ITensorBackend) =
+    for dimensions in [ [||]; [| 0 |]; [| 3; 5 |]; [| 31 |]; [| 32 |]; [| 33 |]; [| 257 |]; [| 65537 |] ] do
+        let shape = TensorShape.Create dimensions
+        let cases = Array.init shape.ElementCount (fun i -> mixedAdditionCases[i % mixedAdditionCases.Length])
+        let leftValues = cases |> Array.map (fun (left, _, _) -> single' left)
+        let rightValues = cases |> Array.map (fun (_, right, _) -> half right)
+        let expected = cases |> Array.map (fun (_, _, result) -> result)
+        use left = uploadSingle backend shape leftValues
+        use right = upload backend shape rightValues
+        use destination = backend.Allocate(shape)
+
+        backend.AddF32F16(left, right, destination)
+        assertSingleResults expected (downloadSingle backend destination)
+        Assert.Equal<uint32>(Array.map singleBits leftValues, downloadSingle backend left |> Array.map singleBits)
+        Assert.Equal<uint16>(Array.map bits rightValues, download backend right |> Array.map bits)
+
+        // The residual stream is usually updated in place.
+        backend.AddF32F16(left, right, left)
+        assertSingleResults expected (downloadSingle backend left)
+
+let private checkMixedValidation (backend: ITensorBackend) (other: ITensorBackend) (shape: TensorShape) =
+    let count = shape.ElementCount
+    use f32 = uploadSingle backend shape (Array.create count 42.0f)
+    use f16 = upload backend shape (Array.create count (half 0b0_01111_0000000000us))
+    use foreignF32 = uploadSingle other shape (Array.create count 1.0f)
+    use foreignF16 = upload other shape (Array.create count (half 0b0_01111_0000000000us))
+    use wrongShape = backend.Allocate(TensorShape.Create [| 1; count |])
+    let nullTensor = Unchecked.defaultof<ITensor>
+
+    let incompatible =
+        [ f16, f16, f32
+          f32, f32, f32
+          f32, f16, f16
+          f16, f32, f32
+          foreignF32, f16, f32
+          f32, foreignF16, f32
+          f32, f16, foreignF32
+          wrongShape, f16, f32
+          f32, f16, wrongShape ]
+
+    for left, right, destination in incompatible do
+        Assert.Throws<ArgumentException>(fun () -> backend.AddF32F16(left, right, destination)) |> ignore
+
+    for left, right, destination in [ nullTensor, f16, f32; f32, nullTensor, f32; f32, f16, nullTensor ] do
+        Assert.Throws<ArgumentNullException>(fun () -> backend.AddF32F16(left, right, destination)) |> ignore
+
+    use disposed = backend.Allocate(shape, TensorEncoding.F16)
+    disposed.Dispose()
+    Assert.Throws<ObjectDisposedException>(fun () -> backend.AddF32F16(f32, disposed, f32)) |> ignore
+    Assert.All(downloadSingle backend f32, fun value -> Assert.Equal(42.0f, value))
+
+[<Fact>]
+let ``CPU AddF32F16 matches independent rounding and special value fixtures`` () =
+    use backend = new CpuBackend() :> ITensorBackend
+    checkMixedArithmetic backend
+
+[<Fact>]
+let ``CPU AddF32F16 validates encodings shapes ownership and disposal before writing`` () =
+    use backend = new CpuBackend() :> ITensorBackend
+    use other = new CpuBackend() :> ITensorBackend
+    checkMixedValidation backend other (TensorShape.Create [| 3 |])
+
+[<Fact>]
+let ``CPU RmsNormF32ToF16 rounds the F32 RmsNorm result to the nearest F16`` () =
+    use backend = new CpuBackend() :> ITensorBackend
+    let random = Random(1617)
+    let shape = TensorShape.Create [| 3; 37 |]
+    let inputValues = Array.init 111 (fun _ -> float32 (random.NextDouble() * 20.0 - 10.0))
+    let weightValues = Array.init 37 (fun _ -> float32 (random.NextDouble() * 4.0 - 2.0))
+    use input = uploadSingle backend shape inputValues
+    use weight = uploadSingle backend (TensorShape.Create [| 37 |]) weightValues
+    use singleDestination = backend.Allocate(shape)
+    use halfDestination = backend.Allocate(shape, TensorEncoding.F16)
+
+    backend.RmsNorm(input, weight, 1e-5f, singleDestination)
+    backend.RmsNormF32ToF16(input, weight, 1e-5f, halfDestination)
+
+    let expected = downloadSingle backend singleDestination |> Array.map (fun value -> bits (Half.op_Explicit value))
+    assertResults expected (download backend halfDestination)
+    Assert.Equal<single>(inputValues, downloadSingle backend input)
+
+    // A row of ones has scale 1 / sqrt(1 + 1e-5) ≈ 0.999995: weights of ±1e5 overflow to
+    // infinities, 65504 rounds back to the largest finite F16, and 1 rounds to exactly 1.
+    use ones = uploadSingle backend (TensorShape.Create [| 1; 4 |]) (Array.create 4 1.0f)
+    use largeWeight = uploadSingle backend (TensorShape.Create [| 4 |]) [| 1e5f; -1e5f; 65504.0f; 1.0f |]
+    use overflowed = backend.Allocate(TensorShape.Create [| 1; 4 |], TensorEncoding.F16)
+    backend.RmsNormF32ToF16(ones, largeWeight, 1e-5f, overflowed)
+    assertResults [| 0b0_11111_0000000000us; 0b1_11111_0000000000us; 0b0_11110_1111111111us; 0b0_01111_0000000000us |] (download backend overflowed)
+
+[<Fact>]
+let ``CPU RmsNormF32ToF16 validates encodings shapes ownership and epsilon before writing`` () =
+    use backend = new CpuBackend() :> ITensorBackend
+    use other = new CpuBackend() :> ITensorBackend
+    let shape = TensorShape.Create [| 1; 2 |]
+    let fortyTwo = 0b0_10100_0101000000us
+    use input = uploadSingle backend shape [| 1.0f; 2.0f |]
+    use weight = uploadSingle backend (TensorShape.Create [| 2 |]) [| 1.0f; 1.0f |]
+    use halfInput = upload backend shape [| half 0b0_01111_0000000000us; half 0b0_10000_0000000000us |]
+    use halfWeight = upload backend (TensorShape.Create [| 2 |]) [| half 0b0_01111_0000000000us; half 0b0_01111_0000000000us |]
+    use singleDestination = backend.Allocate(shape)
+    use destination = upload backend shape [| half fortyTwo; half fortyTwo |]
+    use transposed = backend.Allocate(TensorShape.Create [| 2; 1 |], TensorEncoding.F16)
+    use foreign = other.Allocate(shape, TensorEncoding.F16)
+
+    for i, w, d in [ halfInput, weight, destination; input, halfWeight, destination; input, weight, singleDestination ] do
+        Assert.Throws<ArgumentException>(fun () -> backend.RmsNormF32ToF16(i, w, 1e-5f, d)) |> ignore
+    let shapeError = Assert.Throws<ArgumentException>(fun () -> backend.RmsNormF32ToF16(input, weight, 1e-5f, transposed))
+    Assert.Contains("RmsNormF32ToF16", shapeError.Message)
+    Assert.Throws<ArgumentException>(fun () -> backend.RmsNormF32ToF16(input, weight, 1e-5f, foreign)) |> ignore
+    for epsilon in [ 0.0f; -1e-5f; Single.NaN; Single.PositiveInfinity ] do
+        Assert.Throws<ArgumentOutOfRangeException>(fun () -> backend.RmsNormF32ToF16(input, weight, epsilon, destination)) |> ignore
+    assertResults [| fortyTwo; fortyTwo |] (download backend destination)
+
+[<Fact>]
+let ``Metal F16 empty tensors validate without loading the runtime`` () =
+    use backend = new MetalBackend() :> ITensorBackend
+    use other = new MetalBackend() :> ITensorBackend
+    use empty = backend.Upload(TensorShape.Create [| 0 |], ReadOnlyMemory<Half>.Empty)
+    backend.Add(empty, empty, empty)
+    backend.Download(empty, Memory<Half>.Empty)
+    backend.Synchronize()
+    checkValidationAndLifetime backend other (TensorShape.Create [| 0 |])
+
+[<Fact>]
+let ``Metal AddF32F16 empty tensors validate without loading the runtime`` () =
+    use backend = new MetalBackend() :> ITensorBackend
+    use other = new MetalBackend() :> ITensorBackend
+    checkMixedValidation backend other (TensorShape.Create [| 0 |])
+
+[<MetalFact; Trait("Category", "Metal")>]
+let ``Metal F16 Add matches independent rounding and special value fixtures`` () =
+    use backend = new MetalBackend() :> ITensorBackend
+    checkArithmetic backend
+
+[<MetalFact; Trait("Category", "Metal")>]
+let ``Metal F16 transfers preserve every bit pattern and order pending work`` () =
+    use backend = new MetalBackend() :> ITensorBackend
+    checkTransfersAndOrdering backend
+
+[<MetalFact; Trait("Category", "Metal")>]
+let ``Metal F16 validates encodings shapes ownership and disposal before writing`` () =
+    use backend = new MetalBackend() :> ITensorBackend
+    use other = new MetalBackend() :> ITensorBackend
+    checkValidationAndLifetime backend other (TensorShape.Create [| 3 |])
+
+[<MetalFact; Trait("Category", "Metal")>]
+let ``Metal AddF32F16 matches independent rounding and special value fixtures`` () =
+    use backend = new MetalBackend() :> ITensorBackend
+    checkMixedArithmetic backend
+
+[<MetalFact; Trait("Category", "Metal")>]
+let ``Metal AddF32F16 validates encodings shapes ownership and disposal before writing`` () =
+    use backend = new MetalBackend() :> ITensorBackend
+    use other = new MetalBackend() :> ITensorBackend
+    checkMixedValidation backend other (TensorShape.Create [| 3 |])

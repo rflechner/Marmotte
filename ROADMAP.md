@@ -261,7 +261,7 @@ the reference for results.
   submission-ordered execution with explicit synchronization, and tensor
   lifetimes owned by the backend.
 - [ ] **L.3** Extend the boundary to the key-value cache and the operations used by the
-  forward pass as they are implemented. Core's contracts in `Compute.fs` already cover
+  forward pass as they are implemented. Core's contracts in `Compute.fs` and `TensorBackend.fs` already cover
   weights, the cache and every forward kernel; each backend implements them as its kernels
   land (CUDA in groups Q–T at the end of this file, Metal in L.6).
 - [x] **L.4** Choose the interop approach for each backend: native kernels called through
@@ -276,14 +276,16 @@ the reference for results.
   through unified memory without copies where alignment allows, detailed as groups
   [U](#u-metal-device-buffers-and-weight-storage) through
   [X](#x-metal-position-kernels-key-value-cache-and-attention) at the end of this file,
-  mirroring the CUDA groups Q–T.
+  mirroring the CUDA groups Q–T. Implemented so far: F32/F16 shared-storage tensors,
+  copying transfers, synchronization, Add, `AddF32F16`, SwiGLU, RMS normalization
+  and `RmsNormF32ToF16`, with optional GPU tests and a [build guide](docs/metal.md).
 - [ ] **L.7** Compare each backend with the CPU reference within documented tolerances:
-  extend the opt-in `Category=CUDA` tests in `CudaTests.fs` kernel by kernel with
+  extend the opt-in `Category=CUDA` and `Category=Metal` tests kernel by kernel with
   independent fixtures, and record the tolerances in `docs/kernels.md` beside the CPU
   error bounds.
 - [x] **L.8** Keep GPU tests optional, so that normal development does not require a GPU.
 - [ ] **L.9** Measure each backend with the same workloads as the CPU recorded in
-  `docs/kernels.md`, and report the CUDA timings in `docs/cuda.md`.
+  `docs/kernels.md`, and report timings in `docs/cuda.md` and `docs/metal.md`.
 - [ ] **L.10** Make CUDA threads per block configurable through backend options, with
   per-kernel overrides and documented defaults, replacing the fixed 256-thread
   launches in Add, SwiGLU, RMS normalization and RoPE. This controls block size,
@@ -477,14 +479,14 @@ The Metal backend mirrors groups Q–T on Apple GPUs, and the CPU implementation
 reference for results. Shaders are Metal Shading Language compute functions; following the
 interop chosen in L.4, each operation gets one shader file plus a host entry point compiled
 into a dynamic library loaded through P/Invoke, with one command queue per backend instance.
-Storage is `MTLBuffer` objects owned by the backend; on unified-memory systems, mapped GGUF
-weights are shared without copies where alignment allows. GPU tests stay opt-in, like the
+Storage is `MTLBuffer` objects owned by the backend. Sharing mapped GGUF weights without
+copies on unified-memory systems, where alignment allows, remains planned in U.2. GPU tests stay opt-in, like the
 CUDA ones. Document Apple-specific arithmetic behavior (for example, F32 subnormals flushed
 to zero on Apple GPUs) next to the affected kernels.
 
 ### U. Metal device, buffers and weight storage
 
-- [ ] **U.1** Device and transfers: select the `MTLDevice`, create one command queue per
+- [x] **U.1** Device and transfers: select the `MTLDevice`, create one command queue per
   `MetalBackend` lazily (construction needs no driver, as on CUDA), allocate zero-initialized
   buffers, upload/download F32 and F16 with bit-preserving transfers, and synchronize by
   waiting on the queue's command buffers.
@@ -492,21 +494,29 @@ to zero on Apple GPUs) next to the affected kernels.
   all fourteen runtime encodings — without decoding, sharing mapped file memory directly on
   unified-memory systems where alignment allows and copying otherwise; keep name, encoding,
   rows and columns as managed metadata.
-- [ ] **U.3** Release buffers on tensor and backend disposal, ordered on the queue like the
+- [x] **U.3** Release buffers on tensor and backend disposal, ordered on the queue like the
   CUDA stream ordering.
 
 ### V. Metal element-wise, normalization and lookup kernels
 
-- [ ] **V.1** Add F32 and F16 as the first kernel (the `half2` vector type packs F16 pairs);
-  document rounding and subnormal behavior on the target GPUs.
-- [ ] **V.2** SwiGLU F32: `silu(gate) × up` per element, in one shader file.
-- [ ] **V.3** RMS normalization F32: per-row mean of squares with a threadgroup reduction,
-  then scaling by the weight vector; document the accumulation precision.
+- [x] **V.1** Add F32 and F16, plus explicit `AddF32F16` for an F32 residual stream.
+  Each thread adds one element; rounding and subnormal behavior are documented in
+  [the Metal guide](docs/metal.md#floating-point-behavior).
+- [x] **V.2** SwiGLU F32 and F16: `silu(gate) × up` per element, in one shader file.
+  F16 widens to F32 for the arithmetic and rounds once on output.
+- [x] **V.3** RMS normalization F32 and F16, plus `RmsNormF32ToF16`: one thread
+  per row computes the mean of squares in F32, then scales by the weight vector.
+  Accumulation limits and tolerances are documented in [the Metal guide](docs/metal.md#rms-normalization).
+  A threadgroup reduction remains an optimization, tracked in V.6.
 - [ ] **V.4** `CopyRows`: buffer-to-buffer copy of contiguous rank-2 rows, needed by
   `LogitSelection` (H.3).
 - [ ] **V.5** Embedding lookup: decode the selected weight rows on the GPU straight into
   the F32 destination; start with F32/F16/Q4_0/Q8_0, then port the remaining `RowDecoder`
   encodings (Q4_1, Q5_0, Q5_1, IQ4_NL, Q2_K–Q6_K).
+
+- [ ] **V.6** Parallelize RMS normalization with a threadgroup reduction after measuring
+  it against the current one-thread-per-row reference; preserve the documented precision
+  and aliasing behavior.
 
 ### W. Metal matrix products
 

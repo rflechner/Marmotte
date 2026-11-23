@@ -120,33 +120,54 @@ type IAddKernel =
     /// The result follows ITensorBackend's ordering rules and may be computed after the call returns.
     abstract Add: left: ITensor * right: ITensor * destination: ITensor -> unit
 
+    /// Adds an F16 tensor into an F32 tensor, such as F16 projection output into an F32 residual
+    /// stream: destination[i] = left[i] + right[i]. Left and destination are F32 and right is F16;
+    /// Add stays strict about encodings, so this widening is always requested by name. Every F16
+    /// value converts exactly to F32, and the sum is ordinary F32 addition, rounded to nearest,
+    /// ties to even. Destination may be left. Ownership, shapes, validation and ordering follow
+    /// Add; any other combination of encodings raises ArgumentException before submission.
+    abstract AddF32F16: left: ITensor * right: ITensor * destination: ITensor -> unit
+
 /// Element-wise SwiGLU activation of a gated feed-forward layer:
 /// destination[i] = silu(gate[i]) × up[i], with silu(x) = x / (1 + e^-x).
 /// See "GLU Variants Improve Transformer", https://arxiv.org/abs/2002.05202.
 type ISwiGluKernel =
-    /// Currently requires F32 tensors; F16 raises NotSupportedException on CPU.
+    /// CPU requires F32 tensors and raises NotSupportedException for F16; CUDA and Metal also accept F16,
+    /// with all three tensors in the same encoding, like Add.
     /// Tensor rules, validation and ordering are those of IAddKernel.Add, with gate and up as the
     /// inputs. Implementations approximate the exponential differently, so results may differ by a
     /// few units in the last place: compare them with a relative tolerance. Where e^-x overflows
-    /// (x below about -88.7), the result is a signed zero instead of a value below 1e-36 in
-    /// magnitude, and silu(-∞) is NaN, as the formula gives.
+    /// (x below about -88.7; CUDA and Metal compute F16 in F32), the result is a signed zero instead of a tiny
+    /// value, and silu(-∞) is NaN, as the formula gives.
     abstract SwiGlu: gate: ITensor * up: ITensor * destination: ITensor -> unit
 
 /// RMS normalization of each row along the last dimension, followed by a weight per column:
 /// destination[r, c] = input[r, c] / sqrt(mean(input[r, *]²) + epsilon) × weight[c].
 /// See "Root Mean Square Layer Normalization", https://arxiv.org/abs/1910.07467.
 type IRmsNormKernel =
-    /// Currently requires F32 tensors; F16 raises NotSupportedException on CPU.
+    /// CPU requires F32 tensors and raises NotSupportedException for F16. CUDA and Metal accept F32 or F16,
+    /// with all three tensors in the same encoding, like Add.
     /// Input and destination have the same shape, of rank 1 or more. Weight is a vector whose
     /// length is the last dimension of input, shared by every row. Epsilon must be finite and
-    /// positive, so that an all-zero row stays finite; models store it as
+    /// positive (including subnormals), so that an all-zero row stays finite; models store it as
     /// attention.layer_norm_rms_epsilon. Destination may be any input; otherwise inputs are
     /// unchanged. Empty tensors are valid no-ops. Ownership, validation and ordering follow
     /// IAddKernel.Add, and an invalid epsilon raises ArgumentOutOfRangeException.
     /// The mean is a reduction that implementations sum in different orders, so compare results
     /// with a relative tolerance. NaN or infinite values make their row's results NaN or zero,
-    /// as the formula gives.
+    /// as the formula gives. CPU and CUDA sum squares in double precision; Metal sums them in F32, so
+    /// a row whose sum of squares exceeds the F32 range (values of about 1e19 or more) behaves
+    /// there like a row holding an infinity.
     abstract RmsNorm: input: ITensor * weight: ITensor * epsilon: single * destination: ITensor -> unit
+
+    /// Normalizes an F32 input with an F32 weight into an F16 destination, such as an activation
+    /// prepared for F16 storage. RmsNorm stays strict about encodings, so this narrowing is always
+    /// requested by name. Each result is computed and rounded in F32 as by RmsNorm, then rounded to
+    /// the nearest F16, ties to even; results beyond the F16 range become infinities. Destination
+    /// cannot alias an input, because their encodings differ. Shapes, epsilon, ownership,
+    /// validation and ordering follow RmsNorm; any other combination of encodings raises
+    /// ArgumentException before submission.
+    abstract RmsNormF32ToF16: input: ITensor * weight: ITensor * epsilon: single * destination: ITensor -> unit
 
 /// Selects vocabulary rows from stored weights and decodes them into F32 activations.
 type IEmbeddingKernel =
@@ -279,83 +300,3 @@ type IAttentionKernel =
     /// Ownership, validation and ordering follow IKeyValueCacheKernel; invalid head dimensions
     /// or aliasing raise ArgumentException. Validation completes before any destination write.
     abstract Attention: cache: IKeyValueCache * layer: int * position: int * queries: ITensor * destination: ITensor -> unit
-
-/// Creates and operates on its own tensors. Separate instances are separate ownership domains,
-/// even when their Backend values match.
-///
-/// Ordering: operations submitted to one instance take effect in submission order, so a kernel
-/// observes the results of earlier kernels and transfers. Kernels may return before they complete.
-/// Upload and UploadWeights copy or retain their input before returning; Download and Synchronize
-/// wait for every previously submitted operation. A device failure in a submitted operation is
-/// raised by a later call on the same instance, at the latest by the next Download or Synchronize.
-///
-/// Lifetime: callers own returned tensors and should dispose them when they are no longer needed.
-/// Disposing the backend waits for submitted operations, then releases the storage of every tensor
-/// it still owns; those tensors become disposed, and disposing them again is a no-op. Backend
-/// disposal is idempotent, and later operations raise ObjectDisposedException.
-///
-/// Concurrent calls on one instance, including disposal, are not supported. Allocation can fail
-/// with OutOfMemoryException. Unimplemented backend operations raise NotImplementedException.
-/// Implemented operations reject unsupported tensor encodings with NotSupportedException;
-/// mixing supported encodings in Add or using the wrong Download overload raises ArgumentException.
-type ITensorBackend =
-    inherit IDisposable
-    inherit IAddKernel
-    inherit ISwiGluKernel
-    inherit IRmsNormKernel
-    inherit IEmbeddingKernel
-    inherit IRowCopyKernel
-    inherit IMatVecKernel
-    inherit IMatMulKernel
-    inherit IRopeKernel
-    inherit IAttentionTemperatureKernel
-    inherit IKeyValueCacheKernel
-    inherit IAttentionKernel
-
-    abstract Backend: BackendKind
-
-    /// Allocates zero-initialized F32 storage. Raises ArgumentNullException for a null shape
-    /// or ObjectDisposedException after backend disposal.
-    abstract Allocate: shape: TensorShape -> ITensor
-
-    /// Allocates zero-initialized storage in the requested encoding. CPU and CUDA support F32
-    /// and F16; other encodings raise NotSupportedException, even for empty tensors.
-    /// Shape validation and lifetime rules are the same as for Allocate(shape).
-    abstract Allocate: shape: TensorShape * encoding: TensorEncoding -> ITensor
-
-    /// Copies exactly Shape.ElementCount host values, in row-major order, into new storage before
-    /// returning; the caller may reuse its buffer immediately. Raises ArgumentNullException for a
-    /// null shape, ArgumentException for an incorrect source length, or ObjectDisposedException
-    /// after backend disposal.
-    abstract Upload: shape: TensorShape * values: ReadOnlyMemory<single> -> ITensor
-
-    /// Copies F16 host values into new F16 storage, preserving their bits, including NaN payloads.
-    /// No F32 tensor or conversion buffer is created. Length and lifetime rules match F32 Upload.
-    abstract Upload: shape: TensorShape * values: ReadOnlyMemory<Half> -> ITensor
-
-    /// Places a stored matrix on this backend in its encoding, without decoding it. The tensor may
-    /// retain the matrix payload instead of copying it, as the CPU backend does, so the tensor
-    /// source that produced the matrix must stay alive while the weight tensor is in use.
-    /// Raises ArgumentNullException for null, NotSupportedException for an encoding this backend
-    /// cannot hold, or ObjectDisposedException after backend disposal.
-    abstract UploadWeights: weights: WeightMatrix -> IWeightTensor
-
-    /// Allocates storage for every position of every layer of the layout, about TotalBytes, with no
-    /// stored positions. Raises ArgumentNullException for null, NotSupportedException for an
-    /// encoding this backend cannot store, or ObjectDisposedException after backend disposal.
-    abstract AllocateKeyValueCache: layout: KeyValueCacheLayout -> IKeyValueCache
-
-    /// Waits for previously submitted operations, then copies the tensor to an exact-length host
-    /// buffer in row-major order; the buffer is complete on return. Validates before writing.
-    /// Raises ArgumentNullException for null, ArgumentException for a foreign tensor or incorrect
-    /// destination length or a non-F32 tensor, or ObjectDisposedException for disposed storage or backend.
-    abstract Download: tensor: ITensor * destination: Memory<single> -> unit
-
-    /// Copies an F16 tensor to exact-length F16 host storage, preserving bits without conversion.
-    /// A non-F16 tensor raises ArgumentException before any write. Ordering, ownership and lifetime
-    /// rules match F32 Download; an empty download also waits for earlier submitted operations.
-    abstract Download: tensor: ITensor * destination: Memory<Half> -> unit
-
-    /// Waits until every previously submitted operation has completed, and raises any device
-    /// failure they reported. Raises ObjectDisposedException after backend disposal.
-    abstract Synchronize: unit -> unit
