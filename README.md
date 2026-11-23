@@ -298,6 +298,9 @@ The three backend projects share these contracts:
   CUDA embedding lookup decodes F32/F16/Q4_0/Q8_0 weight rows on the GPU into an
   F32 destination; see [the CUDA guide](docs/cuda.md#embedding-lookup-on-cuda)
   and `dotnet fsi examples/CudaEmbedding.fsx` for a CPU-vs-CUDA comparison.
+  CUDA `MatVec` and `MatMul` decode F32/F16 weight rows on the GPU, one row at a time,
+  sharing each decoded row across the token batch of a `MatMul`; see [the CUDA guide](docs/cuda.md#matrix-products-on-cuda)
+  and `dotnet fsi examples/CudaMatMul.fsx` for a CPU-vs-CUDA comparison.
   Caches and other kernels still raise `NotImplementedException`.
 
 `Add` writes into a preallocated destination and requires identical contiguous,

@@ -5,8 +5,9 @@ open System.Collections.Generic
 open Marmotte.Core
 
 /// Owned contiguous F32/F16 device tensors, stored-encoding weight uploads, F32/F16 Add,
-/// SwiGLU, RMS normalization, row copies, RoPE/YaRN and embedding lookup of F32/F16/Q4_0/Q8_0
-/// weight rows, using one CUDA stream per instance.
+/// SwiGLU, RMS normalization, row copies, RoPE/YaRN, embedding lookup of F32/F16/Q4_0/Q8_0
+/// weight rows, and F32/F16 matrix-vector and matrix products over stored weight rows,
+/// using one CUDA stream per instance.
 /// deviceIndex is a zero-based CUDA device ordinal (default 0), and must be non-negative.
 /// Native loading and device initialization happen at the first non-empty allocation; construction,
 /// empty tensors and an unused Synchronize require no CUDA installation. No CPU fallback is used.
@@ -86,6 +87,12 @@ type CudaBackend(?deviceIndex: int) =
     let notImplemented operation =
         checkDisposed ()
         raise (NotImplementedException($"CUDA {operation} is not implemented."))
+
+    /// Rejects stored weight encodings the matrix product kernels cannot decode, before submission.
+    let requireMatrixEncoding (weights: IWeightTensor) =
+        match weights.Encoding with
+        | TensorEncoding.F32 | TensorEncoding.F16 -> ()
+        | encoding -> raise (NotSupportedException($"CUDA matrix products do not support {encoding} weights."))
 
     // Internal diagnostics verify stored bytes and native allocation accounting before weight
     // kernels exist. They never expose a device pointer through the public backend contract.
@@ -291,10 +298,52 @@ type CudaBackend(?deviceIndex: int) =
                 getSession().CopyRows(sourcePointer, sourceRows, firstRow, destinationPointer, rows, sourceShape[1])
 
     interface IMatVecKernel with
-        member _.MatVec(_, _, _) = notImplemented "matrix-vector product"
+        member _.MatVec(weights, input, destination) =
+            checkDisposed ()
+            let weightsPointer = weightPointerOf (nameof weights) weights
+            let inputPointer = pointerOf (nameof input) input
+            let destinationPointer = pointerOf (nameof destination) destination
+            requireEncoding TensorEncoding.F32 (nameof input) input
+            requireEncoding TensorEncoding.F32 (nameof destination) destination
+            requireMatrixEncoding weights
+
+            let operation = $"MatVec with {weights.Rows} × {weights.Columns} weights"
+            if input.Shape.Rank <> 1 || input.Shape.Dimensions[0] <> weights.Columns then
+                invalidArg (nameof input) $"{operation} requires input of shape [{weights.Columns}], not {input.Shape}."
+            if destination.Shape.Rank <> 1 || destination.Shape.Dimensions[0] <> weights.Rows then
+                invalidArg (nameof destination) $"{operation} requires destination of shape [{weights.Rows}], not {destination.Shape}."
+            if Object.ReferenceEquals(input, destination) then
+                invalidArg (nameof destination) "MatVec destination must differ from its input, which every output reads in full."
+
+            if destination.Shape.ElementCount > 0 then
+                let rowBytes = weights.Columns / weights.Encoding.BlockElements * weights.Encoding.BlockBytes
+                getSession().MatVec(weightsPointer, inputPointer, destinationPointer, weights.Rows, weights.Columns, rowBytes)
 
     interface IMatMulKernel with
-        member _.MatMul(_, _, _) = notImplemented "matrix-matrix product"
+        member _.MatMul(weights, input, destination) =
+            checkDisposed ()
+            let weightsPointer = weightPointerOf (nameof weights) weights
+            let inputPointer = pointerOf (nameof input) input
+            let destinationPointer = pointerOf (nameof destination) destination
+            requireEncoding TensorEncoding.F32 (nameof input) input
+            requireEncoding TensorEncoding.F32 (nameof destination) destination
+            requireMatrixEncoding weights
+
+            let operation = $"MatMul with {weights.Rows} × {weights.Columns} weights"
+            let inputDimensions = input.Shape.Dimensions
+            if inputDimensions.Count <> 2 || inputDimensions[1] <> weights.Columns then
+                invalidArg (nameof input) $"{operation} requires input of shape [tokens; {weights.Columns}], not {input.Shape}."
+            let tokens = inputDimensions[0]
+            let destinationDimensions = destination.Shape.Dimensions
+            if destinationDimensions.Count <> 2 || destinationDimensions[0] <> tokens || destinationDimensions[1] <> weights.Rows then
+                invalidArg (nameof destination) $"{operation} requires destination of shape [{tokens}; {weights.Rows}], not {destination.Shape}."
+            if Object.ReferenceEquals(input, destination) then
+                invalidArg (nameof destination) "MatMul destination must differ from its input, which every weight row reads in full."
+
+            // An empty batch is a validated no-op, submitted to no native call.
+            if tokens > 0 then
+                let rowBytes = weights.Columns / weights.Encoding.BlockElements * weights.Encoding.BlockBytes
+                getSession().MatMul(weightsPointer, inputPointer, destinationPointer, tokens, weights.Rows, weights.Columns, rowBytes)
 
     interface IRopeKernel with
         member _.Rope(input, positions, embedding, destination) =

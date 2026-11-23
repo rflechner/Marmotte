@@ -577,6 +577,16 @@ inconsistent counts, wrong row sizes, non-F32 destinations, stored weights as
 destination and foreign contexts. Unsupported stored encodings raise
 `NotSupportedException`; the empty and null/disposal tests need no driver.
 
+[`CudaMatMulTests.fs`](../tests/Marmotte.Backends.Tests/CudaMatMulTests.fs) compares
+`MatVec` and `MatMul` with decoded rows multiplied in double precision for F32 and
+F16 weights, across widths, batch sizes (including the 256-token slice boundary and
+larger), and a 257 × 3072 matrix; checks that each token of a `MatMul` gets its `MatVec`
+result and agreement with the CPU backend, the empty batch, NaN/infinity propagation,
+stream ordering between queued operations, validation (shapes, encodings, ownership,
+disposal, aliasing) before any write, and unsupported encodings. Direct C ABI checks
+reject inconsistent counts, wrong row sizes, aliasing, non-F32 operands, unsupported
+stored encodings and foreign contexts. The null/disposal test needs no driver.
+
 [`HalfTests.fs`](../tests/Marmotte.Backends.Tests/HalfTests.fs) adds the same
 independent binary16 fixtures on CPU and CUDA: halfway rounding, overflow,
 normal/subnormal transitions, signed zero, infinities and NaNs. It checks all
@@ -686,6 +696,30 @@ dotnet fsi examples/CudaEmbedding.fsx
 
 See the [R.4 beginner guide](kernels/embedding-cuda.md) for the data flow,
 block decoding and the remaining encodings.
+
+## Matrix products on CUDA
+
+`MatVec` and `MatMul` multiply F32 activations by stored weights in F32 or F16, decoding
+one weight row at a time on the GPU; every other stored encoding raises
+`NotSupportedException` before submission. Input and destination are F32 execution
+tensors: `[columns]`/`[rows]` for `MatVec`, `[tokens; columns]`/`[tokens; rows]` for
+`MatMul`, whose empty batch is a validated no-op.
+
+`kernels/MatMul.cu` has two kernels over one little-endian F32/F16 row decoder. The
+reference path launches one 256-thread block per weight row — also used for single-token
+`MatMul` — decoding the row on the fly and reducing in double precision, so every product
+of two F32 values is exact and only the final sum rounds to F32. The batched `MatMul`
+tiles four rows per block, decodes each row once into shared memory in 2048-column
+chunks, and gives each token of the launch slice one thread; batches larger than 256
+tokens are sliced by the native entry point, each slice decoding every row once instead
+of once per token. Both launches are queued on the stream and return without waiting.
+
+For a runnable comparison against the CPU reference:
+
+```powershell
+dotnet build Marmotte.slnx -p:MarmotteBuildCuda=true
+dotnet fsi examples/CudaMatMul.fsx
+```
 
 ## Kernel formats and file layout
 

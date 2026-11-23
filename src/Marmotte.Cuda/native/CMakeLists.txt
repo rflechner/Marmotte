@@ -13,6 +13,7 @@ add_library(marmotte_cuda SHARED
     kernels/CopyRows.cu
     kernels/Rope.cu
     kernels/Embedding.cu
+    kernels/MatMul.cu
 )
 set_target_properties(marmotte_cuda PROPERTIES
     CUDA_STANDARD 17

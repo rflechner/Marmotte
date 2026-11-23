@@ -429,11 +429,20 @@ without waiting; `Download` and `Synchronize` wait. GPU tests stay opt-in
 
 ### S. CUDA matrix products
 
-- [ ] **S.1** `MatVec` and `MatMul` over F32 and F16 weights as the reference path,
-  decoding one weight row at a time on the GPU.
-- [ ] **S.2** Batched `MatMul`: decode each weight row once into shared memory and share
-  it across the whole token batch, tiling rows over blocks; the CPU reaches about 3× per
-  token for 64-token batches (F.3).
+- [x] **S.1** `MatVec` and `MatMul` over F32 and F16 weights as the reference path,
+  decoding one weight row at a time on the GPU. `kernels/MatMul.cu` launches one block per
+  weight row for `MatVec` (and for single-token `MatMul`): each thread decodes its strided
+  columns with little-endian byte reads and accumulates in double precision, so every
+  product of two F32 values is exact, and the warp/block reductions round once to F32.
+  Input and destination are F32 execution tensors; every other stored encoding raises
+  `NotSupportedException` before submission, as on the embedding lookup (R.4).
+- [x] **S.2** Batched `MatMul`: each block tiles four weight rows and decodes every row once
+  into shared memory, in 2048-column chunks, sharing it across the whole token batch — one
+  thread per token accumulating in double precision — with larger batches sliced natively
+  into groups of 256 tokens, each decoded once per row instead of once per token. The CPU
+  reaches about 3× per token for 64-token batches (F.3).
+  See [matrix products on CUDA](docs/cuda.md#matrix-products-on-cuda) and
+  [CudaMatMulTests.fs](tests/Marmotte.Backends.Tests/CudaMatMulTests.fs).
 - [ ] **S.3** K-quant products (Q2_K–Q6_K): unpack blocks into shared memory and accumulate
   scaled integer products per weight row, with the decoded-F32 fallback for non-finite or
   unrepresentable cases (H.2). This is the dominant cost of the target model: every

@@ -74,6 +74,12 @@ module private CudaApi =
     extern int marmotte_cuda_embedding(SafeHandle context, nativeint weights, [<In>] int[] tokenIds, nativeint destination, int tokens, int rows, int columns, int rowBytes)
 
     [<DllImport(library, CallingConvention = CallingConvention.Cdecl)>]
+    extern int marmotte_cuda_matvec(SafeHandle context, nativeint weights, nativeint input, nativeint destination, int rows, int columns, int rowBytes)
+
+    [<DllImport(library, CallingConvention = CallingConvention.Cdecl)>]
+    extern int marmotte_cuda_matmul(SafeHandle context, nativeint weights, nativeint input, nativeint destination, int tokens, int rows, int columns, int rowBytes)
+
+    [<DllImport(library, CallingConvention = CallingConvention.Cdecl)>]
     extern int marmotte_cuda_synchronize(SafeHandle context)
 
     let check operation status =
@@ -216,6 +222,17 @@ type internal CudaSession(deviceIndex: int) =
     member _.EmbeddingLookup(weights, tokenIds: int array, destination, tokens, rows, columns, rowBytes) =
         CudaApi.marmotte_cuda_embedding(context, weights, tokenIds, destination, tokens, rows, columns, rowBytes)
         |> CudaApi.check "embedding lookup launch"
+
+    /// rowBytes is the stored size of one weight row. The product is queued on the stream.
+    member _.MatVec(weights, input, destination, rows, columns, rowBytes) =
+        CudaApi.marmotte_cuda_matvec(context, weights, input, destination, rows, columns, rowBytes)
+        |> CudaApi.check "matrix-vector product launch"
+
+    /// Larger batches are sliced natively into token groups, each decoding every weight row
+    /// once into shared memory. The products are queued on the stream.
+    member _.MatMul(weights, input, destination, tokens, rows, columns, rowBytes) =
+        CudaApi.marmotte_cuda_matmul(context, weights, input, destination, tokens, rows, columns, rowBytes)
+        |> CudaApi.check "matrix product launch"
 
     member _.Synchronize() = CudaApi.marmotte_cuda_synchronize(context) |> CudaApi.check "synchronization"
 

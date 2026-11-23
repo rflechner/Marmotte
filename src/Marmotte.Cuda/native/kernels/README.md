@@ -16,6 +16,7 @@ native/
     CopyRows.cu                F32/F16 device-to-device copy, no GPU function
     Rope.cu                    F32/F16 RoPE pair rotation and host dispatch
     Embedding.cu               F32/F16/Q4_0/Q8_0 row decoding into F32 and host dispatch
+    MatMul.cu                  F32/F16 row-at-a-time MatVec and batched shared-row MatMul
 ```
 
 These files appear in the F# project. CMake compiles the `.cu` sources.
@@ -84,6 +85,35 @@ immediately; the lookup kernel itself is queued asynchronously on the context's 
 [CudaEmbeddingTests.fs](../../../../tests/Marmotte.Backends.Tests/CudaEmbeddingTests.fs)
 compares all four encodings with the CPU backend bit for bit, checks a hand-specified Q8_0
 block, ID-buffer reuse, stream ordering, validation before writes and native rejections.
+
+## Matrix products and supported weight encodings
+
+`MatMul.cu` implements the Core `IMatVecKernel` and `IMatMulKernel` contracts for stored
+weights in F32 and F16, with F32 execution operands: `destination[r] = Σ_c weights[r, c] ×
+input[c]` for `MatVec`, and `destination[t, r] = Σ_c weights[r, c] × input[t, c]` for
+`MatMul`. Every other stored encoding returns `cudaErrorNotSupported` before any launch,
+and the managed backend raises `NotSupportedException` before submission. The entry points
+revalidate that the stored allocation is exactly `rows × rowBytes` bytes, that `rowBytes`
+matches the encoding's block layout, that the input holds `tokens × columns` and the
+destination `tokens × rows` F32 elements, and that input and destination differ, so foreign
+pointers and inconsistent counts are rejected before any write.
+
+Two kernels share the little-endian F32/F16 row decoder. The reference path (S.1) launches
+one 256-thread block per weight row — also used for single-token `MatMul` — decoding the
+row on the fly: each thread accumulates its strided columns in double precision, then warp
+shuffle and shared-memory reductions sum the partials in double and round once to F32, so
+every product of two F32 values is exact. The batched path (S.2) tiles four rows per block,
+decodes each row once into shared memory in 2048-column chunks, and assigns one thread per
+token of the launch slice: larger batches are sliced by the host entry point into groups of
+at most 256 tokens, each decoded once per row instead of once per token.
+
+Both entry points launch on the context's stream and return the launch status without
+waiting; the managed backend handles empty batches and validates shapes and ownership
+first. Compare results with the tolerance relative to the sum of absolute products stated
+by the Core contracts. [CudaMatMulTests.fs](../../../../tests/Marmotte.Backends.Tests/CudaMatMulTests.fs)
+checks both products against decoded rows multiplied in double precision for F32 and F16,
+batch sizes including the 256-token slice boundary, MatMul/MatVec agreement, the empty
+batch, special values, stream ordering, validation before writes, and native rejections.
 
 ## Add an operation
 
